@@ -1,0 +1,22 @@
+{
+  "name": "movies-that-feel-like",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "npm run dev -w apps/astro",
+    "build": "npm run build -w apps/astro",
+    "check": "npm run check -w apps/astro",
+    "seed": "npm run db:migrate && npm run db:load-local",
+    "pipeline:fetch": "npm run fetch -w apps/pipeline --",
+    "pipeline:normalize": "npm run normalize -w apps/pipeline --",
+    "pipeline:cache-assets": "npm run cache-assets -w apps/pipeline --",
+    "pipeline:extract": "npm run extract -w apps/pipeline --",
+    "pipeline:enrich": "npm run enrich -w apps/pipeline --",
+    "pipeline:load": "npm run load -w apps/pipeline --",
+    "pipeline:load:sql": "npm run load -w apps/pipeline -- --sql-out data/working/load-d1.sql",
+    "pipeline:inspect": "npm run inspect -w apps/pipeline --",
+    "db:migrate": "apps/astro/node_modules/.bin/wrangler d1 migrations apply movies-that-feel-like --local --config apps/astro/wrangler.jsonc",
+    "db:load-local": "npm run load -w apps/pipeline -- --reset --sql-out data/working/load-d1.sql && npm run d1:apply",
+    "d1:apply": "apps/astro/node_modules/.bin/wrangler d1 execute movies-that-feel-like --local --command 'PRAGMA foreign_keys=OFF; DELETE FROM recommendation_evidence; DELETE FROM vibe_tags; DELETE FROM imported_post_images; DELETE FROM recommendations; DELETE FROM imported_vibe_posts;' --config apps/astro/wrangler.jsonc && apps/astro/node_modules/.bin/wrangler d1 execute movies-that-feel-like --local --file \"$(pwd)/data/working/load-d1.sql\" --config apps/astro/wrangler.jsonc"
+  }
+}

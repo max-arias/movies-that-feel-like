@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "movies-that-feel-like",
+  "compatibility_date": "2026-07-13",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "movies-that-feel-like",
+      "database_id": "local-dev-placeholder",
+      "migrations_dir": "../../packages/db/migrations"
+    }
+  ]
+}

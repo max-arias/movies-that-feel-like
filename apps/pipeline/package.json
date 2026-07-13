@@ -1,0 +1,13 @@
+{
+  "name": "pipeline",
+  "private": true,
+  "scripts": {
+    "fetch": "PYTHONPATH=src uv run python -m pipeline.fetch",
+    "normalize": "PYTHONPATH=src uv run python -m pipeline.normalize",
+    "cache-assets": "PYTHONPATH=src uv run python -m pipeline.cache_assets",
+    "extract": "PYTHONPATH=src uv run python -m pipeline.extract",
+    "enrich": "PYTHONPATH=src uv run python -m pipeline.enrich",
+    "load": "PYTHONPATH=src uv run python -m pipeline.load",
+    "inspect": "PYTHONPATH=src uv run python -m pipeline.inspect"
+  }
+}

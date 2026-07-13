@@ -1,0 +1,7 @@
+{
+  "name": "db",
+  "private": true,
+  "scripts": {
+    "migrate": "wrangler d1 migrations apply movies-that-feel-like --local"
+  }
+}

@@ -1,0 +1,150 @@
+---
+// Post detail page — shows a single imported vibe post with images, tags, recommendations.
+
+import Layout from "../../layouts/Layout.astro";
+import { getPostByRedditId } from "../../lib/db";
+
+// In server mode, params exist at request time even for non-prerendered fallback
+let post: Awaited<ReturnType<typeof getPostByRedditId>>;
+try {
+  const db = Astro.locals.runtime.env.DB as D1Database;
+  post = await getPostByRedditId(db, Astro.params.id!);
+} catch {
+  post = null;
+}
+---
+
+<Layout title={post ? `${post.title} — Movies That Feel Like` : "Post not found"}>
+  {!post ? (
+    <div class="hero min-h-64 bg-base-200 rounded-box">
+      <div class="hero-content text-center">
+        <div class="max-w-md">
+          <h2 class="text-xl font-bold">Post not found</h2>
+          <p class="py-4 text-base-content/70">
+            No post with ID "{Astro.params.id}" was found in the database.
+          </p>
+          <a href="/" class="btn btn-primary">Back to feed</a>
+        </div>
+      </div>
+    </div>
+  ) : (
+    <>
+      <div class="mb-6">
+        <a href="/" class="link link-neutral text-sm">&larr; Back to feed</a>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <div>
+          {post.images.length > 0 ? (
+            <div class="carousel carousel-center rounded-box bg-base-300 w-full">
+              {post.images.map((img) => (
+                <div class="carousel-item w-full">
+                  <img
+                    src={img.url}
+                    alt={`Post image ${img.sort_order}`}
+                    class="w-full object-contain max-h-[70vh]"
+                  />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div class="w-full h-64 bg-base-300 rounded-box flex items-center justify-center text-base-content/40">
+              No images
+            </div>
+          )}
+        </div>
+
+        <div>
+          <h1 class="text-3xl font-bold mb-2">{post.title}</h1>
+
+          {post.vibe_summary && (
+            <div class="mb-4 p-4 bg-base-300 rounded-box">
+              <p class="text-sm italic text-base-content/80">{post.vibe_summary}</p>
+            </div>
+          )}
+
+          <div class="flex flex-wrap gap-2 mb-4">
+            {post.tags.map((t) => (
+              <span class="badge badge-soft badge-outline">{t.tag}</span>
+            ))}
+          </div>
+
+          {post.selftext && (
+            <div class="mb-4">
+              <h3 class="font-semibold mb-1">Selftext</h3>
+              <p class="text-sm text-base-content/70 whitespace-pre-wrap">{post.selftext}</p>
+            </div>
+          )}
+
+          <div class="stats stats-vertical sm:stats-horizontal shadow-sm mb-4">
+            <div class="stat">
+              <div class="stat-title">Author</div>
+              <div class="stat-value text-lg">{post.author ?? "unknown"}</div>
+            </div>
+            <div class="stat">
+              <div class="stat-title">Status</div>
+              <div class="stat-value text-lg">{post.status}</div>
+            </div>
+          </div>
+
+          <div class="flex gap-2 mb-6">
+            {post.permalink && (
+              <a
+                href={`https://reddit.com${post.permalink}`}
+                class="btn btn-outline btn-sm"
+                target="_blank"
+              >
+                View on Reddit ↗
+              </a>
+            )}
+          </div>
+
+          <div>
+            <h2 class="text-xl font-bold mb-3">Recommendations ({post.recommendations.length})</h2>
+            {post.recommendations.length === 0 ? (
+              <p class="text-sm text-base-content/50">No recommendations extracted yet.</p>
+            ) : (
+              <div class="grid grid-cols-1 gap-4">
+                {post.recommendations.map((rec) => (
+                  <div class="card card-side bg-base-300 shadow-sm">
+                    {rec.poster_url && (
+                      <figure class="w-24 shrink-0">
+                        <img
+                          src={rec.poster_url}
+                          alt={rec.title}
+                          class="h-full w-full object-cover"
+                          loading="lazy"
+                        />
+                      </figure>
+                    )}
+                    <div class="card-body p-4">
+                      <div class="flex items-start justify-between gap-2">
+                        <a
+                          href={`/recommendations/${rec.id}/`}
+                          class="card-title text-base hover:link"
+                        >
+                          {rec.title}
+                        </a>
+                        <span class="badge badge-soft badge-sm">
+                          {rec.media_type === "movie" ? "🎬" : "📺"} {rec.media_type}
+                        </span>
+                      </div>
+                      {rec.release_year && (
+                        <p class="text-sm text-base-content/60">{rec.release_year}</p>
+                      )}
+                      {rec.vote_average && (
+                        <p class="text-xs text-base-content/50">
+                          ⭐ {rec.vote_average.toFixed(1)}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </>
+  )}
+</Layout>

@@ -1,0 +1,137 @@
+---
+// Movies That Feel Like — discovery feed of imported Reddit vibe posts.
+
+import Layout from "../layouts/Layout.astro";
+import { getPublishedPosts, getPostCount } from "../lib/db";
+
+const db = Astro.locals.runtime.env.DB;
+
+let posts: Awaited<ReturnType<typeof getPublishedPosts>> = [];
+let postCount = 0;
+let dbError: string | undefined;
+try {
+  postCount = await getPostCount(db);
+  posts = await getPublishedPosts(db);
+} catch (e) {
+  dbError = String(e);
+}
+---
+
+<Layout title="Movies That Feel Like — discovery feed">
+  <div class="mb-8">
+    <h1 class="text-3xl font-bold mb-2">Movies That Feel Like</h1>
+    <p class="text-base-content/70">
+      Discover movies recommended from image-driven Reddit posts.
+    </p>
+  </div>
+
+  {
+    dbError ? (
+      <div class="hero min-h-64 bg-base-200 rounded-box">
+        <div class="hero-content text-center">
+          <div class="max-w-md">
+            <h2 class="text-xl font-bold">Database error</h2>
+            <p class="py-4 text-sm text-error">{dbError}</p>
+            <p class="text-base-content/60 text-xs">
+              Make sure the local D1 database is initialized:
+              <code class="ml-1">npm run db:migrate</code>
+            </p>
+          </div>
+        </div>
+      </div>
+    ) : posts.length === 0 ? (
+      <div class="hero min-h-64 bg-base-200 rounded-box">
+        <div class="hero-content text-center">
+          <div class="max-w-md">
+            <h2 class="text-xl font-bold">No posts loaded yet</h2>
+            <p class="py-4 text-base-content/70">
+              No publishable posts found in the database.
+            </p>
+            <p class="text-base-content/60 text-xs">
+              Run the pipeline load stage and <code>npm run db:load-local</code>.
+            </p>
+          </div>
+        </div>
+      </div>
+    ) : (
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+        {posts.map((post) => (
+          <div class="card card-sm bg-base-200 shadow-sm">
+            <figure>
+              {post.images.length > 0 ? (
+                <img
+                  src={post.images[0].url}
+                  alt={post.title}
+                  class="w-full h-56 object-cover"
+                  loading="lazy"
+                />
+              ) : (
+                <div class="w-full h-56 bg-base-300 flex items-center justify-center text-base-content/40">
+                  No image
+                </div>
+              )}
+            </figure>
+            <div class="card-body">
+              <div class="flex items-start justify-between gap-2">
+                <h2 class="card-title text-lg">{post.title}</h2>
+                {post.images[0]?.cache_status === "cached" ? (
+                  <span class="badge badge-soft badge-success badge-xs">cached</span>
+                ) : (
+                  <span class="badge badge-soft badge-warning badge-xs">
+                    {post.images[0]?.cache_status ?? "pending"}
+                  </span>
+                )}
+              </div>
+
+              {post.vibe_summary && (
+                <p class="text-sm text-base-content/70 line-clamp-2">
+                  {post.vibe_summary}
+                </p>
+              )}
+
+              {post.tags.length > 0 && (
+                <div class="flex flex-wrap gap-1 mt-1">
+                  {post.tags.map((t) => (
+                    <span class="badge badge-soft badge-outline badge-sm">{t.tag}</span>
+                  ))}
+                </div>
+              )}
+
+              {post.recommendations.length > 0 && (
+                <div class="mt-2">
+                  <p class="text-xs font-semibold mb-1">Top recommendations</p>
+                  <div class="flex flex-wrap gap-1">
+                    {post.recommendations.slice(0, 5).map((rec) => (
+                      <a
+                        href={`/recommendations/${rec.id}/`}
+                        class="badge badge-soft badge-accent badge-sm hover:badge-outline"
+                      >
+                        {rec.title} {rec.release_year ? `(${rec.release_year})` : ""}
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div class="card-actions justify-between items-center mt-3">
+                <a
+                  href={post.permalink ? `https://reddit.com${post.permalink}` : "#"}
+                  class="btn btn-ghost btn-xs"
+                  target="_blank"
+                >
+                  Source ↗
+                </a>
+                <a
+                  href={`/posts/${post.reddit_post_id}/`}
+                  class="btn btn-primary btn-sm"
+                >
+                  View details
+                </a>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    )
+  }
+</Layout>

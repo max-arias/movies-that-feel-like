@@ -1,0 +1,28 @@
+---
+import "../styles/global.css";
+export interface Props {
+  title?: string;
+}
+const { title } = Astro.props;
+---
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title ?? "Movies That Feel Like"}</title>
+  </head>
+  <body>
+    <div class="navbar bg-base-300 shadow-sm mb-6">
+      <div class="flex-1">
+        <a href="/" class="btn btn-ghost text-xl">🎬 Movies That Feel Like</a>
+      </div>
+      <div class="flex-none gap-2">
+        <span class="badge badge-soft badge-primary">tracer bullet</span>
+      </div>
+    </div>
+    <main class="max-w-7xl mx-auto px-4 pb-12">
+      <slot />
+    </main>
+  </body>
+</html>
