@@ -15,7 +15,27 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.artifacts import read_json_artifact, timestamp_slug, validate_complete_extraction, write_json_artifact
-from pipeline.paths import ensure_pipeline_dirs, normalized_dir, working_dir
+import pipeline.git_ops as git_ops
+from pipeline.paths import ensure_pipeline_dirs, normalized_dir, project_root, working_dir
+
+# ── Constants ──────────────────────────────────────────────────────────
+
+# Tables that hold user-facing data: included in the emitted data migration.
+DATA_TABLES: frozenset[str] = frozenset(
+    {
+        "imported_vibe_posts",
+        "recommendations",
+        "recommendation_evidence",
+        "imported_post_images",
+        "vibe_tags",
+    }
+)
+
+# Tables that hold pipeline-internal state: excluded from the emitted data
+# migration (they're per-run bookkeeping, not user data).
+PIPELINE_STATE_TABLES: frozenset[str] = frozenset(
+    {"processing_runs", "pipeline_artifacts"}
+)
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -493,29 +513,25 @@ def _insert_vibe_tags(
     return count
 
 
-def _write_sql_exports(db: sqlite3.Connection, sql_out_path: Path) -> None:
-    """Write the inspection dump and bounded D1 input files.
+def _build_ordered_inserts(
+    db: sqlite3.Connection, table_filter: frozenset[str]
+) -> list[str]:
+    """Walk ``db.iterdump()`` and return ordered INSERT statements for the
+    tables in *table_filter*.
 
-    Wrangler/workerd is noticeably less reliable with a large single input
-    file.  Keep the dump for humans, but make the chunk files the operational
-    form.  The ordering here is also the ordering used by the old dump.
+    The dump contains a mix of DDL, transaction markers, and INSERTs spread
+    across every table.  This helper pulls out the INSERTs, groups them by
+    target table, then emits them in a stable, parent-before-child order so
+    the resulting SQL can be applied to a fresh database without violating
+    foreign-key constraints:
+
+        imported_vibe_posts → recommendations → recommendation_evidence
+        → imported_post_images → vibe_tags → (pipeline state) → (any others)
+
+    Anything in *table_filter* that's missing from the dump is silently
+    skipped; anything not in the filter is dropped (so callers can omit
+    pipeline state).
     """
-    sql_out_path.parent.mkdir(parents=True, exist_ok=True)
-    insert_by_table: dict[str, list[str]] = {}
-    for line in db.iterdump():
-        stripped = line.strip()
-        if not stripped or stripped.upper().startswith("CREATE"):
-            continue
-        if stripped in ("BEGIN TRANSACTION;", "COMMIT;"):
-            continue
-        if not stripped.upper().startswith("INSERT INTO"):
-            continue
-        match = re.match(r'INSERT INTO\s+(?:"([^"]+)"|([^\s(]+))', stripped, re.IGNORECASE)
-        table = (match.group(1) or match.group(2)) if match else ""
-        if not table or table == "sqlite_sequence":
-            continue
-        insert_by_table.setdefault(table, []).append(line)
-
     table_order = [
         "imported_vibe_posts",
         "recommendations",
@@ -525,41 +541,141 @@ def _write_sql_exports(db: sqlite3.Connection, sql_out_path: Path) -> None:
         "processing_runs",
         "pipeline_artifacts",
     ]
-    ordered_inserts: list[str] = []
+
+    insert_by_table: dict[str, list[str]] = {}
+    insert_re = re.compile(
+        r'INSERT\s+INTO\s+(?:"([^"]+)"|([^\s(]+))', re.IGNORECASE
+    )
+    for line in db.iterdump():
+        stripped = line.strip()
+        if not stripped or stripped.upper().startswith("CREATE"):
+            continue
+        if stripped in ("BEGIN TRANSACTION;", "COMMIT;"):
+            continue
+        if not stripped.upper().startswith("INSERT INTO"):
+            continue
+        match = insert_re.match(stripped)
+        table = (match.group(1) or match.group(2)) if match else ""
+        if not table or table == "sqlite_sequence":
+            continue
+        if table not in table_filter:
+            continue
+        insert_by_table.setdefault(table, []).append(line)
+
+    ordered: list[str] = []
     for table in table_order:
-        ordered_inserts.extend(insert_by_table.pop(table, []))
+        if table in table_filter:
+            ordered.extend(insert_by_table.pop(table, []))
     for table in sorted(insert_by_table):
-        ordered_inserts.extend(insert_by_table[table])
+        ordered.extend(insert_by_table[table])
+    return ordered
 
-    # The monolithic file remains useful for inspection/backward use.
-    sql_out_path.write_text(
-        "\n".join(
-            [f"-- Generated {datetime.now(timezone.utc).isoformat()}", "", *ordered_inserts]
+
+_INSERT_INTO_RE = re.compile(r"\bINSERT\s+INTO\b", re.IGNORECASE)
+
+
+def _rewrite_inserts_to_ignore(inserts: list[str]) -> list[str]:
+    """Rewrite every ``INSERT INTO`` to ``INSERT OR IGNORE INTO``.
+
+    The dump produced by ``iterdump()`` carries whatever INSERT form the
+    loader used in-process (UPSERT, plain INSERT, INSERT OR IGNORE).  For a
+    re-applicable data migration we need a uniform idempotent form: any
+    natural-unique-constraint hit (e.g. duplicate ``reddit_post_id``)
+    becomes a no-op instead of a conflict error.  Tables without a unique
+    constraint (``imported_post_images``, ``recommendations``) are still
+    rewritten — the rewrite is harmless there because there's nothing to
+    ignore, and the uniform form makes the migration readable.
+    """
+    return [_INSERT_INTO_RE.sub("INSERT OR IGNORE INTO", s, count=1) for s in inserts]
+
+
+_MIGRATION_NAME_RE = re.compile(r"^(\d{4})_")
+
+
+def _next_migration_number(migrations_dir: Path) -> int:
+    """Return the next free 4-digit migration number for *migrations_dir*.
+
+    Scans for files matching ``NNNN_*.sql`` and returns ``max + 1`` (or
+    ``1`` if the directory is empty).  The numbering is shared with schema
+    migrations: a directory that already contains ``0001_initial.sql`` …
+    ``0004_drop_tmdb_data.sql`` yields ``5`` here, so the first emitted
+    data migration is ``0005_seed_<TS>.sql``.
+    """
+    numbers: list[int] = []
+    if migrations_dir.is_dir():
+        for path in migrations_dir.glob("*.sql"):
+            match = _MIGRATION_NAME_RE.match(path.name)
+            if match:
+                numbers.append(int(match.group(1)))
+    return (max(numbers) if numbers else 0) + 1
+
+
+def _migration_filename(sequence: int, when: datetime) -> str:
+    """Format a data-migration filename.
+
+    Example: ``0005_seed_20260714T150042Z.sql``.  Uses the run's start
+    time so the filename records *when the data was collected*, not when
+    the file was written.
+    """
+    return f"{sequence:04d}_seed_{when.strftime('%Y%m%dT%H%M%SZ')}.sql"
+
+
+def _write_data_migration(
+    db: sqlite3.Connection,
+    migrations_dir: Path,
+    run_started_at: datetime,
+) -> Path:
+    """Emit a versioned data migration to *migrations_dir*.
+
+    The emitted file is the next-available ``NNNN_seed_<UTC>.sql`` in the
+    directory.  It contains only the data tables (no pipeline state),
+    every INSERT is rewritten to ``INSERT OR IGNORE`` so the file is safe
+    to re-apply, and the parent-before-child ordering keeps foreign keys
+    valid on a fresh schema.
+
+    Returns the path that was written.  Raises ``SystemExit`` if the
+    target filename already exists (minute-precision collisions during
+    the 1k run are vanishingly rare; this is a guard against the dev
+    re-running the same load by accident and silently overwriting the
+    prior run's data).
+    """
+    migrations_dir.mkdir(parents=True, exist_ok=True)
+    sequence = _next_migration_number(migrations_dir)
+    filename = _migration_filename(sequence, run_started_at)
+    path = migrations_dir / filename
+
+    if path.exists():
+        raise SystemExit(
+            f"[pipeline:load] Refusing to overwrite existing migration {path}. "
+            f"Delete it (or pick a new --migrations-dir) and re-run."
         )
-        + "\n",
-        encoding="utf-8",
+
+    inserts = _build_ordered_inserts(db, DATA_TABLES)
+    inserts = _rewrite_inserts_to_ignore(inserts)
+
+    header = (
+        f"-- {filename}: data seed from pipeline:load run.\n"
+        f"-- Generated:  {datetime.now(timezone.utc).isoformat()}\n"
+        f"-- Run started: {run_started_at.isoformat()}\n"
+        f"-- Source: data/working/load manifest from this run.\n"
+        f"--\n"
+        f"-- Idempotent: every INSERT is INSERT OR IGNORE, keyed by the\n"
+        f"-- table's natural unique constraint (reddit_post_id on\n"
+        f"-- imported_vibe_posts, the (recommendation_id, imported_vibe_post_id,\n"
+        f"-- evidence_comment_id) triple on recommendation_evidence, the\n"
+        f"-- (imported_vibe_post_id, tag) pair on vibe_tags).  Wrangler's\n"
+        f"-- migration tracking normally prevents re-apply; the OR IGNORE\n"
+        f"-- is defense in depth for partial / interrupted re-runs.\n"
+        f"--\n"
+        f"-- Tables: imported_vibe_posts, recommendations,\n"
+        f"--         recommendation_evidence, imported_post_images, vibe_tags.\n"
+        f"-- Pipeline-state tables (processing_runs, pipeline_artifacts)\n"
+        f"-- are intentionally excluded — they're per-run bookkeeping.\n"
     )
-
-    chunk_dir = sql_out_path.parent / sql_out_path.stem
-    if chunk_dir.exists():
-        for stale in chunk_dir.glob("*.sql"):
-            stale.unlink()
-    else:
-        chunk_dir.mkdir(parents=True)
-
-    chunk_size = 250
-    for offset in range(0, len(ordered_inserts), chunk_size):
-        chunk_number = offset // chunk_size + 1
-        chunk = ordered_inserts[offset : offset + chunk_size]
-        (chunk_dir / f"{chunk_number:04d}.sql").write_text(
-            "\n".join(chunk) + "\n", encoding="utf-8"
-        )
-
-    print(f"[pipeline:load] SQL dump written to {sql_out_path}")
-    print(
-        f"[pipeline:load] D1 chunks written to {chunk_dir} "
-        f"({(len(ordered_inserts) + chunk_size - 1) // chunk_size} file(s))"
-    )
+    body = "\n".join(inserts) + "\n"
+    path.write_text(header + "\n" + body, encoding="utf-8")
+    print(f"[pipeline:load] Data migration written to {path}")
+    return path
 
 
 # ── CLI ────────────────────────────────────────────────────────────────
@@ -615,9 +731,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output manifest path (default: data/working/load-{timestamp}.json)",
     )
     parser.add_argument(
-        "--sql-out",
-        default=None,
-        help="Path to write generated SQL file for D1 (e.g. wrangler d1 execute --file)",
+        "--migrations-dir",
+        default="packages/db/migrations",
+        help=(
+            "Directory for the emitted data migration "
+            "(default: packages/db/migrations/, which apps/astro/wrangler.jsonc "
+            "points at via `migrations_dir`)"
+        ),
     )
     parser.add_argument(
         "--allow-empty-extraction",
@@ -633,11 +753,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
 
+    # Captured early so the emitted migration filename records when the
+    # data was *collected*, not when the file was written (a 1k load can
+    # take minutes; the file's mtime is the end of the run).
+    run_started_at = datetime.now(timezone.utc)
+
     ensure_pipeline_dirs()
 
     # Resolve source artifacts --------------------------------------------
-    from pipeline.paths import project_root
-
     root = project_root()
 
     norm_path = Path(args.normalized) if args.normalized else _latest_normalized()
@@ -875,7 +998,10 @@ def main(argv: list[str] | None = None) -> None:
             posts_seen += 1
 
             # Count matchable recommendations for this post
-            rec_match_ids: list[int] = []
+            # `rec_id_by_key` maps candidate_key → upserted recommendation id,
+            # so the evidence-linking loop below can find the id without
+            # another SELECT against `recommendations`.
+            rec_id_by_key: dict[str, int] = {}
             match_count_for_post = 0
             if ext_result:
                 for rec in ext_result.get("recommendations", []):
@@ -889,7 +1015,8 @@ def main(argv: list[str] | None = None) -> None:
                         match_count_for_post += 1
                         try:
                             rec_id = _upsert_recommendation(db, match)
-                            rec_match_ids.append(rec_id)
+                            if rec_id != -1:
+                                rec_id_by_key[match["candidate_key"]] = rec_id
                         except Exception as exc:
                             errors.append(
                                 {
@@ -960,7 +1087,9 @@ def main(argv: list[str] | None = None) -> None:
                         }
                     )
 
-            # Evidence linking
+            # Evidence linking — rec_id_by_key (built above) maps each
+            # candidate_key to the just-upserted recommendation id, so no
+            # extra SELECT against `recommendations` is needed.
             if ext_result:
                 for rec in ext_result.get("recommendations", []):
                     key = _candidate_key(
@@ -971,22 +1100,9 @@ def main(argv: list[str] | None = None) -> None:
                     match = enrich_match_by_key.get(key)
                     if not match:
                         continue
-                    # Find the recommendation_id that was just upserted.
-                    # Game matches use igdb_id; movie/TV use tmdb_id.
-                    rec_row: tuple[int, ...] | None
-                    if match.get("media_type") == "game":
-                        rec_row = db.execute(
-                            "SELECT id FROM recommendations WHERE igdb_id = ? AND media_type = ?",
-                            (match["igdb_id"], match["media_type"]),
-                        ).fetchone()
-                    else:
-                        rec_row = db.execute(
-                            "SELECT id FROM recommendations WHERE tmdb_id = ? AND media_type = ?",
-                            (match["tmdb_id"], match["media_type"]),
-                        ).fetchone()
-                    if not rec_row:
+                    rec_db_id = rec_id_by_key.get(match["candidate_key"])
+                    if not rec_db_id:
                         continue
-                    rec_db_id = rec_row[0]
                     try:
                         evidence_inserted += _insert_evidence(
                             db,
@@ -1066,12 +1182,37 @@ def main(argv: list[str] | None = None) -> None:
 
         write_json_artifact(out, manifest)
 
-        # ── SQL dump for D1 ──────────────────────────────────────────
-        if args.sql_out:
-            sql_out_path = Path(args.sql_out)
-            if not sql_out_path.is_absolute():
-                sql_out_path = root / sql_out_path
-            _write_sql_exports(db, sql_out_path)
+        # ── Emit data migration ────────────────────────────────────
+        # Every successful load writes a versioned, idempotent data
+        # migration to packages/db/migrations/ so ``wrangler d1
+        # migrations apply`` picks it up alongside the schema migrations.
+        # The migration IS the SQL output — there's no separate dump
+        # path.  The file is then auto-committed and pushed via
+        # git_ops.auto_commit_and_push().
+        migrations_dir = Path(args.migrations_dir)
+        if not migrations_dir.is_absolute():
+            migrations_dir = root / migrations_dir
+        migration_path = _write_data_migration(db, migrations_dir, run_started_at)
+
+        # ── Auto-commit and push ────────────────────────────────────
+        try:
+            committed, status = git_ops.auto_commit_and_push(migration_path)
+        except git_ops.GitOpsError as exc:
+            raise SystemExit(
+                f"[pipeline:load] {exc}\n"
+                f"[pipeline:load] Fix the above and re-run."
+            ) from exc
+        if committed:
+            print(f"[pipeline:load] Auto-commit: {status}")
+            print(
+                f"[pipeline:load] Migration committed and pushed: "
+                f"{migration_path.name}"
+            )
+            if not status.startswith("pushed"):
+                print(
+                    f"[pipeline:load] WARNING: push failed (best-effort). "
+                    f"Run manually: git push origin HEAD"
+                )
 
         print(
             f"[pipeline:load] Done: {posts_publishable} publishable, "

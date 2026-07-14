@@ -6,6 +6,7 @@ Stores raw JSON artifacts under data/raw/.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +14,9 @@ from typing import Any
 
 from pipeline.artifacts import timestamp_slug, write_json_artifact
 from pipeline.paths import ensure_pipeline_dirs, raw_dir
+
+# Max in-flight comment-tree fetches during the parallel fan-out.
+_CONCURRENCY = 8
 
 
 def _today_utc_str() -> str:
@@ -78,7 +82,48 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> None:
+async def _fetch_one_comment_tree(
+    client: Any, link_id: str,
+) -> tuple[str, Any]:
+    """Fetch a single comment tree via ``asyncio.to_thread``.
+
+    Returns ``(link_id, tree)`` on success or ``(link_id, {"error": …})``
+    on exception — never raises.
+    """
+    try:
+        tree = await asyncio.to_thread(
+            client.get_comment_tree,
+            link_id=link_id,
+            limit=9999,
+            start_breadth=4,
+            start_depth=4,
+        )
+        return link_id, tree
+    except Exception as exc:
+        return link_id, {"error": str(exc)}
+
+
+async def _fetch_all_comment_trees(
+    client: Any,
+    raw_posts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Fetch comment trees for all *raw_posts* with bounded concurrency."""
+    sem = asyncio.Semaphore(_CONCURRENCY)
+
+    async def _bounded(link_id: str) -> tuple[str, Any]:
+        async with sem:
+            return await _fetch_one_comment_tree(client, link_id)
+
+    tasks = [_bounded(f"t3_{post['id']}") for post in raw_posts]
+    results = await asyncio.gather(*tasks, return_exceptions=False)
+
+    comments_by_post: dict[str, Any] = {}
+    for link_id, result in results:
+        comments_by_post[link_id] = result
+    return comments_by_post
+
+
+async def _async_main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
 
     # Resolve date range ---------------------------------------------------
@@ -108,13 +153,17 @@ def main(argv: list[str] | None = None) -> None:
         f"({after} → {before}, limit={args.limit})"
     )
 
-    response = client.search_posts(
+    t0 = time.monotonic()
+    response = await asyncio.to_thread(
+        client.search_posts,
         subreddit=args.subreddit,
         after=after,
         before=before,
         limit=args.limit,
         sort="asc",
     )
+    t1 = time.monotonic()
+    print(f"[pipeline:fetch] Search took {t1 - t0:.2f}s")
 
     posts = response.get("data", response) if isinstance(response, dict) else response
 
@@ -126,24 +175,14 @@ def main(argv: list[str] | None = None) -> None:
     # Comment trees --------------------------------------------------------
     comments_by_post: dict[str, Any] = {}
     if not args.skip_comments:
-        print("[pipeline:fetch] Fetching comment trees …")
-        for idx, post in enumerate(raw_posts, start=1):
-            link_id = f"t3_{post['id']}"
-            try:
-                tree = client.get_comment_tree(
-                    link_id=link_id,
-                    limit=9999,
-                    start_breadth=4,
-                    start_depth=4,
-                )
-                comments_by_post[link_id] = tree
-                comment_count = len(tree) if isinstance(tree, list) else "?"
-                print(f"  [{idx}/{len(raw_posts)}] {link_id} → OK ({comment_count} entries)")
-            except Exception as exc:
-                comments_by_post[link_id] = {"error": str(exc)}
-                print(f"  [{idx}/{len(raw_posts)}] {link_id} → ERROR: {exc}")
-            if idx < len(raw_posts):
-                time.sleep(0.5)
+        print(
+            f"[pipeline:fetch] Fetching comment trees "
+            f"(concurrency={_CONCURRENCY}) …"
+        )
+        t2 = time.monotonic()
+        comments_by_post = await _fetch_all_comment_trees(client, raw_posts)
+        t3 = time.monotonic()
+        print(f"[pipeline:fetch] Comment trees took {t3 - t2:.2f}s")
 
     # Summary --------------------------------------------------------------
     comment_tree_count = sum(
@@ -190,6 +229,10 @@ def main(argv: list[str] | None = None) -> None:
         f"{comment_tree_count} trees, {comment_error_count} errors"
     )
     print(f"[pipeline:fetch] Artifact written to {out}")
+
+
+def main(argv: list[str] | None = None) -> None:
+    asyncio.run(_async_main(argv))
 
 
 if __name__ == "__main__":

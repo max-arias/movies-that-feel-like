@@ -15,10 +15,11 @@ and platform/external-link data.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 import re
-import time
-from collections.abc import Callable
+import time as time_module
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ from pipeline.artifacts import (
     validate_complete_extraction,
     write_json_artifact,
 )
+from pipeline.enrich_cache import make_cache, ProviderCache
 from pipeline.paths import ensure_pipeline_dirs, working_dir
 
 # ── Constants ──────────────────────────────────────────────────────────
@@ -39,6 +41,43 @@ TMDB_BASE_URL = "https://api.themoviedb.org/3"
 IMAGE_BASE_URL = "https://image.tmdb.org/t/p"
 
 _USER_AGENT = "movies-that-feel-like/0.1"
+
+# Hardcoded knobs (not exposed as CLI flags; see ticket 15 resolution)
+_CONCURRENCY = 8
+_TMDB_RATE_LIMIT_RPM = 50.0
+_IGDB_RATE_LIMIT_RPM = 30.0
+
+# ── Async rate limiter (mirrors extract._RequestLimiter) ───────────────
+
+
+class AsyncRequestLimiter:
+    """Per-provider token-bucket rate limiter using ``asyncio.Lock``.
+
+    Mirrors the sync :class:`pipeline.extract._RequestLimiter` but uses
+    ``asyncio.Lock`` and ``await asyncio.sleep``.
+    """
+
+    def __init__(self, rpm: float) -> None:
+        self.interval = 60.0 / rpm if rpm > 0 else 0.0
+        self._lock = asyncio.Lock()
+        self._next_start = 0.0
+        self._cooldown_until = 0.0
+
+    async def wait(self) -> None:
+        """Wait until the next permitted request time."""
+        async with self._lock:
+            now = time_module.monotonic()
+            start = max(now, self._next_start, self._cooldown_until)
+            self._next_start = start + self.interval
+        if start > now:
+            await asyncio.sleep(start - now)
+
+    async def cooldown(self, seconds: float) -> None:
+        """Apply an additional cooldown (e.g. after a 429)."""
+        async with self._lock:
+            now = time_module.monotonic()
+            self._cooldown_until = max(self._cooldown_until, now + max(0, seconds))
+
 
 # ── Candidate deduplication ────────────────────────────────────────────
 
@@ -100,7 +139,7 @@ def collect_candidates(
     return list(buckets.values())
 
 
-# ── TMDB client helpers ────────────────────────────────────────────────
+# ── TMDB client helpers (async) ────────────────────────────────────────
 
 
 def _tmdb_headers() -> dict[str, str]:
@@ -133,8 +172,8 @@ def _tmdb_params(extra: dict[str, Any] | None = None) -> dict[str, Any]:
     return params
 
 
-def _search_multi(
-    client: httpx.Client,
+async def _search_multi(
+    client: httpx.AsyncClient,
     query: str,
     language: str = "en-US",
     include_adult: bool = False,
@@ -148,7 +187,7 @@ def _search_multi(
             "page": 1,
         }
     )
-    resp = client.get(
+    resp = await client.get(
         f"{TMDB_BASE_URL}/search/multi",
         params=params,
     )
@@ -157,15 +196,15 @@ def _search_multi(
     return data.get("results") or []
 
 
-def _fetch_external_ids(
-    client: httpx.Client,
+async def _fetch_external_ids(
+    client: httpx.AsyncClient,
     tmdb_id: int,
     media_type: str,
 ) -> dict[str, Any]:
     """Fetch external IDs (IMDb) for a matched record."""
     endpoint = f"{'movie' if media_type == 'movie' else 'tv'}/{tmdb_id}/external_ids"
     params = _tmdb_params()
-    resp = client.get(f"{TMDB_BASE_URL}/{endpoint}", params=params)
+    resp = await client.get(f"{TMDB_BASE_URL}/{endpoint}", params=params)
     resp.raise_for_status()
     return resp.json()
 
@@ -220,6 +259,57 @@ def _best_match(
     return compatible[0]
 
 
+# ── Async retry helper ─────────────────────────────────────────────────
+
+
+async def _run_with_retry_async(
+    label: str,
+    fn: Callable[[], Awaitable[Any]],
+    max_attempts: int,
+    backoff_seconds: float,
+    backoff_multiplier: float,
+    limiter: AsyncRequestLimiter | None = None,
+) -> Any:
+    """Execute async *fn()* with retry/backoff for transient HTTP errors.
+
+    If *limiter* is provided, ``limiter.wait()`` is called before each
+    attempt and ``limiter.cooldown()`` is called when a 429/503 response
+    is observed so the rate-limiter applies additional back-pressure.
+    """
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            if limiter is not None:
+                await limiter.wait()
+            return await fn()
+        except httpx.HTTPStatusError as exc:
+            last_error = exc
+            if exc.response.status_code in (429, 503) and limiter is not None:
+                cooldown_secs = backoff_seconds * (backoff_multiplier ** (attempt - 1))
+                await limiter.cooldown(cooldown_secs)
+            if attempt < max_attempts:
+                wait = backoff_seconds * (backoff_multiplier ** (attempt - 1))
+                print(
+                    f"    {label} → attempt {attempt} failed: {exc}. "
+                    f"Retrying in {wait:.1f}s …"
+                )
+                await asyncio.sleep(wait)
+            else:
+                print(f"    {label} → FAILED after {max_attempts} attempts: {exc}")
+        except Exception as exc:
+            last_error = exc
+            if attempt < max_attempts:
+                wait = backoff_seconds * (backoff_multiplier ** (attempt - 1))
+                print(
+                    f"    {label} → attempt {attempt} failed: {exc}. "
+                    f"Retrying in {wait:.1f}s …"
+                )
+                await asyncio.sleep(wait)
+            else:
+                print(f"    {label} → FAILED after {max_attempts} attempts: {exc}")
+    raise last_error  # type: ignore[misc]
+
+
 # ── Main logic ─────────────────────────────────────────────────────────
 
 
@@ -269,10 +359,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="TMDB search language (default: %(default)s)",
     )
     parser.add_argument(
-        "--sleep-seconds",
-        type=float,
-        default=0.25,
-        help="Sleep between API calls for rate limiting (default: %(default)s)",
+        "--no-cache",
+        action="store_true",
+        default=False,
+        help="Skip cache — force fresh HTTP lookups for all candidates",
+    )
+    parser.add_argument(
+        "--cache-path",
+        default=None,
+        help="Path to provider cache JSONL file (default: data/working/caches/provider-cache.jsonl)",
     )
     parser.add_argument(
         "--max-attempts",
@@ -338,31 +433,338 @@ def _ensure_twitch_keys() -> None:
     )
 
 
-def _run_with_retry(
-    client: httpx.Client,
-    label: str,
-    fn: Callable[[], Any],
-    max_attempts: int,
-    backoff_seconds: float,
-    backoff_multiplier: float,
-) -> Any:
-    """Execute *fn()* with retry/backoff for transient HTTP errors."""
-    last_error: Exception | None = None
-    for attempt in range(1, max_attempts + 1):
-        try:
-            return fn()
-        except Exception as exc:
-            last_error = exc
-            if attempt < max_attempts:
-                wait = backoff_seconds * (backoff_multiplier ** (attempt - 1))
-                print(
-                    f"    {label} → attempt {attempt} failed: {exc}. "
-                    f"Retrying in {wait:.1f}s …"
-                )
-                time.sleep(wait)
-            else:
-                print(f"    {label} → FAILED after {max_attempts} attempts: {exc}")
-    raise last_error  # type: ignore[misc]
+# ── Per-candidate async handler ────────────────────────────────────────
+
+
+async def _process_one_candidate(
+    cand: dict[str, Any],
+    tmdb_client: httpx.AsyncClient | None,
+    igdb_client: httpx.AsyncClient | None,
+    tmdb_limiter: AsyncRequestLimiter,
+    igdb_limiter: AsyncRequestLimiter,
+    args: argparse.Namespace,
+    cache: ProviderCache | None,
+    matches: list[dict[str, Any]],
+    unmatched: list[dict[str, Any]],
+    errors: list[dict[str, Any]],
+) -> None:
+    """Resolve a single candidate, populating *matches*, *unmatched*, or *errors*."""
+    title = cand["title"]
+    media_type = cand.get("media_type", "unknown")
+    print(f"  {title} ({media_type}) …")
+
+    # ── Cache check ──────────────────────────────────────────────────
+    if cache is not None:
+        cached = await cache.get(cand["candidate_key"])
+        if cached is not None:
+            matches.append(cached)
+            print(f"  {title} → cached hit")
+            return
+
+    # ── Dispatch by media_type ───────────────────────────────────────
+
+    if media_type in ("movie", "tv"):
+        await _process_tmdb_candidate(
+            cand, tmdb_client, tmdb_limiter, args, cache,
+            matches, unmatched, errors,
+        )
+    elif media_type == "game":
+        await _process_igdb_candidate(
+            cand, igdb_client, igdb_limiter, args, cache,
+            matches, unmatched, errors,
+        )
+    elif media_type == "unknown":
+        unmatched.append(
+            {
+                "candidate_key": cand["candidate_key"],
+                "title": title,
+                "year": cand["year"],
+                "media_type": "unknown",
+                "reason": "unsupported media_type",
+            }
+        )
+        print(f"  {title} → unsupported media_type")
+    else:
+        unmatched.append(
+            {
+                "candidate_key": cand["candidate_key"],
+                "title": title,
+                "year": cand["year"],
+                "media_type": media_type,
+                "reason": f"unsupported media_type: {media_type}",
+            }
+        )
+        print(f"  {title} → unsupported media_type ({media_type})")
+
+
+async def _process_tmdb_candidate(
+    cand: dict[str, Any],
+    client: httpx.AsyncClient | None,
+    limiter: AsyncRequestLimiter,
+    args: argparse.Namespace,
+    cache: ProviderCache | None,
+    matches: list[dict[str, Any]],
+    unmatched: list[dict[str, Any]],
+    errors: list[dict[str, Any]],
+) -> None:
+    """TMDB path — search multi, external IDs, build match record."""
+    title = cand["title"]
+    assert client is not None, "TMDB client not initialized"
+
+    # ── Search ───────────────────────────────────────────────────────
+    try:
+        search_results = await _run_with_retry_async(
+            label=f"{title} search",
+            fn=lambda: _search_multi(
+                client,
+                query=title,
+                language=args.language,
+                include_adult=args.include_adult,
+            ),
+            max_attempts=args.max_attempts,
+            backoff_seconds=args.backoff_seconds,
+            backoff_multiplier=args.backoff_multiplier,
+            limiter=limiter,
+        )
+    except Exception as exc:
+        errors.append(
+            {
+                "candidate_key": cand["candidate_key"],
+                "title": title,
+                "media_type": cand.get("media_type", "movie"),
+                "error": f"TMDB search failed: {exc}",
+            }
+        )
+        print(f"  {title} → ERROR (TMDB search): {exc}")
+        return
+
+    best = _best_match(cand, search_results)
+
+    if best is None:
+        unmatched.append(
+            {
+                "candidate_key": cand["candidate_key"],
+                "title": title,
+                "year": cand["year"],
+                "media_type": cand.get("media_type", "movie"),
+                "reason": "no compatible movie/tv result found",
+            }
+        )
+        print(f"  {title} → no match")
+        return
+
+    # ── External IDs ─────────────────────────────────────────────────
+    tmdb_id = best["id"]
+    b_media_type = best["media_type"]
+    imdb_id: str | None = None
+
+    try:
+        ext_data = await _run_with_retry_async(
+            label=f"{title} external_ids",
+            fn=lambda: _fetch_external_ids(client, tmdb_id, b_media_type),
+            max_attempts=args.max_attempts,
+            backoff_seconds=args.backoff_seconds,
+            backoff_multiplier=args.backoff_multiplier,
+            limiter=limiter,
+        )
+        imdb_id = ext_data.get("imdb_id")
+    except Exception as exc:
+        # Non-fatal — still include the match without imdb_id
+        print(f"    {title} → external_ids failed: {exc}")
+
+    release_date = best.get("release_date") or best.get(
+        "first_air_date"
+    ) or ""
+    release_year = (
+        int(release_date[:4]) if len(release_date) >= 4 else None
+    )
+
+    poster_path = best.get("poster_path")
+    backdrop_path = best.get("backdrop_path")
+
+    match_record: dict[str, Any] = {
+        "candidate_key": cand["candidate_key"],
+        "query_title": title,
+        "tmdb_id": tmdb_id,
+        "media_type": b_media_type,
+        "title": best.get("title") or best.get("name") or "",
+        "original_title": best.get("original_title")
+        or best.get("original_name")
+        or "",
+        "release_year": release_year,
+        "poster_path": poster_path,
+        "poster_url": _image_url(poster_path, "w500"),
+        "backdrop_path": backdrop_path,
+        "backdrop_url": _image_url(backdrop_path, "original"),
+        "overview": best.get("overview") or "",
+        "popularity": best.get("popularity"),
+        "vote_average": best.get("vote_average"),
+        "imdb_id": imdb_id,
+        "raw_result": best,
+    }
+    matches.append(match_record)
+    print(
+        f"  {title} → {b_media_type} #{tmdb_id} "
+        f"({match_record['title']})"
+    )
+
+    # ── Cache the result ─────────────────────────────────────────────
+    if cache is not None:
+        await cache.put(cand["candidate_key"], match_record)
+
+
+async def _process_igdb_candidate(
+    cand: dict[str, Any],
+    client: httpx.AsyncClient | None,
+    limiter: AsyncRequestLimiter,
+    args: argparse.Namespace,
+    cache: ProviderCache | None,
+    matches: list[dict[str, Any]],
+    unmatched: list[dict[str, Any]],
+    errors: list[dict[str, Any]],
+) -> None:
+    """IGDB path — search games, build match record."""
+    title = cand["title"]
+    from pipeline import enrich_games
+
+    assert client is not None, "IGDB client not initialized"
+
+    try:
+        search_results = await _run_with_retry_async(
+            label=f"{title} game search",
+            fn=lambda: enrich_games._search_games_async(
+                client,
+                query=title,
+                language=args.language,
+                include_adult=args.include_adult,
+            ),
+            max_attempts=args.max_attempts,
+            backoff_seconds=args.backoff_seconds,
+            backoff_multiplier=args.backoff_multiplier,
+            limiter=limiter,
+        )
+    except Exception as exc:
+        errors.append(
+            {
+                "candidate_key": cand["candidate_key"],
+                "title": title,
+                "media_type": "game",
+                "error": f"IGDB search failed: {exc}",
+            }
+        )
+        print(f"  {title} → ERROR (IGDB search): {exc}")
+        return
+
+    best = enrich_games._best_match(cand, search_results)
+
+    if best is None:
+        unmatched.append(
+            {
+                "candidate_key": cand["candidate_key"],
+                "title": title,
+                "year": cand["year"],
+                "media_type": "game",
+                "reason": "no compatible game result found",
+            }
+        )
+        print(f"  {title} → no game match")
+        return
+
+    match_record = enrich_games.build_match(cand, best)
+    matches.append(match_record)
+    print(
+        f"  {title} → game #{match_record['igdb_id']} "
+        f"({match_record['title']})"
+    )
+
+    # ── Cache the result ─────────────────────────────────────────────
+    if cache is not None:
+        await cache.put(cand["candidate_key"], match_record)
+
+
+# ── Async main ─────────────────────────────────────────────────────────
+
+
+async def _async_main(
+    args: argparse.Namespace,
+    candidates: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Async enrichment loop.
+
+    Returns (*matches*, *unmatched*, *errors*).
+    """
+    t0 = time_module.monotonic()
+
+    # ── Build clients ────────────────────────────────────────────────
+    tmdb_client: httpx.AsyncClient | None = None
+    igdb_client: httpx.AsyncClient | None = None
+
+    has_movie_tv = any(c["media_type"] in ("movie", "tv") for c in candidates)
+    has_games = any(c["media_type"] == "game" for c in candidates)
+
+    if has_movie_tv:
+        tmdb_client = httpx.AsyncClient(
+            headers=_tmdb_headers(),
+            timeout=httpx.Timeout(30),
+            follow_redirects=True,
+        )
+    if has_games:
+        igdb_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(30),
+            follow_redirects=True,
+        )
+
+    # ── Rate limiters (per-provider) ─────────────────────────────────
+    tmdb_limiter = AsyncRequestLimiter(_TMDB_RATE_LIMIT_RPM)
+    igdb_limiter = AsyncRequestLimiter(_IGDB_RATE_LIMIT_RPM)
+
+    # ── Cache ────────────────────────────────────────────────────────
+    cache: ProviderCache | None = None
+    if not args.dry_run:
+        cache = make_cache(args)
+
+    matches: list[dict[str, Any]] = []
+    unmatched: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    sem = asyncio.Semaphore(_CONCURRENCY)
+
+    async def _process(cand: dict[str, Any]) -> None:
+        async with sem:
+            await _process_one_candidate(
+                cand,
+                tmdb_client,
+                igdb_client,
+                tmdb_limiter,
+                igdb_limiter,
+                args,
+                cache,
+                matches,
+                unmatched,
+                errors,
+            )
+
+    try:
+        tasks = [asyncio.create_task(_process(c)) for c in candidates]
+        await asyncio.gather(*tasks)
+    finally:
+        if tmdb_client is not None:
+            await tmdb_client.aclose()
+        if igdb_client is not None:
+            await igdb_client.aclose()
+        if cache is not None:
+            cache.close()
+
+    t1 = time_module.monotonic()
+    print(
+        f"[pipeline:enrich] Enrichment wall-clock: {t1 - t0:.1f}s "
+        f"({len(candidates)} candidate(s))"
+    )
+
+    return matches, unmatched, errors
+
+
+# ── Entry point ────────────────────────────────────────────────────────
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -455,240 +857,9 @@ def main(argv: list[str] | None = None) -> None:
     # ── Real enrichment ─────────────────────────────────────────────────
     print(f"[pipeline:enrich] Enriching {len(candidates)} candidate(s) …")
 
-    matches: list[dict[str, Any]] = []
-    unmatched: list[dict[str, Any]] = []
-    errors: list[dict[str, Any]] = []
-
-    # Sessions — lazy-create only for the media types that appear
-    tmdb_sess: httpx.Client | None = None
-    igdb_sess: httpx.Client | None = None
-
-    try:
-        for idx, cand in enumerate(candidates, start=1):
-            title = cand["title"]
-            total = len(candidates)
-            media_type = cand.get("media_type", "unknown")
-            print(f"  [{idx}/{total}] {title} ({media_type}) …")
-
-            # ── Dispatch by media_type ───────────────────────────────
-
-            if media_type in ("movie", "tv"):
-                # ── TMDB path (existing) ─────────────────────────────
-                if tmdb_sess is None:
-                    tmdb_sess = httpx.Client(
-                        headers=_tmdb_headers(),
-                        timeout=httpx.Timeout(30),
-                        follow_redirects=True,
-                    )
-
-                def _do_search() -> list[dict[str, Any]]:
-                    return _search_multi(
-                        tmdb_sess,  # type: ignore[arg-type]
-                        query=title,
-                        language=args.language,
-                        include_adult=args.include_adult,
-                    )
-
-                try:
-                    search_results = _run_with_retry(
-                        tmdb_sess,
-                        label=f"  [{idx}/{total}] {title} search",
-                        fn=_do_search,
-                        max_attempts=args.max_attempts,
-                        backoff_seconds=args.backoff_seconds,
-                        backoff_multiplier=args.backoff_multiplier,
-                    )
-                except Exception as exc:
-                    errors.append(
-                        {
-                            "candidate_key": cand["candidate_key"],
-                            "title": title,
-                            "media_type": media_type,
-                            "error": f"TMDB search failed: {exc}",
-                        }
-                    )
-                    print(f"  [{idx}/{total}] {title} → ERROR (TMDB search): {exc}")
-                    if idx < total:
-                        time.sleep(args.sleep_seconds)
-                    continue
-
-                best = _best_match(cand, search_results)
-
-                if best is None:
-                    unmatched.append(
-                        {
-                            "candidate_key": cand["candidate_key"],
-                            "title": title,
-                            "year": cand["year"],
-                            "media_type": media_type,
-                            "reason": "no compatible movie/tv result found",
-                        }
-                    )
-                    print(f"  [{idx}/{total}] {title} → no match")
-                    if idx < total:
-                        time.sleep(args.sleep_seconds)
-                    continue
-
-                # ── External IDs ─────────────────────────────────────
-                tmdb_id = best["id"]
-                b_media_type = best["media_type"]
-                imdb_id: str | None = None
-
-                def _do_ext_ids() -> dict[str, Any]:
-                    return _fetch_external_ids(
-                        tmdb_sess, tmdb_id, b_media_type  # type: ignore[arg-type]
-                    )
-
-                try:
-                    ext_data = _run_with_retry(
-                        tmdb_sess,
-                        label=f"  [{idx}/{total}] {title} external_ids",
-                        fn=_do_ext_ids,
-                        max_attempts=args.max_attempts,
-                        backoff_seconds=args.backoff_seconds,
-                        backoff_multiplier=args.backoff_multiplier,
-                    )
-                    imdb_id = ext_data.get("imdb_id")
-                except Exception as exc:
-                    # Non-fatal — still include the match without imdb_id
-                    print(
-                        f"    [{idx}/{total}] {title} → external_ids failed: {exc}"
-                    )
-
-                release_date = best.get("release_date") or best.get(
-                    "first_air_date"
-                ) or ""
-                release_year = (
-                    int(release_date[:4]) if len(release_date) >= 4 else None
-                )
-
-                poster_path = best.get("poster_path")
-                backdrop_path = best.get("backdrop_path")
-
-                match_record: dict[str, Any] = {
-                    "candidate_key": cand["candidate_key"],
-                    "query_title": title,
-                    "tmdb_id": tmdb_id,
-                    "media_type": b_media_type,
-                    "title": best.get("title") or best.get("name") or "",
-                    "original_title": best.get("original_title")
-                    or best.get("original_name")
-                    or "",
-                    "release_year": release_year,
-                    "poster_path": poster_path,
-                    "poster_url": _image_url(poster_path, "w500"),
-                    "backdrop_path": backdrop_path,
-                    "backdrop_url": _image_url(backdrop_path, "original"),
-                    "overview": best.get("overview") or "",
-                    "popularity": best.get("popularity"),
-                    "vote_average": best.get("vote_average"),
-                    "imdb_id": imdb_id,
-                    "raw_result": best,
-                }
-                matches.append(match_record)
-                print(
-                    f"  [{idx}/{total}] {title} → {b_media_type} #{tmdb_id} "
-                    f"({match_record['title']})"
-                )
-
-            elif media_type == "game":
-                # ── IGDB path ────────────────────────────────────────
-                from pipeline import enrich_games
-
-                if igdb_sess is None:
-                    igdb_sess = httpx.Client(
-                        timeout=httpx.Timeout(30),
-                        follow_redirects=True,
-                    )
-
-                try:
-                    search_results = _run_with_retry(
-                        igdb_sess,
-                        label=f"  [{idx}/{total}] {title} game search",
-                        fn=lambda: enrich_games._search_games(
-                            igdb_sess,
-                            query=title,
-                            language=args.language,
-                            include_adult=args.include_adult,
-                        ),
-                        max_attempts=args.max_attempts,
-                        backoff_seconds=args.backoff_seconds,
-                        backoff_multiplier=args.backoff_multiplier,
-                    )
-                except Exception as exc:
-                    errors.append(
-                        {
-                            "candidate_key": cand["candidate_key"],
-                            "title": title,
-                            "media_type": "game",
-                            "error": f"IGDB search failed: {exc}",
-                        }
-                    )
-                    print(
-                        f"  [{idx}/{total}] {title} → ERROR (IGDB search): {exc}"
-                    )
-                    if idx < total:
-                        time.sleep(args.sleep_seconds)
-                    continue
-
-                best = enrich_games._best_match(cand, search_results)
-
-                if best is None:
-                    unmatched.append(
-                        {
-                            "candidate_key": cand["candidate_key"],
-                            "title": title,
-                            "year": cand["year"],
-                            "media_type": "game",
-                            "reason": "no compatible game result found",
-                        }
-                    )
-                    print(f"  [{idx}/{total}] {title} → no game match")
-                    if idx < total:
-                        time.sleep(args.sleep_seconds)
-                    continue
-
-                match_record = enrich_games.build_match(cand, best)
-                matches.append(match_record)
-                print(
-                    f"  [{idx}/{total}] {title} → game #{match_record['igdb_id']} "
-                    f"({match_record['title']})"
-                )
-
-            elif media_type == "unknown":
-                unmatched.append(
-                    {
-                        "candidate_key": cand["candidate_key"],
-                        "title": title,
-                        "year": cand["year"],
-                        "media_type": "unknown",
-                        "reason": "unsupported media_type",
-                    }
-                )
-                print(f"  [{idx}/{total}] {title} → unsupported media_type")
-
-            else:
-                unmatched.append(
-                    {
-                        "candidate_key": cand["candidate_key"],
-                        "title": title,
-                        "year": cand["year"],
-                        "media_type": media_type,
-                        "reason": f"unsupported media_type: {media_type}",
-                    }
-                )
-                print(
-                    f"  [{idx}/{total}] {title} → unsupported media_type ({media_type})"
-                )
-
-            if idx < total:
-                time.sleep(args.sleep_seconds)
-
-    finally:
-        if tmdb_sess is not None:
-            tmdb_sess.close()
-        if igdb_sess is not None:
-            igdb_sess.close()
+    matches, unmatched, errors = asyncio.run(
+        _async_main(args, candidates)
+    )
 
     # ── Build output artifact ───────────────────────────────────────────
     slug = timestamp_slug()
@@ -707,7 +878,6 @@ def main(argv: list[str] | None = None) -> None:
             "limit": args.limit,
             "include_adult": args.include_adult,
             "language": args.language,
-            "sleep_seconds": args.sleep_seconds,
             "max_attempts": args.max_attempts,
             "backoff_seconds": args.backoff_seconds,
             "backoff_multiplier": args.backoff_multiplier,

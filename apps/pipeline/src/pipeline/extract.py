@@ -123,8 +123,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--sleep-seconds", type=float, default=0.0,
                         help="Deprecated and ignored; use --rate-limit-rpm")
-    parser.add_argument("--concurrency", type=int, default=3, help="Maximum posts in flight (default: %(default)s)")
-    parser.add_argument("--rate-limit-rpm", type=float, default=6.0, help="Global request-start limit (default: %(default)s RPM)")
+    parser.add_argument("--concurrency", type=int, default=8, help="Maximum posts in flight (default: %(default)s)")
+    parser.add_argument("--rate-limit-rpm", type=float, default=60.0, help="Global request-start limit (default: %(default)s RPM)")
     parser.add_argument(
         "--max-attempts",
         type=int,

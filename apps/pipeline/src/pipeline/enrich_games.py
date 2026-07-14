@@ -46,8 +46,9 @@ raw_result
 
 from __future__ import annotations
 
+import asyncio
 import os
-import time
+import time as time_module
 from datetime import datetime, timezone
 from typing import Any
 
@@ -61,6 +62,7 @@ IGDB_BASE_URL = "https://api.igdb.com/v4"
 
 _token: str | None = None
 _token_expires_at: float = 0  # time.monotonic() threshold
+_token_lock = asyncio.Lock()
 
 
 def _get_token() -> str:
@@ -71,7 +73,7 @@ def _get_token() -> str:
     """
     global _token, _token_expires_at
 
-    if _token is not None and time.monotonic() < _token_expires_at:
+    if _token is not None and time_module.monotonic() < _token_expires_at:
         return _token
 
     client_id = os.environ.get("TWITCH_CLIENT_ID")
@@ -94,15 +96,69 @@ def _get_token() -> str:
     data = resp.json()
     _token = data["access_token"]
     expires_in = data.get("expires_in", 5093280)  # ~60 days
-    _token_expires_at = time.monotonic() + expires_in - 60  # refresh 60s early
+    _token_expires_at = time_module.monotonic() + expires_in - 60  # refresh 60s early
     # At this point _token is guaranteed to be a str
     assert isinstance(_token, str)
     return _token
 
 
+async def _get_token_async() -> str:
+    """Async variant of :func:`_get_token` with lock-guarded re-auth.
+
+    Uses ``asyncio.Lock`` to prevent concurrent tasks from both triggering
+    a token refresh.
+    """
+    global _token, _token_expires_at
+
+    # Fast check outside lock
+    if _token is not None and time_module.monotonic() < _token_expires_at:
+        return _token
+
+    async with _token_lock:
+        # Double-check inside lock
+        if _token is not None and time_module.monotonic() < _token_expires_at:
+            return _token
+
+        client_id = os.environ.get("TWITCH_CLIENT_ID")
+        client_secret = os.environ.get("TWITCH_CLIENT_SECRET")
+        if not client_id or not client_secret:
+            raise RuntimeError(
+                "TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET must be set"
+            )
+
+        resp = await asyncio.to_thread(
+            httpx.post,
+            IGDB_AUTH_URL,
+            params={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "grant_type": "client_credentials",
+            },
+            timeout=httpx.Timeout(30),
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        _token = data["access_token"]
+        expires_in = data.get("expires_in", 5093280)
+        _token_expires_at = time_module.monotonic() + expires_in - 60
+        assert isinstance(_token, str)
+        return _token
+
+
 def _igdb_headers() -> dict[str, str]:
     """Build auth headers for IGDB API requests (fresh token each call)."""
     token = _get_token()
+    return {
+        "Client-ID": os.environ["TWITCH_CLIENT_ID"],
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "User-Agent": _USER_AGENT,
+    }
+
+
+async def _igdb_headers_async() -> dict[str, str]:
+    """Async variant of :func:`_igdb_headers`."""
+    token = await _get_token_async()
     return {
         "Client-ID": os.environ["TWITCH_CLIENT_ID"],
         "Authorization": f"Bearer {token}",
@@ -149,6 +205,42 @@ def _search_games(
         _token = None
         headers = _igdb_headers()
         resp = client.post(
+            f"{IGDB_BASE_URL}/games",
+            content=body,
+            headers=headers,
+        )
+
+    resp.raise_for_status()
+    return resp.json()  # IGDB returns a JSON array (or [])
+
+
+async def _search_games_async(
+    client: httpx.AsyncClient,
+    query: str,
+    *,
+    language: str = "en-US",
+    include_adult: bool = False,
+) -> list[dict[str, Any]]:
+    """Async variant of :func:`_search_games`."""
+    body = (
+        f'search "{query}";\n'
+        f"fields name, first_release_date, cover.url, platforms.name, slug, summary, game_type;\n"
+        f"limit 5;\n"
+    )
+
+    headers = await _igdb_headers_async()
+    resp = await client.post(
+        f"{IGDB_BASE_URL}/games",
+        content=body,
+        headers=headers,
+    )
+
+    if resp.status_code == 401:
+        # Token likely expired — invalidate cache and retry once
+        global _token
+        _token = None
+        headers = await _igdb_headers_async()
+        resp = await client.post(
             f"{IGDB_BASE_URL}/games",
             content=body,
             headers=headers,

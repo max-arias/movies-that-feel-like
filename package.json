@@ -6,11 +6,11 @@
     "dev": "npm run dev -w apps/astro",
     "build": "npm run build -w apps/astro",
     "cf:build": "npm run build -w apps/astro",
-    "cf:deploy": "npm run cf:build && wrangler deploy --config apps/astro/dist/server/wrangler.json",
-    "cf:deploy:prod": "npm run cf:build && wrangler deploy --config apps/astro/dist/server/wrangler.json",
-    "cf:deploy:preview": "npm run cf:build && wrangler deploy --config apps/astro/dist/server/wrangler.json --env preview",
+    "cf:deploy": "npm run cf:build && wrangler d1 migrations apply movies-that-feel-like --remote --config apps/astro/wrangler.jsonc && wrangler deploy --config apps/astro/dist/server/wrangler.json",
+    "cf:deploy:prod": "npm run cf:build && wrangler d1 migrations apply movies-that-feel-like --remote --config apps/astro/wrangler.jsonc && wrangler deploy --config apps/astro/dist/server/wrangler.json",
+    "cf:deploy:preview": "npm run cf:build && wrangler d1 migrations apply movies-that-feel-like --remote --config apps/astro/wrangler.jsonc && wrangler deploy --config apps/astro/dist/server/wrangler.json --env preview",
     "check": "npm run check -w apps/astro",
-    "seed": "npm run db:migrate && npm run db:load-local",
+    "seed": "npm run pipeline:load -- --reset && npm run db:migrate",
     "pipeline:fetch": "npm run fetch -w apps/pipeline --",
     "pipeline:normalize": "npm run normalize -w apps/pipeline --",
     "pipeline:cache-assets": "npm run cache-assets -w apps/pipeline --",
@@ -18,11 +18,8 @@
     "pipeline:enrich": "npm run enrich -w apps/pipeline --",
     "pipeline:ingest": "npm run pipeline:normalize && npm run pipeline:cache-assets && npm run pipeline:extract && npm run pipeline:enrich && npm run seed",
     "pipeline:load": "npm run load -w apps/pipeline --",
-    "pipeline:load:sql": "npm run load -w apps/pipeline -- --sql-out data/working/load-d1.sql",
     "pipeline:inspect": "npm run inspect -w apps/pipeline --",
-    "db:migrate": "wrangler d1 migrations apply movies-that-feel-like --local --config apps/astro/wrangler.jsonc",
-    "db:load-local": "npm run load -w apps/pipeline -- --reset --sql-out data/working/load-d1.sql && npm run d1:apply",
-    "d1:apply": "sh -c 'set -eu; wrangler d1 execute movies-that-feel-like --local --command \"PRAGMA foreign_keys=OFF; DELETE FROM recommendation_evidence; DELETE FROM vibe_tags; DELETE FROM imported_post_images; DELETE FROM recommendations; DELETE FROM imported_vibe_posts;\" --config apps/astro/wrangler.jsonc; chunk_dir=\"$(pwd)/data/working/load-d1\"; for chunk in \"$chunk_dir\"/*.sql; do [ -f \"$chunk\" ] || continue; wrangler d1 execute movies-that-feel-like --local --file \"$chunk\" --config apps/astro/wrangler.jsonc; done'"
+    "db:migrate": "wrangler d1 migrations apply movies-that-feel-like --local --config apps/astro/wrangler.jsonc"
   },
   "devDependencies": {
     "wrangler": "^4.83.0"
