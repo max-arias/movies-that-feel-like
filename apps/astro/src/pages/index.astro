@@ -3,8 +3,9 @@
 
 import Layout from "../layouts/Layout.astro";
 import { getPublishedPosts, getPostCount } from "../lib/db";
+import { env } from "cloudflare:workers";
 
-const db = Astro.locals.runtime.env.DB;
+const db = env.DB;
 
 let posts: Awaited<ReturnType<typeof getPublishedPosts>> = [];
 let postCount = 0;

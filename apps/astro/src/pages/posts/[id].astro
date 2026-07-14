@@ -3,11 +3,12 @@
 
 import Layout from "../../layouts/Layout.astro";
 import { getPostByRedditId } from "../../lib/db";
+import { env } from "cloudflare:workers";
 
 // In server mode, params exist at request time even for non-prerendered fallback
 let post: Awaited<ReturnType<typeof getPostByRedditId>>;
 try {
-  const db = Astro.locals.runtime.env.DB as D1Database;
+  const db = env.DB;
   post = await getPostByRedditId(db, Astro.params.id!);
 } catch {
   post = null;

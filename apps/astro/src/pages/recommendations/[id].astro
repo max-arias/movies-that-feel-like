@@ -6,12 +6,13 @@ import {
   getRecommendationById,
   getPostsForRecommendation,
 } from "../../lib/db";
+import { env } from "cloudflare:workers";
 
 const recId = Number(Astro.params.id!);
 let rec: Awaited<ReturnType<typeof getRecommendationById>>;
 let posts: Awaited<ReturnType<typeof getPostsForRecommendation>>;
 try {
-  const db = Astro.locals.runtime.env.DB as D1Database;
+  const db = env.DB;
   rec = await getRecommendationById(db, recId);
   posts = rec ? await getPostsForRecommendation(db, recId) : [];
 } catch {
