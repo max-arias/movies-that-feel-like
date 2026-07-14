@@ -1,9 +1,15 @@
 """
-pipeline.enrich — Resolve extracted recommendation candidates against TMDB.
+pipeline.enrich — Resolve extracted recommendation candidates against TMDB / IGDB.
 
 Reads an extraction artifact, deduplicates candidate titles, and resolves
-each against The Movie Database (TMDB) search/multi.  Matched records are
-enriched with TMDB IDs, metadata, poster/backdrop URLs, and IMDb IDs.
+each candidate against the appropriate catalog:
+
+* ``movie`` / ``tv``  →  The Movie Database (TMDB) search/multi
+* ``game``            →  IGDB (Twitch) games search
+* ``unknown``         →  marked unmatched
+
+Matched records are enriched with catalog IDs, metadata, poster/backdrop URLs,
+and platform/external-link data.
 """
 
 from __future__ import annotations
@@ -19,7 +25,12 @@ from typing import Any
 
 import httpx
 
-from pipeline.artifacts import read_json_artifact, timestamp_slug, write_json_artifact
+from pipeline.artifacts import (
+    read_json_artifact,
+    timestamp_slug,
+    validate_complete_extraction,
+    write_json_artifact,
+)
 from pipeline.paths import ensure_pipeline_dirs, working_dir
 
 # ── Constants ──────────────────────────────────────────────────────────
@@ -214,18 +225,20 @@ def _best_match(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Resolve extracted recommendation candidates against TMDB.",
+        description="Resolve extracted recommendation candidates against TMDB / IGDB.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Environment:\n"
-            "  TMDB_ACCESS_TOKEN   Preferred TMDB bearer token (v4).\n"
-            "  TMDB_API_KEY        Fallback query-param API key (v3).\n"
+            "  TMDB_ACCESS_TOKEN    Preferred TMDB bearer token (v4).\n"
+            "  TMDB_API_KEY         Fallback query-param API key (v3).\n"
+            "  TWITCH_CLIENT_ID     Twitch app client ID (required for game candidates).\n"
+            "  TWITCH_CLIENT_SECRET Twitch app client secret (required for game candidates).\n"
             "\nExamples:\n"
-            "  # Dry-run — no API key needed\n"
+            "  # Dry-run — no API keys needed\n"
             "  pipeline:enrich --dry-run\n"
             "\n"
-            "  # Real enrichment\n"
-            "  TMDB_ACCESS_TOKEN=... pipeline:enrich --limit 10\n"
+            "  # Real enrichment (movie/TV + games)\n"
+            "  TMDB_ACCESS_TOKEN=... TWITCH_CLIENT_ID=... TWITCH_CLIENT_SECRET=... pipeline:enrich\n"
         ),
     )
     parser.add_argument(
@@ -259,13 +272,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--sleep-seconds",
         type=float,
         default=0.25,
-        help="Sleep between TMDB API calls for rate limiting (default: %(default)s)",
+        help="Sleep between API calls for rate limiting (default: %(default)s)",
     )
     parser.add_argument(
         "--max-attempts",
         type=int,
         default=3,
-        help="Total HTTP attempts per TMDB call (default: %(default)s)",
+        help="Total HTTP attempts per API call (default: %(default)s)",
     )
     parser.add_argument(
         "--backoff-seconds",
@@ -282,7 +295,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Collect and dedupe candidates only — no TMDB calls",
+        help="Collect and dedupe candidates only — no API calls",
     )
     return parser
 
@@ -312,6 +325,16 @@ def _ensure_tmdb_key() -> None:
     raise SystemExit(
         "[pipeline:enrich] TMDB_ACCESS_TOKEN or TMDB_API_KEY must be set "
         "for real enrichment. Use --dry-run to preview candidates without a key."
+    )
+
+
+def _ensure_twitch_keys() -> None:
+    """Ensure Twitch/IGDB credentials are available for game enrichment."""
+    if os.environ.get("TWITCH_CLIENT_ID") and os.environ.get("TWITCH_CLIENT_SECRET"):
+        return
+    raise SystemExit(
+        "[pipeline:enrich] TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET must be set "
+        "to enrich game candidates. Use --dry-run to preview without keys."
     )
 
 
@@ -355,11 +378,11 @@ def main(argv: list[str] | None = None) -> None:
         input_path = _latest_extraction()
 
     artifact = read_json_artifact(input_path)
+    try:
+        validate_complete_extraction(artifact)
+    except ValueError as exc:
+        raise SystemExit(f"[pipeline:enrich] {exc}") from exc
     results = artifact.get("results", [])
-
-    # Quick check: require API key early for real mode
-    if not args.dry_run:
-        _ensure_tmdb_key()
 
     print(
         f"[pipeline:enrich] Processing candidates from {input_path.name} "
@@ -373,6 +396,16 @@ def main(argv: list[str] | None = None) -> None:
         candidates = candidates[: args.limit]
 
     print(f"[pipeline:enrich] Collected {len(candidates)} unique candidate(s)")
+
+    # Check credentials per media type ------------------------------------
+    if not args.dry_run:
+        has_movie_tv = any(c["media_type"] in ("movie", "tv") for c in candidates)
+        has_games = any(c["media_type"] == "game" for c in candidates)
+
+        if has_movie_tv:
+            _ensure_tmdb_key()
+        if has_games:
+            _ensure_twitch_keys()
 
     # Build candidate list with evidence summary for output ---------------
     candidate_records = [
@@ -426,129 +459,236 @@ def main(argv: list[str] | None = None) -> None:
     unmatched: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
 
-    sess = httpx.Client(
-        headers=_tmdb_headers(),
-        timeout=httpx.Timeout(30),
-        follow_redirects=True,
-    )
+    # Sessions — lazy-create only for the media types that appear
+    tmdb_sess: httpx.Client | None = None
+    igdb_sess: httpx.Client | None = None
 
     try:
         for idx, cand in enumerate(candidates, start=1):
             title = cand["title"]
             total = len(candidates)
-            print(f"  [{idx}/{total}] {title} …")
+            media_type = cand.get("media_type", "unknown")
+            print(f"  [{idx}/{total}] {title} ({media_type}) …")
 
-            # ── Search ───────────────────────────────────────────────
-            def _do_search() -> list[dict[str, Any]]:
-                return _search_multi(
-                    sess,
-                    query=title,
-                    language=args.language,
-                    include_adult=args.include_adult,
+            # ── Dispatch by media_type ───────────────────────────────
+
+            if media_type in ("movie", "tv"):
+                # ── TMDB path (existing) ─────────────────────────────
+                if tmdb_sess is None:
+                    tmdb_sess = httpx.Client(
+                        headers=_tmdb_headers(),
+                        timeout=httpx.Timeout(30),
+                        follow_redirects=True,
+                    )
+
+                def _do_search() -> list[dict[str, Any]]:
+                    return _search_multi(
+                        tmdb_sess,  # type: ignore[arg-type]
+                        query=title,
+                        language=args.language,
+                        include_adult=args.include_adult,
+                    )
+
+                try:
+                    search_results = _run_with_retry(
+                        tmdb_sess,
+                        label=f"  [{idx}/{total}] {title} search",
+                        fn=_do_search,
+                        max_attempts=args.max_attempts,
+                        backoff_seconds=args.backoff_seconds,
+                        backoff_multiplier=args.backoff_multiplier,
+                    )
+                except Exception as exc:
+                    errors.append(
+                        {
+                            "candidate_key": cand["candidate_key"],
+                            "title": title,
+                            "media_type": media_type,
+                            "error": f"TMDB search failed: {exc}",
+                        }
+                    )
+                    print(f"  [{idx}/{total}] {title} → ERROR (TMDB search): {exc}")
+                    if idx < total:
+                        time.sleep(args.sleep_seconds)
+                    continue
+
+                best = _best_match(cand, search_results)
+
+                if best is None:
+                    unmatched.append(
+                        {
+                            "candidate_key": cand["candidate_key"],
+                            "title": title,
+                            "year": cand["year"],
+                            "media_type": media_type,
+                            "reason": "no compatible movie/tv result found",
+                        }
+                    )
+                    print(f"  [{idx}/{total}] {title} → no match")
+                    if idx < total:
+                        time.sleep(args.sleep_seconds)
+                    continue
+
+                # ── External IDs ─────────────────────────────────────
+                tmdb_id = best["id"]
+                b_media_type = best["media_type"]
+                imdb_id: str | None = None
+
+                def _do_ext_ids() -> dict[str, Any]:
+                    return _fetch_external_ids(
+                        tmdb_sess, tmdb_id, b_media_type  # type: ignore[arg-type]
+                    )
+
+                try:
+                    ext_data = _run_with_retry(
+                        tmdb_sess,
+                        label=f"  [{idx}/{total}] {title} external_ids",
+                        fn=_do_ext_ids,
+                        max_attempts=args.max_attempts,
+                        backoff_seconds=args.backoff_seconds,
+                        backoff_multiplier=args.backoff_multiplier,
+                    )
+                    imdb_id = ext_data.get("imdb_id")
+                except Exception as exc:
+                    # Non-fatal — still include the match without imdb_id
+                    print(
+                        f"    [{idx}/{total}] {title} → external_ids failed: {exc}"
+                    )
+
+                release_date = best.get("release_date") or best.get(
+                    "first_air_date"
+                ) or ""
+                release_year = (
+                    int(release_date[:4]) if len(release_date) >= 4 else None
                 )
 
-            try:
-                search_results = _run_with_retry(
-                    sess,
-                    label=f"  [{idx}/{total}] {title} search",
-                    fn=_do_search,
-                    max_attempts=args.max_attempts,
-                    backoff_seconds=args.backoff_seconds,
-                    backoff_multiplier=args.backoff_multiplier,
-                )
-            except Exception as exc:
-                errors.append(
-                    {
-                        "candidate_key": cand["candidate_key"],
-                        "title": title,
-                        "error": f"search failed: {exc}",
-                    }
-                )
-                print(f"  [{idx}/{total}] {title} → ERROR (search): {exc}")
-                if idx < total:
-                    time.sleep(args.sleep_seconds)
-                continue
+                poster_path = best.get("poster_path")
+                backdrop_path = best.get("backdrop_path")
 
-            best = _best_match(cand, search_results)
+                match_record: dict[str, Any] = {
+                    "candidate_key": cand["candidate_key"],
+                    "query_title": title,
+                    "tmdb_id": tmdb_id,
+                    "media_type": b_media_type,
+                    "title": best.get("title") or best.get("name") or "",
+                    "original_title": best.get("original_title")
+                    or best.get("original_name")
+                    or "",
+                    "release_year": release_year,
+                    "poster_path": poster_path,
+                    "poster_url": _image_url(poster_path, "w500"),
+                    "backdrop_path": backdrop_path,
+                    "backdrop_url": _image_url(backdrop_path, "original"),
+                    "overview": best.get("overview") or "",
+                    "popularity": best.get("popularity"),
+                    "vote_average": best.get("vote_average"),
+                    "imdb_id": imdb_id,
+                    "raw_result": best,
+                }
+                matches.append(match_record)
+                print(
+                    f"  [{idx}/{total}] {title} → {b_media_type} #{tmdb_id} "
+                    f"({match_record['title']})"
+                )
 
-            if best is None:
+            elif media_type == "game":
+                # ── IGDB path ────────────────────────────────────────
+                from pipeline import enrich_games
+
+                if igdb_sess is None:
+                    igdb_sess = httpx.Client(
+                        timeout=httpx.Timeout(30),
+                        follow_redirects=True,
+                    )
+
+                try:
+                    search_results = _run_with_retry(
+                        igdb_sess,
+                        label=f"  [{idx}/{total}] {title} game search",
+                        fn=lambda: enrich_games._search_games(
+                            igdb_sess,
+                            query=title,
+                            language=args.language,
+                            include_adult=args.include_adult,
+                        ),
+                        max_attempts=args.max_attempts,
+                        backoff_seconds=args.backoff_seconds,
+                        backoff_multiplier=args.backoff_multiplier,
+                    )
+                except Exception as exc:
+                    errors.append(
+                        {
+                            "candidate_key": cand["candidate_key"],
+                            "title": title,
+                            "media_type": "game",
+                            "error": f"IGDB search failed: {exc}",
+                        }
+                    )
+                    print(
+                        f"  [{idx}/{total}] {title} → ERROR (IGDB search): {exc}"
+                    )
+                    if idx < total:
+                        time.sleep(args.sleep_seconds)
+                    continue
+
+                best = enrich_games._best_match(cand, search_results)
+
+                if best is None:
+                    unmatched.append(
+                        {
+                            "candidate_key": cand["candidate_key"],
+                            "title": title,
+                            "year": cand["year"],
+                            "media_type": "game",
+                            "reason": "no compatible game result found",
+                        }
+                    )
+                    print(f"  [{idx}/{total}] {title} → no game match")
+                    if idx < total:
+                        time.sleep(args.sleep_seconds)
+                    continue
+
+                match_record = enrich_games.build_match(cand, best)
+                matches.append(match_record)
+                print(
+                    f"  [{idx}/{total}] {title} → game #{match_record['igdb_id']} "
+                    f"({match_record['title']})"
+                )
+
+            elif media_type == "unknown":
                 unmatched.append(
                     {
                         "candidate_key": cand["candidate_key"],
                         "title": title,
                         "year": cand["year"],
-                        "media_type": cand["media_type"],
-                        "reason": "no compatible movie/tv result found",
+                        "media_type": "unknown",
+                        "reason": "unsupported media_type",
                     }
                 )
-                print(f"  [{idx}/{total}] {title} → no match")
-                if idx < total:
-                    time.sleep(args.sleep_seconds)
-                continue
+                print(f"  [{idx}/{total}] {title} → unsupported media_type")
 
-            # ── External IDs ─────────────────────────────────────────
-            tmdb_id = best["id"]
-            b_media_type = best["media_type"]
-            imdb_id: str | None = None
-
-            def _do_ext_ids() -> dict[str, Any]:
-                return _fetch_external_ids(sess, tmdb_id, b_media_type)
-
-            try:
-                ext_data = _run_with_retry(
-                    sess,
-                    label=f"  [{idx}/{total}] {title} external_ids",
-                    fn=_do_ext_ids,
-                    max_attempts=args.max_attempts,
-                    backoff_seconds=args.backoff_seconds,
-                    backoff_multiplier=args.backoff_multiplier,
+            else:
+                unmatched.append(
+                    {
+                        "candidate_key": cand["candidate_key"],
+                        "title": title,
+                        "year": cand["year"],
+                        "media_type": media_type,
+                        "reason": f"unsupported media_type: {media_type}",
+                    }
                 )
-                imdb_id = ext_data.get("imdb_id")
-            except Exception as exc:
-                # Non-fatal — still include the match without imdb_id
                 print(
-                    f"    [{idx}/{total}] {title} → external_ids failed: {exc}"
+                    f"  [{idx}/{total}] {title} → unsupported media_type ({media_type})"
                 )
-
-            release_date = best.get("release_date") or best.get(
-                "first_air_date"
-            ) or ""
-            release_year = int(release_date[:4]) if len(release_date) >= 4 else None
-
-            poster_path = best.get("poster_path")
-            backdrop_path = best.get("backdrop_path")
-
-            match_record: dict[str, Any] = {
-                "candidate_key": cand["candidate_key"],
-                "query_title": title,
-                "tmdb_id": tmdb_id,
-                "media_type": b_media_type,
-                "title": best.get("title") or best.get("name") or "",
-                "original_title": best.get("original_title")
-                or best.get("original_name")
-                or "",
-                "release_year": release_year,
-                "poster_path": poster_path,
-                "poster_url": _image_url(poster_path, "w500"),
-                "backdrop_path": backdrop_path,
-                "backdrop_url": _image_url(backdrop_path, "original"),
-                "overview": best.get("overview") or "",
-                "popularity": best.get("popularity"),
-                "vote_average": best.get("vote_average"),
-                "imdb_id": imdb_id,
-                "raw_result": best,
-            }
-            matches.append(match_record)
-            print(
-                f"  [{idx}/{total}] {title} → {b_media_type} #{tmdb_id} "
-                f"({match_record['title']})"
-            )
 
             if idx < total:
                 time.sleep(args.sleep_seconds)
 
     finally:
-        sess.close()
+        if tmdb_sess is not None:
+            tmdb_sess.close()
+        if igdb_sess is not None:
+            igdb_sess.close()
 
     # ── Build output artifact ───────────────────────────────────────────
     slug = timestamp_slug()

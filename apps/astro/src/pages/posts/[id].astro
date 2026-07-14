@@ -37,16 +37,61 @@ try {
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <div>
           {post.images.length > 0 ? (
-            <div class="carousel carousel-center rounded-box bg-base-300 w-full">
-              {post.images.map((img) => (
-                <div class="carousel-item w-full">
+            <div
+              class="relative overflow-hidden rounded-box bg-base-300 shadow-sm"
+              data-gallery
+              tabindex="0"
+              aria-label={`Image gallery for ${post.title}. Use the previous and next buttons, or the left and right arrow keys.`}
+            >
+              <div class="relative flex h-[clamp(18rem,55vw,42rem)] items-center justify-center">
+                {post.images.map((img, index) => (
+                <div
+                  class="w-full px-2 sm:px-4"
+                  data-gallery-slide
+                  data-index={index}
+                  aria-hidden={index !== 0 ? "true" : undefined}
+                  hidden={index !== 0}
+                >
                   <img
                     src={img.url}
-                    alt={`Post image ${img.sort_order}`}
-                    class="w-full object-contain max-h-[70vh]"
+                    alt={`Post image ${index + 1} of ${post.images.length}`}
+                    class="mx-auto h-full max-h-[70vh] w-full object-contain"
+                    loading={index === 0 ? "eager" : "lazy"}
                   />
                 </div>
-              ))}
+                ))}
+              </div>
+
+              {post.images.length > 1 && (
+                <>
+                  <button
+                    type="button"
+                    class="btn btn-circle btn-sm absolute left-3 top-1/2 -translate-y-1/2 border border-base-content/20 bg-base-100/90 text-base-content shadow-md hover:bg-base-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary sm:left-5 sm:btn-md"
+                    data-gallery-previous
+                    aria-label="Show previous image"
+                  >
+                    <svg aria-hidden="true" class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5 8 12l6.5 6.5" /></svg>
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-circle btn-sm absolute right-3 top-1/2 -translate-y-1/2 border border-base-content/20 bg-base-100/90 text-base-content shadow-md hover:bg-base-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary sm:right-5 sm:btn-md"
+                    data-gallery-next
+                    aria-label="Show next image"
+                  >
+                    <svg aria-hidden="true" class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9.5 5.5 6.5 6.5-6.5 6.5" /></svg>
+                  </button>
+                </>
+              )}
+
+              <div class="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-3">
+                <p
+                  class="rounded-full bg-base-content/80 px-3 py-1 text-xs font-medium text-base-100"
+                  data-gallery-status
+                  aria-live="polite"
+                >
+                  1 / {post.images.length}
+                </p>
+              </div>
             </div>
           ) : (
             <div class="w-full h-64 bg-base-300 rounded-box flex items-center justify-center text-base-content/40">
@@ -127,7 +172,7 @@ try {
                           {rec.title}
                         </a>
                         <span class="badge badge-soft badge-sm">
-                          {rec.media_type === "movie" ? "🎬" : "📺"} {rec.media_type}
+                          {rec.media_type === "game" ? "🎮" : rec.media_type === "movie" ? "🎬" : "📺"} {rec.media_type}
                         </span>
                       </div>
                       {rec.release_year && (
@@ -149,3 +194,45 @@ try {
     </>
   )}
 </Layout>
+
+<script>
+  document.querySelectorAll<HTMLElement>("[data-gallery]").forEach((gallery) => {
+    const slides = Array.from(gallery.querySelectorAll<HTMLElement>("[data-gallery-slide]"));
+    const previous = gallery.querySelector<HTMLButtonElement>("[data-gallery-previous]");
+    const next = gallery.querySelector<HTMLButtonElement>("[data-gallery-next]");
+    const status = gallery.querySelector<HTMLElement>("[data-gallery-status]");
+    let current = 0;
+
+    const show = (index: number, loop = true) => {
+      current = loop
+        ? ((index % slides.length) + slides.length) % slides.length
+        : Math.max(0, Math.min(index, slides.length - 1));
+      slides.forEach((slide, slideIndex) => {
+        const active = slideIndex === current;
+        slide.hidden = !active;
+        slide.setAttribute("aria-hidden", String(!active));
+      });
+      if (status) status.textContent = `${current + 1} / ${slides.length}`;
+    };
+
+    previous?.addEventListener("click", () => show(current - 1));
+    next?.addEventListener("click", () => show(current + 1));
+    gallery.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        show(current - 1);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        show(current + 1);
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        show(0, false);
+      } else if (event.key === "End") {
+        event.preventDefault();
+        show(slides.length - 1, false);
+      }
+    });
+
+    show(0);
+  });
+</script>

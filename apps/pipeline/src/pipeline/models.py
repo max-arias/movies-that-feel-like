@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 
 class RecommendationEvidence(BaseModel):
-    """A single extracted mention of a recommended movie or series from a comment."""
+    """A single extracted mention of a recommended movie, series, or video game from a comment."""
 
     comment_id: str = Field(description="Reddit comment ID where the mention was found")
     comment_text: str | None = Field(default=None, description="Full body text of the comment")
@@ -16,12 +16,13 @@ class RecommendationEvidence(BaseModel):
 
 
 class ExtractedRecommendation(BaseModel):
-    """A candidate movie or series extracted from a post's discussion."""
+    """A candidate movie, series, or video game extracted from a post's discussion."""
 
-    title: str = Field(description="Canonical or guessed title of the recommended movie/series")
+    title: str = Field(description="Canonical or guessed title of the recommended movie/series/game")
     year: int | None = Field(default=None, description="Release year if resolved")
-    media_type: Literal["movie", "tv", "unknown"] = Field(
-        default="unknown", description="Type of media identified"
+    media_type: Literal["movie", "tv", "game", "unknown"] = Field(
+        default="unknown",
+        description="Type of media identified: movie, TV series, video game, or unknown",
     )
     evidence: list[RecommendationEvidence] = Field(default_factory=list)
     confidence: float | None = Field(

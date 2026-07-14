@@ -19,6 +19,16 @@ try {
   rec = null;
   posts = [];
 }
+
+// Parse platforms JSON for game records
+let platforms: string[] = [];
+if (rec && rec.platforms) {
+  try {
+    platforms = JSON.parse(rec.platforms);
+  } catch {
+    platforms = [];
+  }
+}
 ---
 
 <Layout title={rec ? `${rec.title} — Movies That Feel Like` : "Recommendation not found"}>
@@ -65,7 +75,7 @@ try {
 
           <div class="flex flex-wrap gap-2 mb-4">
             <span class="badge badge-soft badge-primary">
-              {rec.media_type === "movie" ? "🎬 Movie" : "📺 TV"}
+              {rec.media_type === "game" ? "🎮 Game" : rec.media_type === "movie" ? "🎬 Movie" : "📺 TV"}
             </span>
             {rec.vote_average && (
               <span class="badge badge-soft badge-accent">
@@ -83,36 +93,66 @@ try {
             </div>
           )}
 
-          <div class="stats stats-vertical shadow-sm mb-6">
-            {rec.imdb_id && (
-              <div class="stat">
-                <div class="stat-title">IMDb</div>
-                <div class="stat-value text-lg">
-                  <a
-                    href={`https://www.imdb.com/title/${rec.imdb_id}/`}
-                    class="link link-primary"
-                    target="_blank"
-                  >
-                    {rec.imdb_id} ↗
-                  </a>
+          {rec.media_type === "game" ? (
+            <div class="stats stats-vertical shadow-sm mb-6">
+              {rec.igdb_id && (
+                <div class="stat">
+                  <div class="stat-title">IGDB</div>
+                  <div class="stat-value text-lg">
+                    {rec.external_url ? (
+                      <a href={rec.external_url} class="link link-primary" target="_blank">
+                        #{rec.igdb_id} ↗
+                      </a>
+                    ) : (
+                      <span>#{rec.igdb_id}</span>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
-            {rec.tmdb_id && (
-              <div class="stat">
-                <div class="stat-title">TMDB</div>
-                <div class="stat-value text-lg">
-                  <a
-                    href={`https://www.themoviedb.org/${rec.media_type}/${rec.tmdb_id}`}
-                    class="link link-primary"
-                    target="_blank"
-                  >
-                    #{rec.tmdb_id} ↗
-                  </a>
+              )}
+            </div>
+          ) : (
+            <div class="stats stats-vertical shadow-sm mb-6">
+              {rec.imdb_id && (
+                <div class="stat">
+                  <div class="stat-title">IMDb</div>
+                  <div class="stat-value text-lg">
+                    <a
+                      href={`https://www.imdb.com/title/${rec.imdb_id}/`}
+                      class="link link-primary"
+                      target="_blank"
+                    >
+                      {rec.imdb_id} ↗
+                    </a>
+                  </div>
                 </div>
+              )}
+              {rec.tmdb_id && (
+                <div class="stat">
+                  <div class="stat-title">TMDB</div>
+                  <div class="stat-value text-lg">
+                    <a
+                      href={`https://www.themoviedb.org/${rec.media_type}/${rec.tmdb_id}`}
+                      class="link link-primary"
+                      target="_blank"
+                    >
+                      #{rec.tmdb_id} ↗
+                    </a>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {rec.media_type === "game" && platforms.length > 0 && (
+            <div class="mb-6">
+              <h3 class="text-sm font-semibold text-base-content/70 mb-2">Platforms</h3>
+              <div class="flex flex-wrap gap-2">
+                {platforms.map((p) => (
+                  <span class="badge badge-soft badge-outline">{p}</span>
+                ))}
               </div>
-            )}
-          </div>
+            </div>
+          )}
 
           <div>
             <h2 class="text-xl font-bold mb-3">

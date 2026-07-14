@@ -37,6 +37,7 @@ export interface Recommendation {
   id: number;
   tmdb_id: number | null;
   imdb_id: string | null;
+  igdb_id: number | null;
   title: string;
   original_title: string | null;
   media_type: string;
@@ -44,8 +45,11 @@ export interface Recommendation {
   poster_url: string | null;
   backdrop_url: string | null;
   overview: string | null;
+  external_url: string | null;
+  platforms: string | null;  // JSON-encoded list, e.g. '["PC","PlayStation 5"]'
   popularity: number | null;
   vote_average: number | null;
+  evidence_score: number | null;
 }
 
 export interface VibeTag {
@@ -109,10 +113,10 @@ export async function getPublishedPosts(db: D1Database) {
            JOIN recommendation_evidence re ON re.recommendation_id = r.id
            WHERE re.imported_vibe_post_id = ?
            GROUP BY r.id
-           ORDER BY r.popularity DESC`,
-          post.id
-        ),
-      ]);
+            ORDER BY r.evidence_score DESC, r.popularity DESC`,
+            post.id
+          ),
+        ]);
       return { ...post, images, tags, recommendations };
     })
   );
@@ -124,7 +128,7 @@ export async function getPostByRedditId(
 ) {
   const post = await one<ImportedVibePost>(
     db,
-    `SELECT * FROM imported_vibe_posts WHERE reddit_post_id = ?`,
+    `SELECT * FROM imported_vibe_posts WHERE reddit_post_id = ? AND status = 'publishable'`,
     redditId
   );
   if (!post) return null;
@@ -147,7 +151,7 @@ export async function getPostByRedditId(
        JOIN recommendation_evidence re ON re.recommendation_id = r.id
        WHERE re.imported_vibe_post_id = ?
        GROUP BY r.id
-       ORDER BY r.popularity DESC`,
+       ORDER BY r.evidence_score DESC, r.popularity DESC`,
       post.id
     ),
   ]);
@@ -165,7 +169,7 @@ export async function getRecommendationsForPost(
      JOIN recommendation_evidence re ON re.recommendation_id = r.id
      WHERE re.imported_vibe_post_id = ?
      GROUP BY r.id
-     ORDER BY r.popularity DESC`,
+     ORDER BY r.evidence_score DESC, r.popularity DESC`,
     postId
   );
 }
@@ -218,6 +222,7 @@ export async function getPostsForRecommendation(
      FROM imported_vibe_posts p
      JOIN recommendation_evidence re ON re.imported_vibe_post_id = p.id
      WHERE re.recommendation_id = ?
+       AND p.status = 'publishable'
      ORDER BY p.created_utc DESC`,
     recId
   );
@@ -230,6 +235,8 @@ export async function getAllRecommendationIds(
     db,
     `SELECT DISTINCT r.id FROM recommendations r
      JOIN recommendation_evidence re ON re.recommendation_id = r.id
+     JOIN imported_vibe_posts p ON p.id = re.imported_vibe_post_id
+     WHERE p.status = 'publishable'
      ORDER BY r.id`
   );
 }
