@@ -31,6 +31,10 @@ def normalized_dir() -> Path:
     return working_dir() / "normalized"
 
 
+def checkpoints_dir() -> Path:
+    return working_dir() / "checkpoints"
+
+
 def raw_dir() -> Path:
     """Return ``root/data/raw``."""
     return data_dir() / "raw"
@@ -46,4 +50,5 @@ def ensure_pipeline_dirs() -> None:
     raw_dir().mkdir(parents=True, exist_ok=True)
     working_dir().mkdir(parents=True, exist_ok=True)
     normalized_dir().mkdir(parents=True, exist_ok=True)
+    checkpoints_dir().mkdir(parents=True, exist_ok=True)
     assets_dir().mkdir(parents=True, exist_ok=True)

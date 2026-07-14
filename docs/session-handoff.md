@@ -4,7 +4,7 @@
 
 This repo is a hobby project inspired by `r/MoviesThatFeelLike`: import Reddit posts/images/comments, extract movie/series recommendations from comments, canonicalize them via TMDB, and present a browseable Cloudflare-hosted site where posts are linked through shared recommendations.
 
-Do not include or print API keys. The user has local env vars in shell config for Gemini and TMDB.
+Do not include or print API keys. The user has local env vars in shell config for OpenCode Go and TMDB.
 
 ## Existing project docs
 
@@ -61,8 +61,8 @@ All are invoked from root npm scripts.
    - Preserves fallback hotlink/source URL.
 
 4. `npm run pipeline:extract`
-   - Uses Instructor + Gemini structured Pydantic extraction.
-   - User-facing env var is `GEMINI_API_KEY` only. Internally it maps to what the Google SDK needs.
+   - Uses Instructor + OpenCode Go with the default `deepseek-v4-flash` model for structured Pydantic extraction.
+   - User-facing env var is `OPENCODE_GO_API_KEY`; the default base URL is `https://opencode.ai/zen/go/v1`.
    - Extracts concrete movie/series recommendations, evidence comments, vibe summary, and tags.
    - Has retry/backoff flags: `--max-attempts`, `--backoff-seconds`, `--backoff-multiplier`.
    - Dry-run: `npm run pipeline:extract -- --dry-run --limit 1`.
@@ -126,12 +126,94 @@ Design is intentionally minimal/tracer-bullet level.
 ## Important caveats / gotchas
 
 - Do not print env var values. The user accidentally pasted a key earlier; do not repeat it.
-- `.bashrc` env vars were moved to the top; non-interactive sourcing now exposes `GEMINI_API_KEY` and `TMDB_ACCESS_TOKEN`.
+- `.bashrc` env vars were moved to the top; non-interactive sourcing now exposes `OPENCODE_GO_API_KEY` and `TMDB_ACCESS_TOKEN`.
 - Wrangler local D1 lives under `apps/astro/.wrangler/state/...`, not `data/app.db`.
 - `data/` is ignored and contains local artifacts only.
 - `npm run dev` already works from repo root; it delegates to `apps/astro` workspace.
 - `npx wrangler` did not resolve reliably from root in this environment. Scripts use `apps/astro/node_modules/.bin/wrangler`.
 - Build currently emits Cloudflare adapter notes/warnings (e.g. sessions/KV note, sharp runtime warning), but build succeeds.
+
+## Image pipeline lessons learned
+
+These are the operational gotchas the next agent is most likely to trip over.
+Source-of-truth code is `apps/pipeline/src/pipeline/normalize.py::_collect_images`
+and `apps/pipeline/src/pipeline/load.py::_has_usable_image`.
+
+### 1. Reddit crossposts carry no image data of their own
+
+`r/MoviesThatFeelLike` posts are often crossposts of image posts from
+other subs. The crosspost row in the Arctic Shift archive has
+`media: null`, `gallery_data: null`, `media_metadata: null`, `preview: null`,
+and an empty `media` block — even when the original post is a 20-image
+gallery. All the real image URLs live under
+`post["crosspost_parent_list"][0]` (the embedded copy of the parent post
+in the archive). The normalizer must fall back to that field when the
+post itself yields nothing. Without this, every crosspost renders with
+an empty image panel.
+
+### 2. The loader's "has usable image" check was too optimistic
+
+The old `_has_usable_asset([])` returned `True` ("no signal, do not
+block"). That meant any post with a vibe summary + at least one enriched
+recommendation match was marked `publishable` even if the normalizer
+produced zero images. The post detail page would then render an
+"empty" gallery placeholder. The current check is
+`_has_usable_image(asset_list, normalized_image_count)` and returns
+`False` whenever `normalized_image_count == 0`, regardless of asset
+state. The asset-state optimism is preserved for the
+"images exist but cache-assets stage was not run yet" case.
+
+### 3. "no usable images" in `error_info` conflates two causes
+
+The loader's reason string does not distinguish them, but operationally
+they are very different:
+
+- **No source**: 0 images in the normalized record. Sub-types seen in
+  the 100-post sample:
+  - **Text-only self-posts** (`is_self: true`, no media). These are
+    not vibe posts at all — they have no image vibe to discuss.
+  - **Galleries with `media_metadata` items at `status: "unprocessed"`**.
+    The archive lists the item but `s` and `p` are absent, so the
+    normalizer's `status != "valid" and e != "Image"` filter skips it.
+    Reddit's image processor never generated variants for these.
+  - **Galleries with no `media_metadata` at all** in the archive, only
+    a `thumbnail` URL. Nothing to extract.
+  No way to recover these from the current data — would need to
+  re-fetch the parent post from a live Reddit endpoint, which Arctic
+  Shift's archive does not cover.
+
+- **Cache failure**: normalized has 1–20 image URLs but every
+  `httpx.get` to `preview.redd.it` / `i.redd.it` returned 404 (or other
+  HTTP error). The URLs are valid in the archive but the CDN has since
+  dropped them. ~15% of the 100-post sample falls in this bucket.
+  Recovery options: re-run cache-assets later (CDN may have
+  re-served), switch the normalizer to the smaller `media_metadata.s.u`
+  source URL instead of the largest preview variant, or fall back to
+  the post `thumbnail` URL.
+
+When triaging skipped posts, check `data/working/normalized/...json`
+to see the per-post `images[]` length. `0` means no source, `>0` with
+0 cached assets means cache failure.
+
+### 4. The UI hotlinks `source_url`, not the local cache
+
+`apps/astro/src/lib/db.ts` returns the original `source_url` as
+`img.url` and the post page renders that directly. The `cache_path`
+on disk is only stored in `imported_post_images.cache_key` and is
+**not** exposed to the browser. So a "cache fail" in the asset
+manifest is not just a pipeline artifact — the image will not load
+in the user's browser either. The cache step is essentially a
+preflight check, not a fallback serving path.
+
+### 5. `media_metadata` items with `status: "unprocessed"` look like data but contain none
+
+The normalizer's filter
+`item.get("status") != "valid" and item.get("e") != "Image"`
+correctly skips them, but it's easy to miss this in raw-data
+exploration: the keys exist, the post looks like it has images, but
+every value is `{"status": "unprocessed"}` with no `s` or `p` field.
+No code change available; just be aware that
+`is_gallery: true` does not guarantee a usable image.
 
 ## Suggested next steps
 
@@ -159,6 +241,11 @@ Design is intentionally minimal/tracer-bullet level.
 4. Decide asset serving strategy:
    - Currently UI displays source/hotlink URLs.
    - Later: upload cached images to R2 and serve via Cloudflare route/public URL.
+   - See "Image pipeline lessons learned" above — the 15% cache-failure rate
+     on `preview.redd.it` URLs suggests switching to a more stable URL
+     source (e.g. `media_metadata.s.u` smaller variants, or post
+     `thumbnail`) before serving anything from R2. Re-run cache-assets
+     against a fresh fetch first to see if it's a transient CDN issue.
 
 5. Add remote Cloudflare resources:
    - Create real D1 database and replace placeholder `database_id`.

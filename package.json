@@ -16,6 +16,7 @@
     "pipeline:cache-assets": "npm run cache-assets -w apps/pipeline --",
     "pipeline:extract": "npm run extract -w apps/pipeline --",
     "pipeline:enrich": "npm run enrich -w apps/pipeline --",
+    "pipeline:ingest": "npm run pipeline:normalize && npm run pipeline:cache-assets && npm run pipeline:extract && npm run pipeline:enrich && npm run seed",
     "pipeline:load": "npm run load -w apps/pipeline --",
     "pipeline:load:sql": "npm run load -w apps/pipeline -- --sql-out data/working/load-d1.sql",
     "pipeline:inspect": "npm run inspect -w apps/pipeline --",
@@ -26,5 +27,4 @@
   "devDependencies": {
     "wrangler": "^4.83.0"
   }
-}
 }

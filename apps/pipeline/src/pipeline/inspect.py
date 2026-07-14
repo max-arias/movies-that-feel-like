@@ -57,13 +57,18 @@ def _summarize(path: Path) -> str:
             f"posts={post_count} total_comments={comment_count}"
         )
 
-    if status == "extracted" and source == "pipeline.extract":
+    if status in ("extracted", "failed") and source == "pipeline.extract":
         success = summary.get("success_count", "?")
         errs = summary.get("error_count", "?")
         recs = summary.get("recommendation_count", "?")
+        total = (success if isinstance(success, int) else 0) + (errs if isinstance(errs, int) else 0)
+        rate = f"{success / total * 100:.1f}%" if isinstance(success, int) and isinstance(errs, int) and total > 0 else "?"
+        highlight = " ⚠️ FAILED" if status == "failed" else ""
+        if isinstance(success, int) and isinstance(errs, int) and success == 0 and errs > 0:
+            highlight += " ⚠️ ZERO-SUCCESS"
         return (
-            f"  status={status} source={source} "
-            f"success={success} errors={errs} recommendations={recs}"
+            f"  status={status}{highlight} source={source} "
+            f"success={success} errors={errs} rate={rate} recommendations={recs}"
         )
 
     if status in ("enriched", "enrichment_dry_run") and source == "pipeline.enrich":
@@ -76,19 +81,42 @@ def _summarize(path: Path) -> str:
 
     if status in ("loaded", "load_dry_run") and source == "pipeline.load":
         parts = f"status={status} source={source}"
-        for key in (
-            "posts_seen",
-            "posts_publishable",
-            "posts_skipped",
-            "images_inserted",
-            "recommendations_upserted",
-            "evidence_inserted",
-            "tags_inserted",
-            "errors",
-        ):
-            val = summary.get(key)
-            if val is not None:
-                parts += f" {key}={val}"
+        # "loaded" artifacts use one key set, "load_dry_run" another
+        if status == "loaded":
+            for key in (
+                "posts_seen",
+                "posts_publishable",
+                "posts_skipped",
+                "images_inserted",
+                "recommendations_upserted",
+                "evidence_inserted",
+                "tags_inserted",
+                "errors",
+            ):
+                val = summary.get(key)
+                if val is not None:
+                    parts += f" {key}={val}"
+            seen = summary.get("posts_seen")
+            pub = summary.get("posts_publishable")
+            if isinstance(seen, int) and isinstance(pub, int) and seen > 0:
+                parts += f" publish_rate={pub/seen*100:.1f}%"
+        else:  # load_dry_run
+            for key in (
+                "post_count",
+                "publishable",
+                "skipped",
+                "images",
+                "matches",
+                "evidence_items",
+                "vibe_tags",
+            ):
+                val = summary.get(key)
+                if val is not None:
+                    parts += f" {key}={val}"
+            pub = summary.get("publishable")
+            total = summary.get("post_count")
+            if isinstance(pub, int) and isinstance(total, int) and total > 0:
+                parts += f" publish_rate={pub/total*100:.1f}%"
         return parts
 
     # Fallback for placeholders or unknown shapes

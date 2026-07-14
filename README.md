@@ -10,7 +10,7 @@ The first version is intentionally presentational: users browse imported Reddit 
 
 - Imports posts, images, and comments from `r/MoviesThatFeelLike`.
 - Keeps raw/intermediate artifacts locally so pipeline stages can be retried without refetching.
-- Extracts concrete movie/series recommendations from Reddit comments using Gemini.
+- Extracts concrete movie/series recommendations from Reddit comments using OpenCode Go with `deepseek-v4-flash`.
 - Generates a short text-only vibe summary and tags from the post title/text/comments.
 - Resolves recommendations to canonical TMDB movie/TV records.
 - Links posts together through shared canonical recommendations.
@@ -49,7 +49,7 @@ See `CONTEXT.md` for the glossary.
 - Tailwind CSS 4 + daisyUI 5
 - Python pipeline managed with `uv`
 - Arctic Shift / `arcshiftwrap` for Reddit archive data
-- Instructor + Pydantic + Gemini for structured extraction
+- Instructor + Pydantic + OpenCode Go (`deepseek-v4-flash`) for structured extraction
 - TMDB API for media enrichment
 
 ## Required local environment
@@ -57,7 +57,7 @@ See `CONTEXT.md` for the glossary.
 The pipeline expects these env vars when running the extraction/enrichment stages:
 
 ```bash
-GEMINI_API_KEY=...
+OPENCODE_GO_API_KEY=...
 TMDB_ACCESS_TOKEN=...
 ```
 
@@ -88,6 +88,19 @@ npm run dev
 
 ## Pipeline workflow
 
+To ingest the latest already-downloaded raw artifact without fetching new data,
+load the local environment and run the fetch-free pipeline command:
+
+```bash
+source "$HOME/.bashrc"
+source "$HOME/.local/bin/env"
+npm run pipeline:ingest
+```
+
+The stages consume the latest artifacts already present under `data/`; the
+command runs normalize, asset caching, extraction, enrichment, and local D1
+seeding in that order. It does not run `pipeline:fetch`.
+
 A small end-to-end sample looks like this:
 
 ```bash
@@ -99,6 +112,14 @@ npm run pipeline:enrich -- --limit 50
 npm run seed
 npm run dev
 ```
+
+Extraction uses OpenCode Go with the default model `deepseek-v4-flash`; set
+`OPENCODE_GO_API_KEY` before running `pipeline:extract`.
+Extraction is resumable: completed posts are fsynced to an append-only JSONL
+checkpoint in `data/working/checkpoints/`. The default bounded concurrency is 3
+and request starts are limited to 6 RPM; tune with `--concurrency` and
+`--rate-limit-rpm`. A final extraction artifact is emitted only when every
+target post has a terminal success or error outcome.
 
 Useful inspection:
 

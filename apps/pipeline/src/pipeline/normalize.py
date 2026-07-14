@@ -86,13 +86,20 @@ def _extract_gallery_images(post: dict[str, Any]) -> list[str]:
 def _collect_images(post: dict[str, Any]) -> list[dict[str, Any]]:
     """Collect deduplicated image records from a single post.
 
-    Returns a list of ``{source_url, sort_order, kind, width?, height?}``
+    Returns a list of ``{source_url, sort_order, kind, source_post_id?, width?, height?}``
     preserving insertion order while keeping only original/source image URLs.
+
+    If the post itself carries no usable images (typical for Reddit crossposts
+    that just point at a parent gallery), fall back to the first entry in
+    ``crosspost_parent_list`` so the imported post can still be published
+    with its original images.
     """
     seen: set[str] = set()
     records: list[dict[str, Any]] = []
 
-    def add_urls(urls: list[str], kind: str) -> None:
+    def add_urls(
+        urls: list[str], kind: str, source_post_id: str | None = None
+    ) -> None:
         for url in urls:
             if url in seen:
                 continue
@@ -102,6 +109,7 @@ def _collect_images(post: dict[str, Any]) -> list[dict[str, Any]]:
                     "source_url": url,
                     "sort_order": len(records),
                     "kind": kind,
+                    **({"source_post_id": source_post_id} if source_post_id else {}),
                 }
             )
 
@@ -119,8 +127,35 @@ def _collect_images(post: dict[str, Any]) -> list[dict[str, Any]]:
         add_urls(post_urls, "reddit_source")
         return records
 
-    # Fallback: source field from Reddit preview, still excluding resolutions array.
-    add_urls(preview_urls, "reddit_preview_source")
+    # Preview-only fallback: use the source field from Reddit preview,
+    # still excluding the smaller resolutions array.
+    if preview_urls:
+        add_urls(preview_urls, "reddit_preview_source")
+        return records
+
+    # Crosspost fallback: if the post itself has no images, but the
+    # archive includes the original parent post, try to reuse the
+    # parent's gallery / direct image / preview images. Without this,
+    # every crosspost would land in the site with no pictures.
+    parents = post.get("crosspost_parent_list") or []
+    if parents:
+        parent = parents[0] or {}
+        parent_id = parent.get("id")
+        parent_gallery = _extract_gallery_images(parent)
+        if parent_gallery:
+            add_urls(parent_gallery, "reddit_crosspost_gallery", parent_id)
+            return records
+
+        parent_post_urls = _extract_post_url(parent)
+        if parent_post_urls:
+            add_urls(parent_post_urls, "reddit_crosspost_source", parent_id)
+            return records
+
+        parent_preview = _extract_preview_images(parent)
+        if parent_preview:
+            add_urls(parent_preview, "reddit_crosspost_preview", parent_id)
+            return records
+
     return records
 
 

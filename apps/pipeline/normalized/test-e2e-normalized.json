@@ -1,0 +1,23 @@
+{
+  "status": "complete",
+  "source": "pipeline.normalize",
+  "completed_at": "2026-07-14T13:00:00Z",
+  "posts": [
+    {
+      "reddit_post_id": "e2e_post_1",
+      "title": "Games that feel like a rainy sunday",
+      "selftext": "",
+      "author": "testuser",
+      "created_utc": 1700000000,
+      "permalink": "/r/test/comments/abc/test/",
+      "source_url": "https://reddit.com/r/test/abc",
+      "subreddit": "Test",
+      "images": [
+        {
+          "source_url": "https://i.redd.it/img1.jpg",
+          "sort_order": 0
+        }
+      ]
+    }
+  ]
+}
