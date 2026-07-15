@@ -17,6 +17,7 @@ from pipeline.paths import ensure_pipeline_dirs, raw_dir
 
 # Max in-flight comment-tree fetches during the parallel fan-out.
 _CONCURRENCY = 8
+_MAX_SEARCH_PAGE_SIZE = 100
 
 
 def _today_utc_str() -> str:
@@ -36,6 +37,13 @@ def _year_range(year: int) -> tuple[str, str]:
     else:
         before = f"{year}-12-31"
     return after, before
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -60,6 +68,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum number of posts to fetch (default: %(default)s)",
     )
     parser.add_argument(
+        "--sort",
+        choices=("asc", "desc"),
+        default="asc",
+        help=(
+            "Post ordering: asc for oldest-first or desc for newest-first "
+            "(default: %(default)s)"
+        ),
+    )
+    parser.add_argument(
         "--skip-comments",
         action="store_true",
         help="Skip comment-tree fetching (faster for smoke tests)",
@@ -79,7 +96,36 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Output path (default: data/raw/arctic-shift-{subreddit}-{year}-{timestamp}.json)",
     )
+    parser.add_argument(
+        "--exclude-reddit-ids-file",
+        default=None,
+        help="Path to a newline-delimited set of Reddit post IDs to exclude",
+    )
+    parser.add_argument(
+        "--max-pages",
+        type=_positive_int,
+        default=10,
+        help=(
+            "Maximum search pages when excluding IDs (default: %(default)s); "
+            "ignored without --exclude-reddit-ids-file"
+        ),
+    )
     return parser
+
+
+def _read_excluded_reddit_ids(path: Path) -> set[str]:
+    """Read Reddit post IDs to exclude from a newline-delimited file."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError as exc:
+        raise SystemExit(
+            f"[pipeline:fetch] Exclusion file does not exist: {path}"
+        ) from exc
+    except OSError as exc:
+        raise SystemExit(
+            f"[pipeline:fetch] Could not read exclusion file {path}: {exc}"
+        ) from exc
+    return {line.strip() for line in lines if line.strip()}
 
 
 async def _fetch_one_comment_tree(
@@ -126,10 +172,17 @@ async def _fetch_all_comment_trees(
 async def _async_main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
 
+    excluded_ids: set[str] = set()
+    exclusion_enabled = args.exclude_reddit_ids_file is not None
+    if exclusion_enabled:
+        excluded_ids = _read_excluded_reddit_ids(Path(args.exclude_reddit_ids_file))
+
     # Resolve date range ---------------------------------------------------
     default_after, default_before = _year_range(args.year)
     after = args.after if args.after is not None else default_after
     before = args.before if args.before is not None else default_before
+    initial_before = before
+    effective_sort = "desc" if exclusion_enabled else args.sort
 
     # Output path ----------------------------------------------------------
     slug = timestamp_slug()
@@ -150,27 +203,73 @@ async def _async_main(argv: list[str] | None = None) -> None:
 
     print(
         f"[pipeline:fetch] Searching r/{args.subreddit} "
-        f"({after} → {before}, limit={args.limit})"
+        f"({after} → {before}, limit={args.limit}, sort={effective_sort})"
     )
 
     t0 = time.monotonic()
-    response = await asyncio.to_thread(
-        client.search_posts,
-        subreddit=args.subreddit,
-        after=after,
-        before=before,
-        limit=args.limit,
-        sort="asc",
-    )
-    t1 = time.monotonic()
-    print(f"[pipeline:fetch] Search took {t1 - t0:.2f}s")
+    posts: list[dict[str, Any]] = []
+    page_count = 0
+    excluded_post_count = 0
+    scanned_post_count = 0
+    requested_limit = args.limit
+    search_before = before
+    seen_ids: set[Any] = set(excluded_ids)
+    stopped_for_bound = False
 
-    posts = response.get("data", response) if isinstance(response, dict) else response
+    while True:
+        if exclusion_enabled and len(posts) >= requested_limit:
+            break
+        if exclusion_enabled and page_count >= args.max_pages:
+            stopped_for_bound = True
+            break
+        page_limit = (
+            min(_MAX_SEARCH_PAGE_SIZE, requested_limit - len(posts))
+            if exclusion_enabled
+            else requested_limit
+        )
+        response = await asyncio.to_thread(
+            client.search_posts,
+            subreddit=args.subreddit,
+            after=after,
+            before=search_before,
+            limit=page_limit,
+            sort=effective_sort,
+        )
+        page = response.get("data", response) if isinstance(response, dict) else response
+        page = list(page)
+        page_count += 1
+        scanned_post_count += len(page)
+
+        page_posts = [dict(post) if not isinstance(post, dict) else post for post in page]
+        unseen_posts = []
+        for post in page_posts:
+            post_id = post.get("id")
+            if post_id in seen_ids:
+                excluded_post_count += 1
+                continue
+            seen_ids.add(post_id)
+            unseen_posts.append(post)
+        posts.extend(unseen_posts[: max(0, requested_limit - len(posts))])
+
+        if not exclusion_enabled or len(page_posts) < page_limit or not page_posts:
+            break
+
+        created_timestamps = [
+            post["created_utc"]
+            for post in page_posts
+            if post.get("created_utc") is not None
+        ]
+        if not created_timestamps:
+            break
+        search_before = str(min(created_timestamps) - 1)
+
+    t1 = time.monotonic()
+    print(f"[pipeline:fetch] Search took {t1 - t0:.2f}s across {page_count} page(s)")
 
     print(f"[pipeline:fetch] Fetched {len(posts)} posts")
 
     # Post-process: ensure each post is a plain dict
-    raw_posts: list[dict[str, Any]] = [dict(p) if not isinstance(p, dict) else p for p in posts]
+    raw_posts = posts
 
     # Comment trees --------------------------------------------------------
     comments_by_post: dict[str, Any] = {}
@@ -204,13 +303,18 @@ async def _async_main(argv: list[str] | None = None) -> None:
             "skip_comments": args.skip_comments,
             "after": after,
             "before": before,
+            "sort": effective_sort,
+            "exclude_reddit_ids_file": args.exclude_reddit_ids_file,
+            "max_pages": args.max_pages,
         },
         "query": {
             "subreddit": args.subreddit,
             "after": after,
-            "before": before,
+            "before": initial_before,
             "limit": args.limit,
-            "sort": "asc",
+            "sort": effective_sort,
+            "exclude_reddit_ids_file": args.exclude_reddit_ids_file,
+            "max_pages": args.max_pages,
         },
         "posts": raw_posts,
         "comments_by_post": comments_by_post,
@@ -218,6 +322,11 @@ async def _async_main(argv: list[str] | None = None) -> None:
             "post_count": len(raw_posts),
             "comment_tree_count": comment_tree_count,
             "comment_error_count": comment_error_count,
+            "search_page_count": page_count,
+            "scanned_post_count": scanned_post_count,
+            "excluded_post_count": excluded_post_count,
+            "max_pages": args.max_pages if exclusion_enabled else None,
+            "pagination_truncated": stopped_for_bound,
         },
     }
 

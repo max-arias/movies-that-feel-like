@@ -1,0 +1,257 @@
+name: Import Reddit posts
+
+on:
+  schedule:
+    # GitHub cron is UTC and this is a calendar schedule (every third day of
+    # the month), not a rolling 72-hour interval.
+    - cron: '17 3 */3 * *'
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Maximum posts to fetch for this run'
+        required: true
+        default: '100'
+        type: string
+      max_pages:
+        description: 'Maximum fetch pages before stopping (positive integer)'
+        required: true
+        default: '10'
+        type: string
+      apply_only:
+        description: 'Apply already-committed pending migrations only'
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: movies-import-production
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        # Immutable action reference; checkout credentials are never retained.
+        with:
+          fetch-depth: 0
+          ref: main
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+
+      - name: Install dependencies
+        run: |
+          bun install --frozen-lockfile
+          uv sync --locked --project apps/pipeline
+
+      - name: Check tracked migration state
+        id: migration_state
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          git ls-files 'packages/db/migrations/*.sql' \
+            | while IFS= read -r path; do basename "$path"; done \
+            | sort -u > /tmp/local-migrations
+          npx wrangler d1 execute movies-that-feel-like --remote \
+            --config apps/astro/wrangler.jsonc \
+            --command 'SELECT name FROM d1_migrations ORDER BY name' \
+            --json \
+            | jq -r '.[0].results[]?.name' \
+            | sort -u > /tmp/remote-migrations
+          comm -23 /tmp/local-migrations /tmp/remote-migrations > /tmp/pending-migrations
+          echo 'Local tracked migrations:'
+          cat /tmp/local-migrations
+          echo 'Remote applied migrations:'
+          cat /tmp/remote-migrations
+          echo 'Pending tracked migrations:'
+          cat /tmp/pending-migrations
+          if [ "${{ inputs.apply_only }}" != 'true' ] && [ -s /tmp/pending-migrations ]; then
+            echo 'Refusing normal import: production has pre-existing pending migrations.' >&2
+            exit 1
+          fi
+
+      - name: Export IDs already in production D1
+        if: inputs.apply_only != true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          mkdir -p data/working
+          npx wrangler d1 execute movies-that-feel-like --remote \
+            --config apps/astro/wrangler.jsonc \
+            --command 'SELECT reddit_post_id FROM imported_vibe_posts ORDER BY reddit_post_id' \
+            --json \
+            | jq -r '.[0].results[]?.reddit_post_id' \
+            > data/working/excluded-reddit-ids.txt
+
+      - name: Fetch and normalize new posts
+        id: normalize
+        if: inputs.apply_only != true
+        env:
+          IMPORT_LIMIT: ${{ inputs.limit || '100' }}
+          IMPORT_MAX_PAGES: ${{ inputs.max_pages || '10' }}
+        run: |
+          if ! [[ "$IMPORT_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "limit must be a positive integer; got: $IMPORT_LIMIT" >&2
+            exit 1
+          fi
+          if ! [[ "$IMPORT_MAX_PAGES" =~ ^[1-9][0-9]*$ ]]; then
+            echo "max_pages must be a positive integer; got: $IMPORT_MAX_PAGES" >&2
+            exit 1
+          fi
+          npm run pipeline:fetch -- \
+            --subreddit MoviesThatFeelLike --year 2026 \
+            --limit "$IMPORT_LIMIT" --max-pages "$IMPORT_MAX_PAGES" --sort desc \
+            --exclude-reddit-ids-file data/working/excluded-reddit-ids.txt
+          npm run pipeline:normalize -- \
+            --exclude-reddit-ids-file data/working/excluded-reddit-ids.txt
+          normalized=$(find data/working/normalized -maxdepth 1 -type f -name '*.json' -printf '%T@ %p\n' \
+            | sort -nr | cut -d' ' -f2- | head -n1)
+          posts=$(jq -r '.posts | length' "$normalized")
+          echo "post-count=$posts" >> "$GITHUB_OUTPUT"
+          echo "Normalized $posts new post(s)."
+
+      - name: Reject truncated fetch scan
+        if: inputs.apply_only != true
+        run: |
+          raw=$(find data/raw -maxdepth 1 -type f -name '*.json' -printf '%T@ %p\n' \
+            | sort -nr | cut -d' ' -f2- | head -n1)
+          truncated=$(jq -r '.summary.pagination_truncated // false' "$raw")
+          if [ "$truncated" = 'true' ]; then
+            echo 'Fetch scan was truncated by max_pages; refusing to continue.' >&2
+            echo 'Dispatch a controlled backfill with a higher max_pages value.' >&2
+            exit 1
+          fi
+
+      - name: Cache assets
+        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        run: npm run pipeline:cache-assets
+
+      - name: Extract recommendations
+        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        env:
+          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
+        run: npm run pipeline:extract
+
+      - name: Enrich recommendations
+        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        env:
+          TMDB_ACCESS_TOKEN: ${{ secrets.TMDB_ACCESS_TOKEN }}
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
+          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+        run: npm run pipeline:enrich
+
+      - name: Reject enrichment errors
+        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        run: |
+          enrichment=$(find data/working -maxdepth 1 -type f -name 'enrichment-*.json' -printf '%T@ %p\n' \
+            | sort -nr | cut -d' ' -f2- | head -n1)
+          errors=$(jq -r '.summary.error_count // (.errors | length) // 0' "$enrichment")
+          if [ "$errors" -ne 0 ]; then
+            echo "Enrichment artifact contains $errors error(s); refusing to load or generate migrations." >&2
+            exit 1
+          fi
+
+      - name: Load and generate migrations
+        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        run: |
+          git ls-files --others --exclude-standard -- 'packages/db/migrations/*.sql' > /tmp/migrations-before
+          npm run pipeline:load
+
+      - name: Reject load errors
+        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        run: |
+          load_artifact=$(find data/working -maxdepth 1 -type f -name 'load-*.json' -printf '%T@ %p\n' \
+            | sort -nr | cut -d' ' -f2- | head -n1)
+          errors=$(jq -r '.summary.errors // 0' "$load_artifact")
+          if [ "$errors" -ne 0 ]; then
+            echo "Load artifact contains $errors error(s); refusing to commit or apply migrations." >&2
+            exit 1
+          fi
+
+      - name: Commit and push only new migrations
+        id: migrations
+        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git ls-files --others --exclude-standard -- 'packages/db/migrations/*.sql' > /tmp/migrations-after
+          comm -13 /tmp/migrations-before /tmp/migrations-after > /tmp/new-migration-paths
+          while IFS= read -r path; do basename "$path"; done < /tmp/new-migration-paths \
+            | sort -u > /tmp/new-migrations
+          if [ ! -s /tmp/new-migration-paths ]; then
+            echo 'No new migration files were generated.'
+            echo 'pushed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          while IFS= read -r migration; do git add -- "$migration"; done < /tmp/new-migration-paths
+          if git diff --cached --name-only | grep -qEv '^packages/db/migrations/[^/]+\.sql$'; then
+            echo 'Unexpected staged path.' >&2
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'data: import Reddit posts'
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin HEAD:main
+          echo 'pushed=true' >> "$GITHUB_OUTPUT"
+
+      - name: Verify pushed migrations are the only pending migrations
+        if: steps.migrations.outputs.pushed == 'true'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          git ls-files 'packages/db/migrations/*.sql' \
+            | while IFS= read -r path; do basename "$path"; done \
+            | sort -u > /tmp/local-migrations-after
+          npx wrangler d1 execute movies-that-feel-like --remote \
+            --config apps/astro/wrangler.jsonc \
+            --command 'SELECT name FROM d1_migrations ORDER BY name' --json \
+            | jq -r '.[0].results[]?.name' | sort -u > /tmp/remote-migrations-after
+          comm -23 /tmp/local-migrations-after /tmp/remote-migrations-after > /tmp/pending-after-push
+          if ! cmp -s /tmp/new-migrations /tmp/pending-after-push; then
+            echo 'Remote pending migrations do not exactly match newly generated migrations.' >&2
+            diff -u /tmp/new-migrations /tmp/pending-after-push || true
+            exit 1
+          fi
+
+      - name: Recover committed pending migrations
+        if: inputs.apply_only == true
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ ! -s /tmp/pending-migrations ]; then
+            echo 'Apply-only status check: no tracked migrations are pending.'
+            exit 0
+          fi
+          echo 'Apply-only status check: applying these committed pending migrations:'
+          cat /tmp/pending-migrations
+          while IFS= read -r migration; do
+            git ls-files --error-unmatch "packages/db/migrations/$migration" >/dev/null
+          done < /tmp/pending-migrations
+          npx wrangler d1 migrations apply movies-that-feel-like --remote --config apps/astro/wrangler.jsonc
+
+      - name: Apply pushed migrations to production D1
+        if: steps.migrations.outputs.pushed == 'true'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx wrangler d1 migrations apply movies-that-feel-like --remote --config apps/astro/wrangler.jsonc

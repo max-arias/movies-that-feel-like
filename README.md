@@ -131,6 +131,8 @@ apps/astro/node_modules/.bin/wrangler d1 execute movies-that-feel-like --local -
 ## Important docs
 
 - `docs/architecture-plan.md` — architecture and pipeline plan.
+- `docs/operations.md` — production Reddit import configuration, scheduling,
+  recovery, and failure triage.
 - `docs/adr/0001-cloudflare-native-storage-and-deployment.md` — Cloudflare-native decision.
 - `docs/adr/0002-local-python-pipeline-with-instructor-and-gemini.md` — Python pipeline and Gemini decision.
 - `docs/session-handoff.md` — current implementation state and suggested next steps.

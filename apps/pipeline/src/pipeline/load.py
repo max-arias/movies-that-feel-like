@@ -53,6 +53,10 @@ _DATA_MIGRATION_CHUNKS: tuple[tuple[str, frozenset[str]], ...] = (
 # ── Helpers ────────────────────────────────────────────────────────────
 
 
+def _quote_sql_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
 def _normalize_title(title: str) -> str:
     return re.sub(r"\s+", " ", title.strip().lower())
 
@@ -527,23 +531,24 @@ def _insert_vibe_tags(
 
 
 def _build_ordered_inserts(
-    db: sqlite3.Connection, table_filter: frozenset[str]
+    db: sqlite3.Connection,
+    table_filter: frozenset[str],
+    id_floors: dict[str, int],
+    touched_recommendation_ids: set[int] | None = None,
 ) -> list[str]:
-    """Walk ``db.iterdump()`` and return ordered INSERT statements for the
-    tables in *table_filter*.
+    """Return SQL INSERTs for rows added above the load's id floors.
 
-    The dump contains a mix of DDL, transaction markers, and INSERTs spread
-    across every table.  This helper pulls out the INSERTs, groups them by
-    target table, then emits them in a stable, parent-before-child order so
-    the resulting SQL can be applied to a fresh database without violating
-    foreign-key constraints:
+    Values are rendered by SQLite's ``quote()`` rather than parsing
+    ``iterdump()``.  This preserves explicit IDs and safely handles NULL,
+    quotes, and blobs while keeping the generated migration self-contained.
+    Rows are emitted in a stable, parent-before-child order so the resulting
+    SQL can be applied to a fresh database without violating foreign keys:
 
         imported_vibe_posts → recommendations → recommendation_evidence
         → imported_post_images → vibe_tags → (pipeline state) → (any others)
 
-    Anything in *table_filter* that's missing from the dump is silently
-    skipped; anything not in the filter is dropped (so callers can omit
-    pipeline state).
+    ``id_floors`` must contain the post-migration MAX(id) for each data table;
+    rows at or below those floors are historical data and are omitted.
     """
     table_order = [
         "imported_vibe_posts",
@@ -555,51 +560,69 @@ def _build_ordered_inserts(
         "pipeline_artifacts",
     ]
 
-    insert_by_table: dict[str, list[str]] = {}
-    insert_re = re.compile(
-        r'INSERT\s+INTO\s+(?:"([^"]+)"|([^\s(]+))', re.IGNORECASE
-    )
-    for line in db.iterdump():
-        stripped = line.strip()
-        if not stripped or stripped.upper().startswith("CREATE"):
-            continue
-        if stripped in ("BEGIN TRANSACTION;", "COMMIT;"):
-            continue
-        if not stripped.upper().startswith("INSERT INTO"):
-            continue
-        match = insert_re.match(stripped)
-        table = (match.group(1) or match.group(2)) if match else ""
-        if not table or table == "sqlite_sequence":
-            continue
-        if table not in table_filter:
-            continue
-        insert_by_table.setdefault(table, []).append(line)
-
     ordered: list[str] = []
     for table in table_order:
-        if table in table_filter:
-            ordered.extend(insert_by_table.pop(table, []))
-    for table in sorted(insert_by_table):
-        ordered.extend(insert_by_table[table])
+        if table not in table_filter:
+            continue
+        table_name = _quote_sql_identifier(table)
+        columns = [
+            row[1]
+            for row in db.execute(f"PRAGMA table_info({table_name})").fetchall()
+        ]
+        if not columns:
+            continue
+        quoted_columns = ", ".join(_quote_sql_identifier(column) for column in columns)
+        quoted_values = ", ".join(
+            f"quote({_quote_sql_identifier(column)})" for column in columns
+        )
+        rows = db.execute(
+            f"SELECT {quoted_values} FROM {table_name} "
+            f"WHERE {_quote_sql_identifier('id')} > ? "
+            f"ORDER BY {_quote_sql_identifier('id')}",
+            (id_floors.get(table, 0),),
+        )
+        ordered.extend(
+            f"INSERT OR IGNORE INTO {table_name} ({quoted_columns}) VALUES "
+            f"({', '.join(value for value in row)});"
+            for row in rows
+        )
+
+        # A recommendation can be updated in place by the loader (metadata
+        # and, later, evidence_score).  Its id is therefore not a sufficient
+        # delta marker.  Emit a complete idempotent UPDATE for touched rows
+        # that predate this load; new rows are already covered by INSERT.
+        if table == "recommendations" and touched_recommendation_ids:
+            for recommendation_id in sorted(touched_recommendation_ids):
+                if recommendation_id <= id_floors.get(table, 0):
+                    row = db.execute(
+                        f"SELECT {quoted_values} FROM {table_name} "
+                        f"WHERE {_quote_sql_identifier('id')} = ?",
+                        (recommendation_id,),
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    assignments = ", ".join(
+                        f"{_quote_sql_identifier(column)}={value}"
+                        for column, value in zip(columns, row)
+                        if column != "id"
+                    )
+                    ordered.append(
+                        f"UPDATE {table_name} SET {assignments} "
+                        f"WHERE {_quote_sql_identifier('id')}={row[columns.index('id')]};"
+                    )
     return ordered
 
 
-_INSERT_INTO_RE = re.compile(r"\bINSERT\s+INTO\b", re.IGNORECASE)
-
-
-def _rewrite_inserts_to_ignore(inserts: list[str]) -> list[str]:
-    """Rewrite every ``INSERT INTO`` to ``INSERT OR IGNORE INTO``.
-
-    The dump produced by ``iterdump()`` carries whatever INSERT form the
-    loader used in-process (UPSERT, plain INSERT, INSERT OR IGNORE).  For a
-    re-applicable data migration we need a uniform idempotent form: any
-    natural-unique-constraint hit (e.g. duplicate ``reddit_post_id``)
-    becomes a no-op instead of a conflict error.  Tables without a unique
-    constraint (``imported_post_images``, ``recommendations``) are still
-    rewritten — the rewrite is harmless there because there's nothing to
-    ignore, and the uniform form makes the migration readable.
-    """
-    return [_INSERT_INTO_RE.sub("INSERT OR IGNORE INTO", s, count=1) for s in inserts]
+def _capture_data_table_id_floors(db: sqlite3.Connection) -> dict[str, int]:
+    """Capture the historical row boundary before this load mutates SQLite."""
+    return {
+        table: int(
+            db.execute(
+                f'SELECT COALESCE(MAX("id"), 0) FROM {_quote_sql_identifier(table)}'
+            ).fetchone()[0]
+        )
+        for table in DATA_TABLES
+    }
 
 
 _MIGRATION_NAME_RE = re.compile(r"^(\d{4})_")
@@ -638,6 +661,8 @@ def _write_data_migration(
     db: sqlite3.Connection,
     migrations_dir: Path,
     run_started_at: datetime,
+    id_floors: dict[str, int],
+    touched_recommendation_ids: set[int] | None = None,
 ) -> list[Path]:
     """Emit a sequence of versioned data migrations to *migrations_dir*.
 
@@ -677,8 +702,9 @@ def _write_data_migration(
                 f"Delete it (or pick a new --migrations-dir) and re-run."
             )
 
-        inserts = _build_ordered_inserts(db, tables)
-        inserts = _rewrite_inserts_to_ignore(inserts)
+        inserts = _build_ordered_inserts(
+            db, tables, id_floors, touched_recommendation_ids
+        )
 
         table_list = ", ".join(sorted(tables))
         header = (
@@ -1005,6 +1031,11 @@ def main(argv: list[str] | None = None) -> None:
                 )
                 raise SystemExit(1)
 
+        # Establish the historical boundary only after setup/migrations and
+        # immediately before processing the current artifacts.  The emitted
+        # migration must contain only rows introduced by this load.
+        data_table_id_floors = _capture_data_table_id_floors(db)
+
         # Process each post
         posts_seen = 0
         posts_publishable = 0
@@ -1013,6 +1044,7 @@ def main(argv: list[str] | None = None) -> None:
         recommendations_upserted = 0
         evidence_inserted = 0
         tags_inserted = 0
+        touched_recommendation_ids: set[int] = set()
         errors: list[dict[str, Any]] = []
 
         for pid in post_ids:
@@ -1044,6 +1076,7 @@ def main(argv: list[str] | None = None) -> None:
                             rec_id = _upsert_recommendation(db, match)
                             if rec_id != -1:
                                 rec_id_by_key[match["candidate_key"]] = rec_id
+                                touched_recommendation_ids.add(rec_id)
                         except Exception as exc:
                             errors.append(
                                 {
@@ -1219,7 +1252,13 @@ def main(argv: list[str] | None = None) -> None:
         migrations_dir = Path(args.migrations_dir)
         if not migrations_dir.is_absolute():
             migrations_dir = root / migrations_dir
-        _write_data_migration(db, migrations_dir, run_started_at)
+        _write_data_migration(
+            db,
+            migrations_dir,
+            run_started_at,
+            data_table_id_floors,
+            touched_recommendation_ids,
+        )
 
         print(
             f"[pipeline:load] Done: {posts_publishable} publishable, "

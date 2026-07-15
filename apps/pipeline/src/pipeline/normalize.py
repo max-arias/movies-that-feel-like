@@ -182,6 +182,22 @@ def _normalize_post(
     }
 
 
+def _read_excluded_reddit_ids(path: Path) -> set[str]:
+    """Read Reddit post IDs to exclude from a newline-delimited file."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError as exc:
+        raise SystemExit(
+            f"[pipeline:normalize] Exclusion file does not exist: {path}"
+        ) from exc
+    except OSError as exc:
+        raise SystemExit(
+            f"[pipeline:normalize] Could not read exclusion file {path}: {exc}"
+        ) from exc
+
+    return {line.strip() for line in lines if line.strip()}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Normalize a raw Arctic Shift artifact into clean records.",
@@ -201,6 +217,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         default=None,
         help="Output path (default: data/working/normalized/normalized-{stem}-{timestamp}.json)",
+    )
+    parser.add_argument(
+        "--exclude-reddit-ids-file",
+        default=None,
+        help="Path to a newline-delimited set of Reddit post IDs to exclude",
     )
     return parser
 
@@ -235,12 +256,33 @@ def main(argv: list[str] | None = None) -> None:
     raw_posts = raw_artifact.get("posts", [])
     raw_stem = raw_path.stem
 
-    print(f"[pipeline:normalize] Processing {len(raw_posts)} posts from {raw_path.name}")
+    excluded_ids: set[str] = set()
+    if args.exclude_reddit_ids_file is not None:
+        excluded_ids = _read_excluded_reddit_ids(Path(args.exclude_reddit_ids_file))
+
+    # Exclude against the raw Reddit ID before normalization so the source
+    # post and its corresponding comment tree cannot enter the artifact.
+    posts = [post for post in raw_posts if post.get("id") not in excluded_ids]
+    excluded_count = len(raw_posts) - len(posts)
+
+    print(
+        f"[pipeline:normalize] Processing {len(posts)} posts from {raw_path.name}"
+        + (f" ({excluded_count} excluded)" if excluded_count else "")
+    )
 
     # Normalize each post --------------------------------------------------
     normalized_posts = [
-        _normalize_post(p, str(raw_path)) for p in raw_posts
+        _normalize_post(p, str(raw_path)) for p in posts
     ]
+
+    comments_by_post = raw_artifact.get("comments_by_post", {})
+    if excluded_ids:
+        included_comment_keys = {f"t3_{post.get('id')}" for post in posts}
+        comments_by_post = {
+            key: value
+            for key, value in comments_by_post.items()
+            if key in included_comment_keys
+        }
 
     # Count images ---------------------------------------------------------
     total_images = sum(len(p["images"]) for p in normalized_posts)
@@ -255,7 +297,7 @@ def main(argv: list[str] | None = None) -> None:
         "normalized_at": datetime.now(timezone.utc).isoformat(),
         "raw_artifact": str(raw_path),
         "posts": normalized_posts,
-        "comments_by_post": raw_artifact.get("comments_by_post", {}),
+        "comments_by_post": comments_by_post,
         "summary": {
             "post_count": len(normalized_posts),
             "image_count": total_images,
