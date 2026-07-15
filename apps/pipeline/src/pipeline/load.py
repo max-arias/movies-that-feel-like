@@ -37,6 +37,19 @@ PIPELINE_STATE_TABLES: frozenset[str] = frozenset(
     {"processing_runs", "pipeline_artifacts"}
 )
 
+# Ordered chunks for the data migration. Each chunk is a separate
+# ``NNNN_seed_<TS>_NN_<name>.sql`` file applied in sequence by
+# ``wrangler d1 migrations apply``. Order respects foreign-key dependencies:
+# parents before children. Slugs are stable and short so the filename stays
+# under the worker request-body ceiling even with a long timestamp.
+_DATA_MIGRATION_CHUNKS: tuple[tuple[str, frozenset[str]], ...] = (
+    ("01_posts", frozenset({"imported_vibe_posts"})),
+    ("02_recommendations", frozenset({"recommendations"})),
+    ("03_evidence", frozenset({"recommendation_evidence"})),
+    ("04_images", frozenset({"imported_post_images"})),
+    ("05_tags", frozenset({"vibe_tags"})),
+)
+
 # ── Helpers ────────────────────────────────────────────────────────────
 
 
@@ -610,72 +623,86 @@ def _next_migration_number(migrations_dir: Path) -> int:
     return (max(numbers) if numbers else 0) + 1
 
 
-def _migration_filename(sequence: int, when: datetime) -> str:
+def _migration_filename(sequence: int, when: datetime, slug: str) -> str:
     """Format a data-migration filename.
 
-    Example: ``0005_seed_20260714T150042Z.sql``.  Uses the run's start
-    time so the filename records *when the data was collected*, not when
-    the file was written.
+    Example: ``0005_seed_20260714T150042Z_01_posts.sql``.  Uses the run's
+    start time so the filename records *when the data was collected*, not
+    when the file was written. The trailing ``_<slug>`` distinguishes the
+    ordered chunks emitted in a single run.
     """
-    return f"{sequence:04d}_seed_{when.strftime('%Y%m%dT%H%M%SZ')}.sql"
+    return f"{sequence:04d}_seed_{when.strftime('%Y%m%dT%H%M%SZ')}_{slug}.sql"
 
 
 def _write_data_migration(
     db: sqlite3.Connection,
     migrations_dir: Path,
     run_started_at: datetime,
-) -> Path:
-    """Emit a versioned data migration to *migrations_dir*.
+) -> list[Path]:
+    """Emit a sequence of versioned data migrations to *migrations_dir*.
 
-    The emitted file is the next-available ``NNNN_seed_<UTC>.sql`` in the
-    directory.  It contains only the data tables (no pipeline state),
-    every INSERT is rewritten to ``INSERT OR IGNORE`` so the file is safe
-    to re-apply, and the parent-before-child ordering keeps foreign keys
-    valid on a fresh schema.
+    The data is split into one file per logical table group, applied in
+    order by ``wrangler d1 migrations apply`` (lexical sort matches the
+    emitted order because each chunk is suffixed with a fixed sequence
+    like ``_01_posts``, ``_02_recommendations``).  Chunking keeps every
+    file small enough to fit comfortably under worker-side request-body
+    caps even as the corpus grows past the original 242-post run.
 
-    Returns the path that was written.  Raises ``SystemExit`` if the
-    target filename already exists (minute-precision collisions during
-    the 1k run are vanishingly rare; this is a guard against the dev
-    re-running the same load by accident and silently overwriting the
-    prior run's data).
+    Each file:
+      - contains only its assigned data tables (no pipeline state)
+      - rewrites every INSERT to ``INSERT OR IGNORE`` so the file is safe
+        to re-apply
+      - is parent-before-child ordered within the file; chunk order is
+        also parent-before-child across files so foreign keys resolve on
+        a fresh schema.
+
+    Returns the list of paths written, in apply order.  Raises
+    ``SystemExit`` if any target filename already exists (minute-precision
+    collisions during a 1k run are vanishingly rare; this guards against
+    the dev re-running the same load by accident and silently overwriting
+    the prior run's data).
     """
     migrations_dir.mkdir(parents=True, exist_ok=True)
-    sequence = _next_migration_number(migrations_dir)
-    filename = _migration_filename(sequence, run_started_at)
-    path = migrations_dir / filename
+    base_sequence = _next_migration_number(migrations_dir)
 
-    if path.exists():
-        raise SystemExit(
-            f"[pipeline:load] Refusing to overwrite existing migration {path}. "
-            f"Delete it (or pick a new --migrations-dir) and re-run."
+    written: list[Path] = []
+    for offset, (slug, tables) in enumerate(_DATA_MIGRATION_CHUNKS):
+        sequence = base_sequence + offset
+        filename = _migration_filename(sequence, run_started_at, slug)
+        path = migrations_dir / filename
+
+        if path.exists():
+            raise SystemExit(
+                f"[pipeline:load] Refusing to overwrite existing migration {path}. "
+                f"Delete it (or pick a new --migrations-dir) and re-run."
+            )
+
+        inserts = _build_ordered_inserts(db, tables)
+        inserts = _rewrite_inserts_to_ignore(inserts)
+
+        table_list = ", ".join(sorted(tables))
+        header = (
+            f"-- {filename}: data seed from pipeline:load run.\n"
+            f"-- Generated:  {datetime.now(timezone.utc).isoformat()}\n"
+            f"-- Run started: {run_started_at.isoformat()}\n"
+            f"-- Source: data/working/load manifest from this run.\n"
+            f"--\n"
+            f"-- Idempotent: every INSERT is INSERT OR IGNORE, keyed by the\n"
+            f"-- table's natural unique constraint.  Wrangler's migration\n"
+            f"-- tracking normally prevents re-apply; the OR IGNORE is\n"
+            f"-- defense in depth for partial / interrupted re-runs.\n"
+            f"--\n"
+            f"-- Chunk: {slug} ({offset + 1}/{len(_DATA_MIGRATION_CHUNKS)})\n"
+            f"-- Tables: {table_list}.\n"
+            f"-- Pipeline-state tables (processing_runs, pipeline_artifacts)\n"
+            f"-- are intentionally excluded — they're per-run bookkeeping.\n"
         )
+        body = "\n".join(inserts) + "\n"
+        path.write_text(header + "\n" + body, encoding="utf-8")
+        written.append(path)
+        print(f"[pipeline:load] Data migration written to {path}")
 
-    inserts = _build_ordered_inserts(db, DATA_TABLES)
-    inserts = _rewrite_inserts_to_ignore(inserts)
-
-    header = (
-        f"-- {filename}: data seed from pipeline:load run.\n"
-        f"-- Generated:  {datetime.now(timezone.utc).isoformat()}\n"
-        f"-- Run started: {run_started_at.isoformat()}\n"
-        f"-- Source: data/working/load manifest from this run.\n"
-        f"--\n"
-        f"-- Idempotent: every INSERT is INSERT OR IGNORE, keyed by the\n"
-        f"-- table's natural unique constraint (reddit_post_id on\n"
-        f"-- imported_vibe_posts, the (recommendation_id, imported_vibe_post_id,\n"
-        f"-- evidence_comment_id) triple on recommendation_evidence, the\n"
-        f"-- (imported_vibe_post_id, tag) pair on vibe_tags).  Wrangler's\n"
-        f"-- migration tracking normally prevents re-apply; the OR IGNORE\n"
-        f"-- is defense in depth for partial / interrupted re-runs.\n"
-        f"--\n"
-        f"-- Tables: imported_vibe_posts, recommendations,\n"
-        f"--         recommendation_evidence, imported_post_images, vibe_tags.\n"
-        f"-- Pipeline-state tables (processing_runs, pipeline_artifacts)\n"
-        f"-- are intentionally excluded — they're per-run bookkeeping.\n"
-    )
-    body = "\n".join(inserts) + "\n"
-    path.write_text(header + "\n" + body, encoding="utf-8")
-    print(f"[pipeline:load] Data migration written to {path}")
-    return path
+    return written
 
 
 # ── CLI ────────────────────────────────────────────────────────────────
@@ -1192,27 +1219,7 @@ def main(argv: list[str] | None = None) -> None:
         migrations_dir = Path(args.migrations_dir)
         if not migrations_dir.is_absolute():
             migrations_dir = root / migrations_dir
-        migration_path = _write_data_migration(db, migrations_dir, run_started_at)
-
-        # ── Auto-commit and push ────────────────────────────────────
-        try:
-            committed, status = git_ops.auto_commit_and_push(migration_path)
-        except git_ops.GitOpsError as exc:
-            raise SystemExit(
-                f"[pipeline:load] {exc}\n"
-                f"[pipeline:load] Fix the above and re-run."
-            ) from exc
-        if committed:
-            print(f"[pipeline:load] Auto-commit: {status}")
-            print(
-                f"[pipeline:load] Migration committed and pushed: "
-                f"{migration_path.name}"
-            )
-            if not status.startswith("pushed"):
-                print(
-                    f"[pipeline:load] WARNING: push failed (best-effort). "
-                    f"Run manually: git push origin HEAD"
-                )
+        _write_data_migration(db, migrations_dir, run_started_at)
 
         print(
             f"[pipeline:load] Done: {posts_publishable} publishable, "

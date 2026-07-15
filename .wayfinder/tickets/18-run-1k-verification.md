@@ -3,7 +3,7 @@ id: 18
 title: "Run 1k end-to-end verification under 1 hour, with deployable migration"
 type: task
 parent: 10
-status: open
+status: closed
 assignee: max
 blocked_by: [13, 14, 15, 17, 20, 22]
 ---

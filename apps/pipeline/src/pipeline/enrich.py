@@ -392,6 +392,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Collect and dedupe candidates only — no API calls",
     )
+    parser.add_argument(
+        "--allow-failed-extraction",
+        action="store_true",
+        default=False,
+        help="Allow enrichment from an extraction artifact containing failed posts",
+    )
     return parser
 
 
@@ -447,6 +453,7 @@ async def _process_one_candidate(
     matches: list[dict[str, Any]],
     unmatched: list[dict[str, Any]],
     errors: list[dict[str, Any]],
+    progress: dict[str, int],
 ) -> None:
     """Resolve a single candidate, populating *matches*, *unmatched*, or *errors*."""
     title = cand["title"]
@@ -458,6 +465,7 @@ async def _process_one_candidate(
         cached = await cache.get(cand["candidate_key"])
         if cached is not None:
             matches.append(cached)
+            progress["cache_hit"] += 1
             print(f"  {title} → cached hit")
             return
 
@@ -728,6 +736,8 @@ async def _async_main(
     errors: list[dict[str, Any]] = []
 
     sem = asyncio.Semaphore(_CONCURRENCY)
+    progress: dict[str, int] = {"completed": 0, "cache_hit": 0}
+    total = len(candidates)
 
     async def _process(cand: dict[str, Any]) -> None:
         async with sem:
@@ -742,7 +752,15 @@ async def _async_main(
                 matches,
                 unmatched,
                 errors,
+                progress,
             )
+            progress["completed"] += 1
+            completed = progress["completed"]
+            if completed % 10 == 0 or completed == total:
+                print(
+                    f"[pipeline:enrich] Progress: {completed}/{total} "
+                    f"(cache hits: {progress['cache_hit']})"
+                )
 
     try:
         tasks = [asyncio.create_task(_process(c)) for c in candidates]
@@ -781,7 +799,10 @@ def main(argv: list[str] | None = None) -> None:
 
     artifact = read_json_artifact(input_path)
     try:
-        validate_complete_extraction(artifact)
+        validate_complete_extraction(
+            artifact,
+            allow_failed=args.allow_failed_extraction,
+        )
     except ValueError as exc:
         raise SystemExit(f"[pipeline:enrich] {exc}") from exc
     results = artifact.get("results", [])
@@ -836,6 +857,7 @@ def main(argv: list[str] | None = None) -> None:
             "extraction_artifact": str(input_path),
             "args": {
                 "dry_run": True,
+                "allow_failed_extraction": args.allow_failed_extraction,
                 "limit": args.limit,
                 "include_adult": args.include_adult,
                 "language": args.language,
@@ -875,6 +897,7 @@ def main(argv: list[str] | None = None) -> None:
         "extraction_artifact": str(input_path),
         "args": {
             "dry_run": False,
+            "allow_failed_extraction": args.allow_failed_extraction,
             "limit": args.limit,
             "include_adult": args.include_adult,
             "language": args.language,
