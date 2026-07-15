@@ -6,23 +6,44 @@ export interface Props {
 const { title } = Astro.props;
 ---
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title ?? "Movies That Feel Like"}</title>
   </head>
   <body>
-    <div class="navbar bg-base-300 shadow-sm mb-6">
-      <div class="flex-1">
-        <a href="/" class="btn btn-ghost text-xl">🎬 Movies That Feel Like</a>
-      </div>
-      <div class="flex-none gap-2">
-        <span class="badge badge-soft badge-primary">tracer bullet</span>
-      </div>
-    </div>
-    <main class="max-w-7xl mx-auto px-4 pb-12">
+    <header class="site-header">
+      <a href="/" class="brand" aria-label="Movies That Feel Like home">
+        <span class="brand-mark" aria-hidden="true">MTFL</span>
+        <span>Movies<br />That Feel Like</span>
+      </a>
+      <button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark theme">
+        <span class="theme-sun" aria-hidden="true">☼</span>
+        <span class="theme-moon" aria-hidden="true">◐</span>
+        <span data-theme-label>Light</span>
+      </button>
+    </header>
+    <main>
       <slot />
     </main>
+    <script is:inline>
+      const root = document.documentElement;
+      const toggle = document.querySelector('[data-theme-toggle]');
+      const label = document.querySelector('[data-theme-label]');
+      const savedTheme = localStorage.getItem('mtfl-theme');
+      if (savedTheme) root.dataset.theme = savedTheme;
+      const updateThemeLabel = () => {
+        const dark = root.dataset.theme === 'dark';
+        if (label) label.textContent = dark ? 'Dark' : 'Light';
+        if (toggle) toggle.setAttribute('aria-label', `Switch to ${dark ? 'light' : 'dark'} theme`);
+      };
+      updateThemeLabel();
+      toggle?.addEventListener('click', () => {
+        root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+        localStorage.setItem('mtfl-theme', root.dataset.theme);
+        updateThemeLabel();
+      });
+    </script>
   </body>
 </html>

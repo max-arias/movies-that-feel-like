@@ -16,123 +16,127 @@ try {
 } catch (e) {
   dbError = String(e);
 }
+
+const tagCounts = new Map<string, number>();
+for (const post of posts) {
+  for (const { tag } of post.tags) tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+}
+const tags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+const requestedTag = Astro.url.searchParams.get("tag");
+const selectedTag = requestedTag && tagCounts.has(requestedTag) ? requestedTag : "all";
+const visiblePosts = selectedTag === "all"
+  ? posts
+  : posts.filter((post) => post.tags.some(({ tag }) => tag === selectedTag));
+const tagHref = (tag: string) => tag === "all"
+  ? Astro.url.pathname
+  : `${Astro.url.pathname}?tag=${encodeURIComponent(tag)}`;
 ---
 
-<Layout title="Movies That Feel Like — discovery feed">
-  <div class="mb-8">
-    <h1 class="text-3xl font-bold mb-2">Movies That Feel Like</h1>
-    <p class="text-base-content/70">
-      Discover movies recommended from image-driven Reddit posts.
-    </p>
-  </div>
-
+<Layout title="Movies That Feel Like — a visual discovery index">
   {
     dbError ? (
-      <div class="hero min-h-64 bg-base-200 rounded-box">
-        <div class="hero-content text-center">
-          <div class="max-w-md">
-            <h2 class="text-xl font-bold">Database error</h2>
-            <p class="py-4 text-sm text-error">{dbError}</p>
-            <p class="text-base-content/60 text-xs">
+      <div class="empty-state">
+          <h2>Database error</h2>
+          <p class="error-copy">{dbError}</p>
+          <p class="muted-copy">
               Make sure the local D1 database is initialized:
               <code class="ml-1">npm run db:migrate</code>
-            </p>
-          </div>
-        </div>
+          </p>
       </div>
     ) : posts.length === 0 ? (
-      <div class="hero min-h-64 bg-base-200 rounded-box">
-        <div class="hero-content text-center">
-          <div class="max-w-md">
-            <h2 class="text-xl font-bold">No posts loaded yet</h2>
-            <p class="py-4 text-base-content/70">
+      <div class="empty-state">
+          <h2>No posts loaded yet</h2>
+          <p class="muted-copy">
               No publishable posts found in the database.
-            </p>
-            <p class="text-base-content/60 text-xs">
+          </p>
+          <p class="muted-copy">
               Run the pipeline load stage and <code>npm run seed</code>.
-            </p>
-          </div>
-        </div>
+          </p>
       </div>
     ) : (
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-        {posts.map((post) => (
-          <div class="card card-sm bg-base-200 shadow-sm">
-            <figure>
-              {post.images.length > 0 ? (
-                <img
-                  src={post.images[0].url}
-                  alt={post.title}
-                  class="w-full h-56 object-cover"
-                  loading="lazy"
-                />
-              ) : (
-                <div class="w-full h-56 bg-base-300 flex items-center justify-center text-base-content/40">
-                  No image
+      <div class="index-layout">
+        <section class="feed" aria-label="Vibe posts">
+          <div class="drawer mobile-filter">
+            <input id="mobile-filter-drawer" type="checkbox" class="drawer-toggle" />
+            <div class="drawer-content">
+              <label for="mobile-filter-drawer" class="filter-trigger">Filters <span aria-hidden="true">＋</span></label>
+            </div>
+            <div class="drawer-side">
+              <label for="mobile-filter-drawer" class="drawer-overlay" aria-label="Close filters"></label>
+              <div class="filter-drawer-panel">
+                <div class="filter-drawer-heading"><span>Filter by feeling</span><label for="mobile-filter-drawer" aria-label="Close filters">×</label></div>
+                <div class="tag-list" role="group" aria-label="Filter posts by tag">
+                  <a class:list={["tag-filter", { "is-active": selectedTag === "all" }]} style="--tag-size: 2rem" href={tagHref("all")} aria-current={selectedTag === "all" ? "page" : undefined}><b>{postCount}</b><span>All</span></a>
+                  {tags.map(([tag, count]) => <a class:list={["tag-filter", { "is-active": selectedTag === tag }]} style={`--tag-size: ${Math.max(1, 1 + (count / Math.max(...tags.map(([, value]) => value))) ** 0.7 * .65)}rem`} href={tagHref(tag)} aria-current={selectedTag === tag ? "page" : undefined}><b>{count}</b><span>{tag}</span></a>)}
                 </div>
-              )}
-            </figure>
-            <div class="card-body">
-              <div class="flex items-start justify-between gap-2">
-                <h2 class="card-title text-lg">{post.title}</h2>
-                {post.images[0]?.cache_status === "cached" ? (
-                  <span class="badge badge-soft badge-success badge-xs">cached</span>
-                ) : (
-                  <span class="badge badge-soft badge-warning badge-xs">
-                    {post.images[0]?.cache_status ?? "pending"}
-                  </span>
-                )}
-              </div>
-
-              {post.vibe_summary && (
-                <p class="text-sm text-base-content/70 line-clamp-2">
-                  {post.vibe_summary}
-                </p>
-              )}
-
-              {post.tags.length > 0 && (
-                <div class="flex flex-wrap gap-1 mt-1">
-                  {post.tags.map((t) => (
-                    <span class="badge badge-soft badge-outline badge-sm">{t.tag}</span>
-                  ))}
-                </div>
-              )}
-
-              {post.recommendations.length > 0 && (
-                <div class="mt-2">
-                  <p class="text-xs font-semibold mb-1">Top recommendations</p>
-                  <div class="flex flex-wrap gap-1">
-                    {post.recommendations.slice(0, 5).map((rec) => (
-                      <a
-                        href={`/recommendations/${rec.id}/`}
-                        class="badge badge-soft badge-accent badge-sm hover:badge-outline"
-                      >
-                        {rec.title} {rec.release_year ? `(${rec.release_year})` : ""}
-                      </a>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <div class="card-actions justify-between items-center mt-3">
-                <a
-                  href={post.permalink ? `https://reddit.com${post.permalink}` : "#"}
-                  class="btn btn-ghost btn-xs"
-                  target="_blank"
-                >
-                  Source ↗
-                </a>
-                <a
-                  href={`/posts/${post.reddit_post_id}/`}
-                  class="btn btn-primary btn-sm"
-                >
-                  View details
-                </a>
               </div>
             </div>
           </div>
-        ))}
+          <div class="rails">
+            {[0, 1].map((rail) => (
+              <div class="rail" data-rail={rail}>
+                {visiblePosts.filter((_, index) => index % 2 === rail).map((post, index) => (
+                  <article class="vibe-post">
+                    {post.images.length > 0 ? (
+                      <div class="film-gallery carousel" data-gallery aria-label={`Image gallery for ${post.title}`}>
+                        <a class="gallery-link" href={`/posts/${post.reddit_post_id}/`} aria-label={`View details for ${post.title}`}>
+                          <div class="gallery-track carousel-item">
+                            {post.images.map((image, imageIndex) => (
+                              <img src={image.url} alt={`${post.title} — image ${imageIndex + 1}`} loading="lazy" />
+                            ))}
+                          </div>
+                        </a>
+                        {post.images.length > 1 && <div class="gallery-controls"><button type="button" data-gallery-previous aria-label="Previous image">←</button><span data-gallery-status>01 / {String(post.images.length).padStart(2, "0")}</span><button type="button" data-gallery-next aria-label="Next image">→</button></div>}
+                        {post.images.length > 1 && <span class="image-count">{String(post.images.length).padStart(2, "0")} frames</span>}
+                      </div>
+                    ) : <div class="no-image">No image loaded</div>}
+                    <div class="post-caption">
+                      <h2>{post.cleaned_title ?? post.title}</h2>
+                      {post.vibe_summary && <p>{post.vibe_summary}</p>}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ))}
+          </div>
+        </section>
+        <aside class="tag-index" aria-label="Filter by feeling">
+          <div class="desktop-tag-list tag-list" role="group" aria-label="Filter posts by tag">
+            <a class:list={["tag-filter", { "is-active": selectedTag === "all" }]} style="--tag-size: 4.8rem" href={tagHref("all")} aria-current={selectedTag === "all" ? "page" : undefined}><b>{postCount}</b><span>All</span></a>
+            {tags.map(([tag, count]) => <a class:list={["tag-filter", { "is-active": selectedTag === tag }]} style={`--tag-size: ${Math.max(1.1, 1.1 + (count / Math.max(...tags.map(([, value]) => value))) ** 0.7 * 2.8)}rem`} href={tagHref(tag)} aria-current={selectedTag === tag ? "page" : undefined}><b>{count}</b><span>{tag}</span></a>)}
+          </div>
+        </aside>
       </div>
     )
   }
 </Layout>
+
+<style is:global>
+  .post-caption h2 {
+    overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 760px) {
+    .feed .mobile-filter {
+      margin: -48px calc(50% - 50vw) 18px !important;
+      width: 100vw !important;
+    }
+  }
+</style>
+
+<script>
+  document.querySelectorAll<HTMLElement>("[data-gallery]").forEach((gallery) => {
+    const track = gallery.querySelector<HTMLElement>(".gallery-track");
+    const slides = Array.from(gallery.querySelectorAll<HTMLImageElement>("img"));
+    const status = gallery.querySelector<HTMLElement>("[data-gallery-status]");
+    let current = 0;
+    const move = (direction: number) => {
+      current = (current + direction + slides.length) % slides.length;
+      track?.scrollTo({ left: current * (track.clientWidth || 1), behavior: "smooth" });
+      if (status) status.textContent = `${String(current + 1).padStart(2, "0")} / ${String(slides.length).padStart(2, "0")}`;
+    };
+    gallery.querySelector("[data-gallery-previous]")?.addEventListener("click", () => move(-1));
+    gallery.querySelector("[data-gallery-next]")?.addEventListener("click", () => move(1));
+  });
+
+</script>
