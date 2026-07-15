@@ -66,7 +66,7 @@ const tagHref = (tag: string) => tag === "all"
               <div class="filter-drawer-panel">
                 <div class="filter-drawer-heading"><span>Filter by feeling</span><label for="mobile-filter-drawer" aria-label="Close filters">×</label></div>
                 <div class="tag-list" role="group" aria-label="Filter posts by tag">
-                  <a class:list={["tag-filter", { "is-active": selectedTag === "all" }]} style="--tag-size: 2rem" href={tagHref("all")} aria-current={selectedTag === "all" ? "page" : undefined}><b>{postCount}</b><span>All</span></a>
+                  <a class:list={["tag-filter", { "is-active": selectedTag === "all" }]} style="--tag-size: 2rem" href={tagHref("all")} aria-current={selectedTag === "all" ? "page" : undefined}><span>All</span></a>
                   {tags.map(([tag, count]) => <a class:list={["tag-filter", { "is-active": selectedTag === tag }]} style={`--tag-size: ${Math.max(1, 1 + (count / Math.max(...tags.map(([, value]) => value))) ** 0.7 * .65)}rem`} href={tagHref(tag)} aria-current={selectedTag === tag ? "page" : undefined}><b>{count}</b><span>{tag}</span></a>)}
                 </div>
               </div>
@@ -87,7 +87,6 @@ const tagHref = (tag: string) => tag === "all"
                           </div>
                         </a>
                         {post.images.length > 1 && <div class="gallery-controls"><button type="button" data-gallery-previous aria-label="Previous image">←</button><span data-gallery-status>01 / {String(post.images.length).padStart(2, "0")}</span><button type="button" data-gallery-next aria-label="Next image">→</button></div>}
-                        {post.images.length > 1 && <span class="image-count">{String(post.images.length).padStart(2, "0")} frames</span>}
                       </div>
                     ) : <div class="no-image">No image loaded</div>}
                     <div class="post-caption">
@@ -102,7 +101,7 @@ const tagHref = (tag: string) => tag === "all"
         </section>
         <aside class="tag-index" aria-label="Filter by feeling">
           <div class="desktop-tag-list tag-list" role="group" aria-label="Filter posts by tag">
-            <a class:list={["tag-filter", { "is-active": selectedTag === "all" }]} style="--tag-size: 4.8rem" href={tagHref("all")} aria-current={selectedTag === "all" ? "page" : undefined}><b>{postCount}</b><span>All</span></a>
+            <a class:list={["tag-filter", { "is-active": selectedTag === "all" }]} style="--tag-size: 4.8rem" href={tagHref("all")} aria-current={selectedTag === "all" ? "page" : undefined}><span>All</span></a>
             {tags.map(([tag, count]) => <a class:list={["tag-filter", { "is-active": selectedTag === tag }]} style={`--tag-size: ${Math.max(1.1, 1.1 + (count / Math.max(...tags.map(([, value]) => value))) ** 0.7 * 2.8)}rem`} href={tagHref(tag)} aria-current={selectedTag === tag ? "page" : undefined}><b>{count}</b><span>{tag}</span></a>)}
           </div>
         </aside>
