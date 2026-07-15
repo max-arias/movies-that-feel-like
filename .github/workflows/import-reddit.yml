@@ -118,9 +118,9 @@ jobs:
           npm run pipeline:fetch -- \
             --subreddit MoviesThatFeelLike --year 2026 \
             --limit "$IMPORT_LIMIT" --max-pages "$IMPORT_MAX_PAGES" --sort desc \
-            --exclude-reddit-ids-file data/working/excluded-reddit-ids.txt
+            --exclude-reddit-ids-file "$GITHUB_WORKSPACE/data/working/excluded-reddit-ids.txt"
           npm run pipeline:normalize -- \
-            --exclude-reddit-ids-file data/working/excluded-reddit-ids.txt
+            --exclude-reddit-ids-file "$GITHUB_WORKSPACE/data/working/excluded-reddit-ids.txt"
           normalized=$(find data/working/normalized -maxdepth 1 -type f -name '*.json' -printf '%T@ %p\n' \
             | sort -nr | cut -d' ' -f2- | head -n1)
           posts=$(jq -r '.posts | length' "$normalized")
