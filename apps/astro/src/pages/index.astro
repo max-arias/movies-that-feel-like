@@ -96,10 +96,11 @@ const allTagSizes = "--tag-mobile-size: 6rem; --tag-285-size: 8.064rem; --tag-30
                         {post.images.length > 1 && <div class="absolute bottom-0 right-0 z-10 flex items-center gap-control bg-paper px-control-x py-control-y text-label transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark"><button class="cursor-pointer border-0 bg-transparent p-0 text-control text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-ink-dark" type="button" data-gallery-previous aria-label="Previous image">←</button><span class="tabular-nums text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark" data-gallery-status>01 / {String(post.images.length).padStart(2, "0")}</span><button class="cursor-pointer border-0 bg-transparent p-0 text-control text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-ink-dark" type="button" data-gallery-next aria-label="Next image">→</button></div>}
                       </div>
                     ) : <div class="flex aspect-square items-center justify-center bg-gallery-empty text-no-image text-gallery-empty-text">No image loaded</div>}
-                    <div class="pt-caption-top pb-5">
-                      <h2 class="mb-3 font-display text-caption uppercase wrap-anywhere">{post.cleaned_title ?? post.title}</h2>
-                      {post.vibe_summary && <p class="mb-4 text-summary text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">{post.vibe_summary}</p>}
-                    </div>
+                    {post.vibe_summary && (
+                      <p class="mt-3 text-summary text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">
+                        {post.vibe_summary}
+                      </p>
+                    )}
                   </article>
                 ))}
               </div>
