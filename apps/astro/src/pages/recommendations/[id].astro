@@ -40,14 +40,14 @@ if (rec && rec.platforms) {
           <p class="py-4 text-base-content/70">
             No recommendation with ID "{Astro.params.id}" was found.
           </p>
-          <a href="/" class="btn btn-primary">Back to feed</a>
+          <a href="/" class="btn btn-primary focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark">Back to feed</a>
         </div>
       </div>
     </div>
   ) : (
     <>
       <div class="mb-6">
-        <a href="/" class="link link-neutral text-sm">&larr; Back to feed</a>
+        <a href="/" class="link link-neutral text-sm focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark">&larr; Back to feed</a>
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -59,7 +59,7 @@ if (rec && rec.platforms) {
               class="w-full rounded-box shadow-sm"
             />
           ) : (
-            <div class="w-full aspect-[2/3] bg-base-300 rounded-box flex items-center justify-center text-base-content/40">
+            <div class="w-full aspect-poster bg-base-300 rounded-box flex items-center justify-center text-base-content/40">
               No poster
             </div>
           )}
@@ -100,7 +100,7 @@ if (rec && rec.platforms) {
                   <div class="stat-title">IGDB</div>
                   <div class="stat-value text-lg">
                     {rec.external_url ? (
-                      <a href={rec.external_url} class="link link-primary" target="_blank">
+                      <a href={rec.external_url} class="link link-primary focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark" target="_blank">
                         #{rec.igdb_id} ↗
                       </a>
                     ) : (
@@ -118,7 +118,7 @@ if (rec && rec.platforms) {
                   <div class="stat-value text-lg">
                     <a
                       href={`https://www.imdb.com/title/${rec.imdb_id}/`}
-                      class="link link-primary"
+                      class="link link-primary focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark"
                       target="_blank"
                     >
                       {rec.imdb_id} ↗
@@ -132,7 +132,7 @@ if (rec && rec.platforms) {
                   <div class="stat-value text-lg">
                     <a
                       href={`https://www.themoviedb.org/${rec.media_type}/${rec.tmdb_id}`}
-                      class="link link-primary"
+                      class="link link-primary focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark"
                       target="_blank"
                     >
                       #{rec.tmdb_id} ↗
@@ -167,7 +167,7 @@ if (rec && rec.platforms) {
                     <div class="card-body p-4">
                       <a
                         href={`/posts/${post.reddit_post_id}/`}
-                        class="card-title text-base hover:link"
+                        class="card-title text-base hover:link focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark"
                       >
                         {post.title}
                       </a>

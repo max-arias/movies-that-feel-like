@@ -1,32 +1,32 @@
 ---
-import "../styles/global.css";
+import "../styles/app.css";
 export interface Props {
   title?: string;
 }
 const { title } = Astro.props;
 ---
 <!doctype html>
-<html lang="en">
+<html lang="en" class="bg-paper font-body text-ink scroll-smooth motion-reduce:scroll-auto transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark theme-dark:text-ink-dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title ?? "Movies That Feel Like"}</title>
   </head>
-  <body>
-    <header class="site-header">
-      <a href="/" class="brand" aria-label="Movies That Feel Like home">
-        <span class="brand-mark" aria-hidden="true">MTFL</span>
-        <span>Movies<br />That Feel Like</span>
+  <body class="min-w-80 bg-paper font-body text-body text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark theme-dark:text-ink-dark">
+    <header class="sticky top-0 z-30 mx-0 flex min-h-header items-center justify-between border-b border-line bg-paper px-5 transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark md:static md:mx-gutter md:bg-transparent md:px-0 md:theme-dark:bg-transparent theme-dark:border-line-dark">
+      <a href="/" class="flex items-center gap-2.5 text-brand uppercase transition-colors duration-240 ease-theme motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-ink-dark" aria-label="Movies That Feel Like home">
+        <span class="h-brand-mark-height w-brand-mark-width flex items-center justify-center bg-red font-display text-mark text-paper transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-red-dark theme-dark:text-paper-dark" aria-hidden="true">MTFL</span>
+        <span class="transition-colors duration-240 ease-theme motion-reduce:transition-none">Movies<br />That Feel Like</span>
       </a>
-      <label class="theme-toggle">
-        <input class="theme-controller" type="checkbox" value="dark" aria-label="Switch to dark theme" />
-        <span class="theme-sun" aria-hidden="true">☼</span>
-        <span class="theme-moon" aria-hidden="true">◐</span>
-        <span class="theme-label-light" aria-hidden="true">Light</span>
-        <span class="theme-label-dark" aria-hidden="true">Dark</span>
+      <label class="flex cursor-pointer items-center justify-self-end gap-2 bg-transparent py-2 pl-2.5 text-label uppercase tracking-theme text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-ink-dark">
+        <input class="theme-controller peer absolute h-px w-px opacity-0 focus-visible:outline-none" type="checkbox" value="dark" aria-label="Switch to dark theme" />
+        <span class="text-icon text-red transition-colors duration-240 ease-theme motion-reduce:transition-none peer-checked:hidden theme-dark:text-red-dark" aria-hidden="true">☼</span>
+        <span class="hidden text-icon text-red transition-colors duration-240 ease-theme motion-reduce:transition-none peer-checked:inline theme-dark:text-red-dark" aria-hidden="true">◐</span>
+        <span class="transition-colors duration-240 ease-theme motion-reduce:transition-none peer-checked:hidden" aria-hidden="true">Light</span>
+        <span class="hidden transition-colors duration-240 ease-theme motion-reduce:transition-none peer-checked:inline" aria-hidden="true">Dark</span>
       </label>
     </header>
-    <main>
+    <main class="relative mx-auto w-full max-w-content px-gutter motion-reduce:scroll-auto md:static">
       <slot />
     </main>
   </body>

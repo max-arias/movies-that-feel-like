@@ -1,0 +1,104 @@
+@import "tailwindcss";
+@plugin "daisyui";
+
+@theme {
+  --color-paper: oklch(98% 0 0);
+  --color-paper-dark: oklch(13% 0 0);
+  --color-ink: oklch(13% 0 0);
+  --color-ink-dark: oklch(95% 0 0);
+  --color-quiet: oklch(48% 0 0);
+  --color-quiet-dark: oklch(68% 0 0);
+  --color-line: oklch(84% 0 0);
+  --color-line-dark: oklch(29% 0 0);
+  --color-red: oklch(48% 0.19 28);
+  --color-red-dark: oklch(64% 0.18 28);
+  --color-gallery: oklch(21% 0 0);
+  --color-gallery-empty: oklch(23% 0 0);
+  --color-gallery-empty-text: oklch(70% 0 0);
+  --color-gallery-overlay: oklch(0% 0 0 / 0.28);
+  --font-body: "Avenir Next", "Helvetica Neue", ui-sans-serif, sans-serif;
+  --font-display: "Arial Narrow", "Avenir Next Condensed", "Helvetica Neue", sans-serif;
+  --spacing-gutter: 4vw;
+  --spacing-header: 82px;
+  --spacing-brand-mark-height: 31px;
+  --spacing-brand-mark-width: 42px;
+  --spacing-drawer-top: 82px;
+  --spacing-post: 54px;
+  --spacing-post-mobile: 36px;
+  --spacing-rail-offset: 104px;
+  --spacing-rail-gap: clamp(18px, 3vw, 48px);
+  --spacing-index-gap: clamp(28px, 4vw, 64px);
+  --spacing-post-top: 22px;
+  --spacing-tag-gap: clamp(8px, 1vw, 13px);
+  --spacing-tag: 5px;
+  --spacing-tag-mobile: 8px;
+  --spacing-mobile-rail-gap: 14px;
+  --spacing-sidebar-top: 14px;
+  --spacing-sidebar-bottom: 18px;
+  --spacing-drawer-overlap: -48px;
+  --spacing-drawer-margin: 18px;
+  --spacing-full-bleed: calc(50% - 50vw);
+  --spacing-sidebar-height: calc(100dvh - 120px);
+  --spacing-gallery-overlay: 28%;
+  --spacing-detail-gallery: clamp(18rem, 55vw, 42rem);
+  --spacing-detail-image: 70vh;
+  --spacing-caption-top: 17px;
+  --spacing-filter-x: 15px;
+  --spacing-filter-y: 13px;
+  --spacing-drawer-panel-y: 22px;
+  --spacing-drawer-heading-pad: 14px;
+  --spacing-close: 5px;
+  --spacing-control-x: 10px;
+  --spacing-control-y: 7px;
+  --spacing-control-gap: 11px;
+  --spacing-empty: 50px;
+  --container-drawer-panel: min(84vw, 360px);
+  --container-content: 1440px;
+  --aspect-poster: 2 / 3;
+  --text-body: 15px;
+  --text-brand: .625rem;
+  --text-label: .625rem;
+  --text-brand--line-height: 1.1;
+  --text-brand--letter-spacing: .12em;
+  --text-brand--font-weight: 600;
+  --text-mark: 11px;
+  --text-mark--letter-spacing: -.04em;
+  --text-icon: 18px;
+  --text-icon--line-height: 1;
+  --text-filter: 11px;
+  --text-filter--letter-spacing: .12em;
+  --text-filter--font-weight: 700;
+  --text-close: 25px;
+  --text-close--line-height: .6;
+  --text-control: 16px;
+  --text-control--line-height: 1;
+  --text-count: 10px;
+  --text-count--letter-spacing: .05em;
+  --text-summary: 12px;
+  --text-summary--line-height: 1.5;
+  --text-error: 13px;
+  --text-no-image: 11px;
+  --text-caption: clamp(1.5rem, 2.5vw, 2.35rem);
+  --text-caption--line-height: .92;
+  --text-caption--letter-spacing: -.045em;
+  --text-caption--font-weight: 700;
+  --leading-tag: .9;
+  --leading-half: .5;
+  --tracking-theme: .1em;
+  --tracking-tag: -.045em;
+  --spacing-tag-hover: 5px;
+  --ease-theme: ease;
+  --ease-gallery: ease;
+}
+
+@custom-variant theme-dark (&:where(:root:has(.theme-controller[value="dark"]:checked), :root:has(.theme-controller[value="dark"]:checked) *));
+@utility scrollbar-hidden {
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
+}
+
+@utility tag-mask {
+  mask-image: linear-gradient(to bottom, transparent 0, black 14px, black calc(100% - 18px), transparent 100%);
+}
+
+@utility index-grid { grid-template-columns: minmax(0, 1fr) clamp(280px, 25vw, 360px); }

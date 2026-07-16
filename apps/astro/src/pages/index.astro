@@ -30,68 +30,75 @@ const visiblePosts = selectedTag === "all"
 const tagHref = (tag: string) => tag === "all"
   ? Astro.url.pathname
   : `${Astro.url.pathname}?tag=${encodeURIComponent(tag)}`;
+const maxTagCount = Math.max(1, ...tags.map(([, count]) => count));
+const tagSizes = (count: number) => {
+  const ratio = (count / maxTagCount) ** 0.7;
+  return `--tag-mobile-size: ${Math.max(1, 1 + ratio * 0.65)}rem; --tag-285-size: ${Math.max(1.1, 1.1 + ratio * 2.8) * 0.56}rem; --tag-300-size: ${Math.max(1.1, 1.1 + ratio * 2.8) * 0.64}rem; --tag-desktop-size: ${Math.max(1.1, 1.1 + ratio * 2.8) * 0.72}rem`;
+};
+const allTagSizes = "--tag-mobile-size: 6rem; --tag-285-size: 8.064rem; --tag-300-size: 9.216rem; --tag-desktop-size: 10.368rem";
 ---
 
 <Layout title="Movies That Feel Like — a visual discovery index">
   {
     dbError ? (
-      <div class="empty-state">
-          <h2>Database error</h2>
-          <p class="error-copy">{dbError}</p>
-          <p class="muted-copy">
+      <div class="mb-20 border border-line p-empty transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:border-line-dark">
+          <h2 class="mb-2.5 font-display text-5xl uppercase">Database error</h2>
+          <p class="text-error text-red transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-red-dark">{dbError}</p>
+          <p class="text-error text-quiet theme-dark:text-quiet-dark">
               Make sure the local D1 database is initialized:
               <code class="ml-1">npm run db:migrate</code>
           </p>
       </div>
     ) : posts.length === 0 ? (
-      <div class="empty-state">
-          <h2>No posts loaded yet</h2>
-          <p class="muted-copy">
+      <div class="mb-20 border border-line p-empty transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:border-line-dark">
+          <h2 class="mb-2.5 font-display text-5xl uppercase">No posts loaded yet</h2>
+          <p class="text-error text-quiet theme-dark:text-quiet-dark">
               No publishable posts found in the database.
           </p>
-          <p class="muted-copy">
+          <p class="text-error text-quiet theme-dark:text-quiet-dark">
               Run the pipeline load stage and <code>npm run seed</code>.
           </p>
       </div>
     ) : (
-      <div class="index-layout">
-        <section class="feed" aria-label="Vibe posts">
-          <div class="drawer mobile-filter">
-            <input id="mobile-filter-drawer" type="checkbox" class="drawer-toggle" />
-            <div class="drawer-content">
-              <label for="mobile-filter-drawer" class="filter-trigger">Filters <span aria-hidden="true">＋</span></label>
+      <div class="flex flex-col-reverse gap-12 md:index-grid md:grid md:items-start md:gap-index-gap">
+        <section class="min-w-0" aria-label="Vibe posts">
+          <div class="drawer mobile-filter sticky top-drawer-top z-20 block w-screen mx-full-bleed mt-drawer-overlap mb-drawer-margin bg-paper p-5 theme-dark:bg-paper-dark motion-reduce:transition-none md:hidden">
+            <input id="mobile-filter-drawer" type="checkbox" class="drawer-toggle focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark" />
+            <div class="drawer-content motion-reduce:transition-none">
+              <label for="mobile-filter-drawer" class="flex cursor-pointer items-center justify-between border border-line bg-paper px-filter-x py-filter-y text-filter uppercase transition-colors duration-240 ease-theme focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:border-line-dark theme-dark:bg-paper-dark motion-reduce:transition-none"><span>Filters</span><span class="text-icon font-normal leading-half text-red transition-colors duration-240 ease-theme theme-dark:text-red-dark" aria-hidden="true">＋</span></label>
             </div>
-            <div class="drawer-side">
-              <label for="mobile-filter-drawer" class="drawer-overlay" aria-label="Close filters"></label>
-              <div class="filter-drawer-panel">
-                <div class="filter-drawer-heading"><span>Filter by feeling</span><label for="mobile-filter-drawer" aria-label="Close filters">×</label></div>
-                <div class="tag-list" role="group" aria-label="Filter posts by tag">
-                  <a class:list={["tag-filter", { "is-active": selectedTag === "all" }]} style="--tag-size: 2rem" href={tagHref("all")} aria-current={selectedTag === "all" ? "page" : undefined}><span>All</span></a>
-                  {tags.map(([tag, count]) => <a class:list={["tag-filter", { "is-active": selectedTag === tag }]} style={`--tag-size: ${Math.max(1, 1 + (count / Math.max(...tags.map(([, value]) => value))) ** 0.7 * .65)}rem`} href={tagHref(tag)} aria-current={selectedTag === tag ? "page" : undefined}><b>{count}</b><span>{tag}</span></a>)}
+            <div class="drawer-side motion-reduce:transition-none">
+              <label for="mobile-filter-drawer" class="drawer-overlay focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark motion-reduce:transition-none" aria-label="Close filters"></label>
+              <div class="min-h-full w-drawer-panel bg-paper px-5 py-drawer-panel-y text-ink theme-dark:bg-paper-dark theme-dark:text-ink-dark motion-reduce:transition-none">
+                <div class="mb-4 flex items-center justify-between border-b border-line pb-drawer-heading-pad text-filter uppercase transition-colors duration-240 ease-theme theme-dark:border-line-dark motion-reduce:transition-none"><span>Filter by feeling</span><label for="mobile-filter-drawer" class="cursor-pointer p-close text-close font-light text-red transition-colors duration-240 ease-theme focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-red-dark motion-reduce:transition-none" aria-label="Close filters">×</label></div>
+                <div class="flex flex-col gap-1.5" role="group" aria-label="Filter posts by tag">
+                  <a class:list={["text-(length:--tag-mobile-size) flex w-full cursor-pointer items-baseline justify-end gap-tag bg-transparent py-tag-mobile text-right font-display font-extrabold uppercase leading-tag tracking-tag text-quiet transition duration-200 ease-theme motion-reduce:transition-none hover:-translate-x-tag-hover hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-quiet-dark theme-dark:hover:text-red-dark", { "text-red theme-dark:text-red-dark -translate-x-tag-hover": selectedTag === "all" }]} style="--tag-mobile-size: 6rem" href={tagHref("all")} aria-current={selectedTag === "all" ? "page" : undefined}><span class="order-2 min-w-0 wrap-normal">All</span></a>
+                  {tags.map(([tag, count]) => <a class:list={["text-(length:--tag-mobile-size) flex w-full cursor-pointer items-baseline justify-end gap-tag bg-transparent py-tag-mobile text-right font-display font-extrabold uppercase leading-tag tracking-tag text-quiet transition duration-200 ease-theme motion-reduce:transition-none hover:-translate-x-tag-hover hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-quiet-dark theme-dark:hover:text-red-dark", { "text-red theme-dark:text-red-dark -translate-x-tag-hover": selectedTag === tag }]} style={tagSizes(count)} href={tagHref(tag)} aria-current={selectedTag === tag ? "page" : undefined}><b class="order-1 min-w-5 text-right font-body text-count font-medium text-quiet theme-dark:text-quiet-dark">{count}</b><span class="order-2 min-w-0 wrap-normal">{tag}</span></a>)}
                 </div>
               </div>
             </div>
           </div>
-          <div class="rails">
+          <div class="grid grid-cols-1 gap-mobile-rail-gap md:grid-cols-2 md:gap-rail-gap">
             {[0, 1].map((rail) => (
-              <div class="rail" data-rail={rail}>
+              <div class:list={["min-w-0 pt-0", { "md:pt-rail-offset": rail === 1 }]} data-rail={rail}>
                 {visiblePosts.filter((_, index) => index % 2 === rail).map((post, index) => (
-                  <article class="vibe-post">
+                  <article class="mb-post-mobile pt-post-top md:mb-post">
                     {post.images.length > 0 ? (
-                      <div class="film-gallery carousel" data-gallery aria-label={`Image gallery for ${post.title}`}>
-                        <a class="gallery-link" href={`/posts/${post.reddit_post_id}/`} aria-label={`View details for ${post.title}`}>
-                          <div class="gallery-track carousel-item">
+                      <div class="relative aspect-square overflow-hidden bg-gallery" data-gallery aria-label={`Image gallery for ${post.title}`}>
+                        <a class="group block h-full w-full overflow-hidden focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark" href={`/posts/${post.reddit_post_id}/`} aria-label={`View details for ${post.title}`}>
+                          <div class="gallery-track scrollbar-hidden flex h-full w-full snap-x snap-mandatory overflow-x-auto motion-reduce:scroll-auto">
                             {post.images.map((image, imageIndex) => (
-                              <img src={image.url} alt={`${post.title} — image ${imageIndex + 1}`} loading="lazy" />
+                              <img class="block h-full min-h-0 w-full basis-full snap-start object-cover transition duration-450 ease-gallery motion-reduce:transition-none group-hover:scale-105 group-hover:brightness-75 group-focus-visible:scale-105 group-focus-visible:brightness-75" src={image.url} alt={`${post.title} — image ${imageIndex + 1}`} loading="lazy" />
                             ))}
                           </div>
                         </a>
-                        {post.images.length > 1 && <div class="gallery-controls"><button type="button" data-gallery-previous aria-label="Previous image">←</button><span data-gallery-status>01 / {String(post.images.length).padStart(2, "0")}</span><button type="button" data-gallery-next aria-label="Next image">→</button></div>}
+                        <div class="pointer-events-none absolute inset-x-0 bottom-0 h-gallery-overlay bg-gradient-to-b from-transparent to-gallery-overlay"></div>
+                        {post.images.length > 1 && <div class="absolute bottom-0 right-0 z-10 flex items-center gap-control bg-paper px-control-x py-control-y text-label transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark"><button class="cursor-pointer border-0 bg-transparent p-0 text-control text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-ink-dark" type="button" data-gallery-previous aria-label="Previous image">←</button><span class="tabular-nums text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark" data-gallery-status>01 / {String(post.images.length).padStart(2, "0")}</span><button class="cursor-pointer border-0 bg-transparent p-0 text-control text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-ink-dark" type="button" data-gallery-next aria-label="Next image">→</button></div>}
                       </div>
-                    ) : <div class="no-image">No image loaded</div>}
-                    <div class="post-caption">
-                      <h2>{post.cleaned_title ?? post.title}</h2>
-                      {post.vibe_summary && <p>{post.vibe_summary}</p>}
+                    ) : <div class="flex aspect-square items-center justify-center bg-gallery-empty text-no-image text-gallery-empty-text">No image loaded</div>}
+                    <div class="pt-caption-top pb-5">
+                      <h2 class="mb-3 font-display text-caption uppercase wrap-anywhere">{post.cleaned_title ?? post.title}</h2>
+                      {post.vibe_summary && <p class="mb-4 text-summary text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">{post.vibe_summary}</p>}
                     </div>
                   </article>
                 ))}
@@ -99,29 +106,16 @@ const tagHref = (tag: string) => tag === "all"
             ))}
           </div>
         </section>
-        <aside class="tag-index" aria-label="Filter by feeling">
-          <div class="desktop-tag-list tag-list" role="group" aria-label="Filter posts by tag">
-            <a class:list={["tag-filter", { "is-active": selectedTag === "all" }]} style="--tag-size: 4.8rem" href={tagHref("all")} aria-current={selectedTag === "all" ? "page" : undefined}><span>All</span></a>
-            {tags.map(([tag, count]) => <a class:list={["tag-filter", { "is-active": selectedTag === tag }]} style={`--tag-size: ${Math.max(1.1, 1.1 + (count / Math.max(...tags.map(([, value]) => value))) ** 0.7 * 2.8)}rem`} href={tagHref(tag)} aria-current={selectedTag === tag ? "page" : undefined}><b>{count}</b><span>{tag}</span></a>)}
+        <aside class="@container static w-full min-w-0 md:sticky md:top-6" aria-label="Filter by feeling">
+          <div class="tag-mask scrollbar-hidden max-h-sidebar-height hidden flex-col gap-1.5 overflow-y-auto overscroll-contain pt-sidebar-top pb-sidebar-bottom md:flex" role="group" aria-label="Filter posts by tag">
+            <a class:list={["text-(length:--tag-285-size) @2xs:text-(length:--tag-300-size) @xs:text-(length:--tag-desktop-size) flex w-full cursor-pointer items-baseline justify-end gap-tag bg-transparent py-tag text-right font-display font-extrabold uppercase leading-tag tracking-tag text-quiet transition duration-200 ease-theme motion-reduce:transition-none hover:-translate-x-tag-hover hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-quiet-dark theme-dark:hover:text-red-dark", { "text-red theme-dark:text-red-dark -translate-x-tag-hover": selectedTag === "all" }]} style={allTagSizes} href={tagHref("all")} aria-current={selectedTag === "all" ? "page" : undefined}><span class="order-2 min-w-0 wrap-normal">All</span></a>
+            {tags.map(([tag, count]) => <a class:list={["text-(length:--tag-285-size) @2xs:text-(length:--tag-300-size) @xs:text-(length:--tag-desktop-size) flex w-full cursor-pointer items-baseline justify-end gap-tag bg-transparent py-tag text-right font-display font-extrabold uppercase leading-tag tracking-tag text-quiet transition duration-200 ease-theme motion-reduce:transition-none hover:-translate-x-tag-hover hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-quiet-dark theme-dark:hover:text-red-dark", { "text-red theme-dark:text-red-dark -translate-x-tag-hover": selectedTag === tag }]} style={tagSizes(count)} href={tagHref(tag)} aria-current={selectedTag === tag ? "page" : undefined}><b class="order-1 min-w-5 text-right font-body text-count font-medium text-quiet theme-dark:text-quiet-dark">{count}</b><span class="order-2 min-w-0 wrap-normal">{tag}</span></a>)}
           </div>
         </aside>
       </div>
     )
   }
 </Layout>
-
-<style is:global>
-  .post-caption h2 {
-    overflow-wrap: anywhere;
-  }
-
-  @media (max-width: 760px) {
-    .feed .mobile-filter {
-      margin: -48px calc(50% - 50vw) 18px !important;
-      width: 100vw !important;
-    }
-  }
-</style>
 
 <script>
   document.querySelectorAll<HTMLElement>("[data-gallery]").forEach((gallery) => {
@@ -131,7 +125,7 @@ const tagHref = (tag: string) => tag === "all"
     let current = 0;
     const move = (direction: number) => {
       current = (current + direction + slides.length) % slides.length;
-      track?.scrollTo({ left: current * (track.clientWidth || 1), behavior: "smooth" });
+      track?.scrollTo({ left: current * (track.clientWidth || 1), behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
       if (status) status.textContent = `${String(current + 1).padStart(2, "0")} / ${String(slides.length).padStart(2, "0")}`;
     };
     gallery.querySelector("[data-gallery-previous]")?.addEventListener("click", () => move(-1));
