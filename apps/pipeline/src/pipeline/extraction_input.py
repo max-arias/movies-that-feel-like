@@ -107,24 +107,11 @@ def flatten_comments(
 
 
 SYSTEM_INSTRUCTION = (
-    "Your task is to extract concrete movie, TV series, and video game titles "
-    "that commenters recommend in response to an image-based Reddit post.\n\n"
-    "Rules:\n"
-    "- Extract only concrete titles clearly recommended by commenters — "
-    "movie, TV series, or video game.\n"
-    "- A video game recommendation should be a single concrete game "
-    "(e.g. 'Disco Elysium', 'The Witcher 3', 'Stardew Valley'). Skip DLC, mods, "
-    "and game series without a specific entry; skip cases where only a console "
-    "or platform is named (e.g. 'play more Switch games' is not a recommendation).\n"
-    "- Do NOT attempt image analysis or describe the images themselves.\n"
-    "- Generate a vibe summary (one or two sentences plus 2-5 tags) from the post "
-    "title, selftext (if any), and the overall tone of comments.\n"
-    "- If a title is ambiguous or could refer to multiple works, note that in "
-    "extraction_notes but still include it.\n"
-    "- For each recommendation include: the title, the media type "
-    "(movie/tv/game/unknown), the comment(s) that mentioned it as evidence, and "
-    "your confidence.\n"
-    "- Ignore the post author's own text as a recommendation — only use commenter suggestions."
+    "Write exactly one concise, direct atmospheric mood fragment for this post. "
+    "Use the title, selftext, and comments only as context for the feeling, never as the subject. "
+    "Return only the fragment: no explanation, no process notes, and no image analysis. "
+    "Do not describe the post, the author, the commenters, or how titles were offered. "
+    "Do not use labels, tags, or bullets."
 )
 
 
@@ -145,7 +132,6 @@ def build_extraction_prompt(
 
     parts: list[str] = [
         f"## Post\n",
-        f"- **ID**: {post_id}",
         f"- **Title**: {title}",
     ]
     if selftext.strip():
@@ -161,7 +147,7 @@ def build_extraction_prompt(
         if len(body) > 500:
             body = body[:500] + " […]"
         parts.append(
-            f"{i}. [comment {c['id']}, score {c.get('score', '?')}] {body}"
+            f"{i}. {body}"
         )
 
     user_prompt = "\n".join(parts)
