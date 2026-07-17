@@ -16,8 +16,8 @@
   --color-gallery-empty: oklch(23% 0 0);
   --color-gallery-empty-text: oklch(70% 0 0);
   --color-gallery-overlay: oklch(0% 0 0 / 0.28);
-  --font-body: "Avenir Next", "Helvetica Neue", ui-sans-serif, sans-serif;
-  --font-display: "Arial Narrow", "Avenir Next Condensed", "Helvetica Neue", sans-serif;
+  --font-body: "Newsreader", "Iowan Old Style", "Charter", "Georgia", serif;
+  --font-display: "Bebas Neue", "Impact", "Helvetica Neue Condensed", sans-serif;
   --spacing-gutter: 4vw;
   --spacing-header: 82px;
   --spacing-brand-mark-height: 31px;
@@ -85,7 +85,7 @@
   --leading-tag: .9;
   --leading-half: .5;
   --tracking-theme: .1em;
-  --tracking-tag: -.045em;
+  --tracking-tag: 0;
   --spacing-tag-hover: 5px;
   --ease-theme: ease;
   --ease-gallery: ease;
