@@ -12,6 +12,7 @@ import {
   asc,
   inArray,
   count,
+  sql,
   getTableColumns,
 } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
@@ -204,8 +205,12 @@ export async function getPostByRedditId(
     db
       .select({
         ...getTableColumns(recommendations),
-        evidenceCommentId:
-          recommendationEvidence.evidenceCommentId,
+        evidenceCommentId: sql<string | null>`MAX(${recommendationEvidence.evidenceCommentId})`.as(
+          "evidence_comment_id"
+        ),
+        mentionCount: sql<number>`COUNT(${recommendationEvidence.id})`.as(
+          "mention_count"
+        ),
       })
       .from(recommendations)
       .innerJoin(
@@ -221,7 +226,9 @@ export async function getPostByRedditId(
           post.id
         )
       )
+      .groupBy(recommendations.id)
       .orderBy(
+        desc(sql`COUNT(${recommendationEvidence.id})`),
         desc(recommendations.evidenceScore),
         desc(recommendations.popularity)
       ),

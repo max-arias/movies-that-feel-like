@@ -1,11 +1,13 @@
 ---
-// Post detail page — shows a single imported vibe post with images, tags, recommendations.
+// Post detail page — single editorial surface for an Imported Vibe Post.
+// Hero row (16:9 DaisyUI carousel + vibe summary sidebar) → shared tag row → 5-col
+// recommendation poster grid. Clicking any hero image opens a DaisyUI modal with
+// a full-screen DaisyUI carousel of the same images. See issue #4 for the spec.
 
 import Layout from "../../layouts/Layout.astro";
 import { getDb, getPostByRedditId } from "../../lib/db";
 import { env } from "cloudflare:workers";
 
-// In server mode, params exist at request time even for non-prerendered fallback
 let post: Awaited<ReturnType<typeof getPostByRedditId>>;
 try {
   const db = getDb(env);
@@ -13,15 +15,42 @@ try {
 } catch {
   post = null;
 }
+
+const slideId = (i: number) => `slide${i + 1}`;
+const modalSlideId = (i: number) => `modal-slide${i + 1}`;
+const heroPrev = (i: number, total: number) => (i === 0 ? `#${slideId(total - 1)}` : `#${slideId(i - 1)}`);
+const heroNext = (i: number, total: number) => (i === total - 1 ? `#${slideId(0)}` : `#${slideId(i + 1)}`);
+const modalPrev = (i: number, total: number) => (i === 0 ? `#${modalSlideId(total - 1)}` : `#${modalSlideId(i - 1)}`);
+const modalNext = (i: number, total: number) => (i === total - 1 ? `#${modalSlideId(0)}` : `#${modalSlideId(i + 1)}`);
+const totalImages = post?.images.length ?? 0;
+const hasHero = !!post && totalImages > 0;
+const tagHref = (tag: string) => `/?tag=${encodeURIComponent(tag)}`;
+const redditHref = (permalink: string) => `https://reddit.com${permalink}`;
+
+type Recommendation = NonNullable<typeof post>["recommendations"][number];
+const externalHref = (rec: Recommendation): string | null => {
+  if (rec.imdbId) return `https://www.imdb.com/title/${rec.imdbId}/`;
+  if (rec.tmdbId) {
+    const tmdbType = rec.mediaType === "tv" ? "tv" : rec.mediaType === "game" ? "game" : "movie";
+    return `https://www.themoviedb.org/${tmdbType}/${rec.tmdbId}`;
+  }
+  return rec.externalUrl ?? null;
+};
+const externalLabel = (rec: Recommendation): string => {
+  if (rec.imdbId) return "IMDb";
+  if (rec.tmdbId) return "TMDB";
+  return rec.externalUrl ? "Source" : "";
+};
+const formatMentions = (count: number) => `${count} ${count === 1 ? "mention" : "mentions"}`;
 ---
 
-<Layout title={post ? `${post.title} — Movies That Feel Like` : "Post not found"}>
+<Layout title={post ? `${post.vibeSummary ?? "Vibe post"} — Movies That Feel Like` : "Post not found"}>
   {!post ? (
-    <div class="hero min-h-64 bg-base-200 rounded-box">
+    <div class="hero min-h-64 rounded-box border border-line bg-paper transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:border-line-dark theme-dark:bg-paper-dark">
       <div class="hero-content text-center">
         <div class="max-w-md">
           <h2 class="text-xl font-bold">Post not found</h2>
-          <p class="py-4 text-base-content/70">
+          <p class="py-4 text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">
             No post with ID "{Astro.params.id}" was found in the database.
           </p>
           <a href="/" class="btn btn-primary focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark">Back to feed</a>
@@ -29,210 +58,287 @@ try {
       </div>
     </div>
   ) : (
-    <>
-      <div class="mb-6">
-        <a href="/" class="link link-neutral text-sm focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark">&larr; Back to feed</a>
-      </div>
-
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div>
-          {post.images.length > 0 ? (
+    <div class="pb-24">
+      {!hasHero ? (
+        <div class="hero mb-12 min-h-64 rounded-box border border-line bg-paper transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:border-line-dark theme-dark:bg-paper-dark">
+          <div class="hero-content text-center">
+            <div class="max-w-md">
+              <h2 class="text-xl font-bold">No images</h2>
+              <p class="py-4 text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">
+                This post has no images to display.
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <section class="mb-12 grid grid-cols-1 items-center gap-8 lg:grid-cols-[7fr_3fr]" aria-label="Post hero">
+          <div class="relative">
             <div
-              class="relative overflow-hidden rounded-box bg-base-300 shadow-sm focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark"
-              data-gallery
-              tabindex="0"
-              aria-label={`Image gallery for ${post.title}. Use the previous and next buttons, or the left and right arrow keys.`}
+              class="carousel aspect-video w-full overflow-hidden bg-gallery"
+              data-hero-carousel
+              aria-label={`Image gallery. ${totalImages} image${totalImages === 1 ? "" : "s"}.`}
             >
-              <div class="relative flex h-detail-gallery items-center justify-center">
-                {post.images.map((img, index) => (
-                <div
-                  class="w-full px-2 sm:px-4"
-                  data-gallery-slide
-                  data-index={index}
-                  aria-hidden={index !== 0 ? "true" : undefined}
-                  hidden={index !== 0}
-                >
-                  <img
-                    src={img.url}
-                    alt={`Post image ${index + 1} of ${post.images.length}`}
-                    class="mx-auto h-full max-h-detail-image w-full object-contain"
-                    loading={index === 0 ? "eager" : "lazy"}
-                  />
+              {post.images.map((img, i) => (
+                <div id={slideId(i)} class="carousel-item relative w-full">
+                  <button
+                    type="button"
+                    class="block h-full w-full focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark"
+                    data-open-lightbox={i}
+                    aria-label={`Open image ${i + 1} of ${totalImages} at full size`}
+                  >
+                    <img
+                      src={img.url}
+                      alt={`Post image ${i + 1} of ${totalImages}`}
+                      class="h-full w-full object-cover"
+                      loading={i === 0 ? "eager" : "lazy"}
+                      decoding="async"
+                    />
+                  </button>
+                  {totalImages > 1 && (
+                    <>
+                      <a
+                        href={heroPrev(i, totalImages)}
+                        class="btn btn-circle btn-sm absolute left-3 top-1/2 -translate-y-1/2 border border-ink/20 bg-paper/90 text-ink shadow-md hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:left-5 sm:btn-md theme-dark:border-ink-dark/20 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
+                        aria-label="Show previous image"
+                      >❮</a>
+                      <a
+                        href={heroNext(i, totalImages)}
+                        class="btn btn-circle btn-sm absolute right-3 top-1/2 -translate-y-1/2 border border-ink/20 bg-paper/90 text-ink shadow-md hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:right-5 sm:btn-md theme-dark:border-ink-dark/20 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
+                        aria-label="Show next image"
+                      >❯</a>
+                    </>
+                  )}
                 </div>
-                ))}
-              </div>
-
-              {post.images.length > 1 && (
-                <>
-                  <button
-                    type="button"
-                    class="btn btn-circle btn-sm absolute left-3 top-1/2 -translate-y-1/2 border border-base-content/20 bg-base-100/90 text-base-content shadow-md hover:bg-base-100 focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark sm:left-5 sm:btn-md"
-                    data-gallery-previous
-                    aria-label="Show previous image"
-                  >
-                    <svg aria-hidden="true" class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 5.5 8 12l6.5 6.5" /></svg>
-                  </button>
-                  <button
-                    type="button"
-                    class="btn btn-circle btn-sm absolute right-3 top-1/2 -translate-y-1/2 border border-base-content/20 bg-base-100/90 text-base-content shadow-md hover:bg-base-100 focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark sm:right-5 sm:btn-md"
-                    data-gallery-next
-                    aria-label="Show next image"
-                  >
-                    <svg aria-hidden="true" class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9.5 5.5 6.5 6.5-6.5 6.5" /></svg>
-                  </button>
-                </>
-              )}
-
-              <div class="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-3">
+              ))}
+            </div>
+            {totalImages > 1 && (
+              <div class="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end p-3">
                 <p
-                  class="rounded-full bg-base-content/80 px-3 py-1 text-xs font-medium text-base-100"
-                  data-gallery-status
+                  class="rounded-full bg-ink px-3 py-1 text-label uppercase tabular-nums tracking-theme text-paper shadow-md motion-reduce:transition-none theme-dark:bg-paper-dark theme-dark:text-ink-dark"
+                  data-hero-status
                   aria-live="polite"
                 >
-                  1 / {post.images.length}
+                  01 / {String(totalImages).padStart(2, "0")}
                 </p>
               </div>
-            </div>
-          ) : (
-            <div class="w-full h-64 bg-base-300 rounded-box flex items-center justify-center text-base-content/40">
-              No images
-            </div>
-          )}
-        </div>
-
-        <div>
-          <h1 class="text-3xl font-bold mb-2">{post.title}</h1>
-
-          {post.vibeSummary && (
-            <div class="mb-4 p-4 bg-base-300 rounded-box">
-              <p class="text-sm italic text-base-content/80">{post.vibeSummary}</p>
-            </div>
-          )}
-
-          <div class="flex flex-wrap gap-2 mb-4">
-            {post.tags.map((t) => (
-              <span class="badge badge-soft badge-outline">{t.tag}</span>
-            ))}
+            )}
           </div>
 
-          {post.selftext && (
-            <div class="mb-4">
-              <h3 class="font-semibold mb-1">Selftext</h3>
-              <p class="text-sm text-base-content/70 whitespace-pre-wrap">{post.selftext}</p>
-            </div>
-          )}
-
-          <div class="stats stats-vertical sm:stats-horizontal shadow-sm mb-4">
-            <div class="stat">
-              <div class="stat-title">Author</div>
-              <div class="stat-value text-lg">{post.author ?? "unknown"}</div>
-            </div>
-            <div class="stat">
-              <div class="stat-title">Status</div>
-              <div class="stat-value text-lg">{post.status}</div>
-            </div>
-          </div>
-
-          <div class="flex gap-2 mb-6">
+          <aside class="flex flex-col gap-6" aria-label="Post mood and source">
+            {post.vibeSummary && (
+              <p class="font-body text-body text-quiet leading-relaxed text-pretty transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">
+                {post.vibeSummary}
+              </p>
+            )}
             {post.permalink && (
               <a
-                href={`https://reddit.com${post.permalink}`}
-                class="btn btn-outline btn-sm focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark"
+                href={redditHref(post.permalink)}
+                class="btn btn-outline btn-sm self-start normal-case focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark"
                 target="_blank"
+                rel="noopener noreferrer"
               >
                 View on Reddit ↗
               </a>
             )}
-          </div>
+          </aside>
+        </section>
+      )}
 
-          <div>
-            <h2 class="text-xl font-bold mb-3">Recommendations ({post.recommendations.length})</h2>
-            {post.recommendations.length === 0 ? (
-              <p class="text-sm text-base-content/50">No recommendations extracted yet.</p>
-            ) : (
-              <div class="grid grid-cols-1 gap-4">
-                {post.recommendations.map((rec) => (
-                  <div class="card card-side bg-base-300 shadow-sm">
-                    {rec.posterUrl && (
-                      <figure class="w-24 shrink-0">
-                        <img
-                          src={rec.posterUrl}
-                          alt={rec.title}
-                          class="h-full w-full object-cover"
-                          loading="lazy"
-                        />
-                      </figure>
+      {post.tags.length > 0 && (
+        <nav class="mb-12" aria-label="Post tags">
+          <ul class="scrollbar-hidden flex flex-row flex-nowrap gap-2 overflow-x-auto">
+            {post.tags.map(({ tag }) => (
+              <li class="shrink-0">
+                <a
+                  href={tagHref(tag)}
+                  class="inline-flex items-center rounded-full border border-ink/40 bg-transparent px-3 py-1 text-label uppercase tracking-theme text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none hover:border-red hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:border-ink-dark/40 theme-dark:text-ink-dark theme-dark:outline-red-dark theme-dark:hover:border-red-dark theme-dark:hover:text-red-dark"
+                >{tag}</a>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      )}
+
+      {post.recommendations.length > 0 && (
+        <section aria-label="Recommendations">
+          <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+            {post.recommendations.map((rec) => {
+              const href = externalHref(rec);
+              const cardClass = "group block focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark";
+              const cardInner = (
+                <>
+                  <div class="relative mb-2 aspect-poster overflow-hidden bg-gallery transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-gallery">
+                    {rec.posterUrl ? (
+                      <img
+                        src={rec.posterUrl}
+                        alt={rec.title}
+                        class="h-full w-full object-cover transition duration-450 ease-gallery motion-reduce:transition-none group-hover:scale-105 group-focus-visible:scale-105"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                    ) : (
+                      <div class="flex h-full w-full items-center justify-center text-no-image text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">No poster</div>
                     )}
-                    <div class="card-body p-4">
-                      <div class="flex items-start justify-between gap-2">
-                        <a
-                          href={`/recommendations/${rec.id}/`}
-                          class="card-title text-base hover:link focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark"
-                        >
-                          {rec.title}
-                        </a>
-                        <span class="badge badge-soft badge-sm">
-                          {rec.mediaType === "game" ? "🎮" : rec.mediaType === "movie" ? "🎬" : "📺"} {rec.mediaType}
-                        </span>
-                      </div>
-                      {rec.releaseYear && (
-                        <p class="text-sm text-base-content/60">{rec.releaseYear}</p>
-                      )}
-                      {rec.voteAverage && (
-                        <p class="text-xs text-base-content/50">
-                          ⭐ {rec.voteAverage.toFixed(1)}
-                        </p>
-                      )}
-                    </div>
                   </div>
-                ))}
-              </div>
-            )}
+                  <h3 class="flex items-baseline gap-1 text-sm font-semibold leading-tight transition-colors duration-240 ease-theme motion-reduce:transition-none group-hover:text-red group-focus-visible:text-red theme-dark:group-hover:text-red-dark theme-dark:group-focus-visible:text-red-dark">
+                    <span class="min-w-0">{rec.title}</span>
+                    {href && (
+                      <span class="shrink-0 text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none group-hover:text-red group-focus-visible:text-red theme-dark:text-quiet-dark theme-dark:group-hover:text-red-dark theme-dark:group-focus-visible:text-red-dark" aria-hidden="true">↗</span>
+                    )}
+                  </h3>
+                  <p class="mt-1 text-xs text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">
+                    {rec.mentionCount > 1 && (
+                      <>
+                        <span>{formatMentions(rec.mentionCount)}</span>
+                        <span aria-hidden="true"> · </span>
+                      </>
+                    )}
+                    {rec.releaseYear ?? "—"}
+                    {rec.voteAverage != null && (
+                      <>
+                        <span aria-hidden="true"> · </span>
+                        <span aria-label={`Rating ${rec.voteAverage.toFixed(1)} out of 10`}>⭐ {rec.voteAverage.toFixed(1)}</span>
+                      </>
+                    )}
+                  </p>
+                </>
+              );
+              return href ? (
+                <a
+                  href={href}
+                  class={cardClass}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={`${rec.title}${rec.releaseYear ? ` (${rec.releaseYear})` : ""} on ${externalLabel(rec)} (opens in a new tab)`}
+                >
+                  {cardInner}
+                </a>
+              ) : (
+                <div class={cardClass}>
+                  {cardInner}
+                </div>
+              );
+            })}
           </div>
-        </div>
-      </div>
-    </>
+        </section>
+      )}
+
+      {hasHero && (
+        <dialog id="hero-lightbox" class="modal" aria-label="Image lightbox">
+          <div class="modal-box max-w-[min(95vw,1600px)] h-[90vh] w-full bg-paper/0 p-0 shadow-none motion-reduce:transition-none theme-dark:bg-paper-dark/0">
+            <form method="dialog" class="absolute right-2 top-2 z-10">
+              <button
+                type="submit"
+                class="btn btn-circle btn-sm border border-ink/20 bg-paper/90 text-ink hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none theme-dark:border-ink-dark/20 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
+                aria-label="Close lightbox"
+              >✕</button>
+            </form>
+            <div
+              class="carousel h-full w-full overflow-hidden bg-ink/95 motion-reduce:transition-none theme-dark:bg-ink-dark/95"
+              data-modal-carousel
+              aria-label={`Image gallery lightbox. ${totalImages} image${totalImages === 1 ? "" : "s"}.`}
+            >
+              {post.images.map((img, i) => (
+                <div id={modalSlideId(i)} class="carousel-item relative h-full w-full">
+                  <img
+                    src={img.url}
+                    alt={`Post image ${i + 1} of ${totalImages}`}
+                    class="h-full w-full object-contain"
+                    loading={i === 0 ? "eager" : "lazy"}
+                    decoding="async"
+                  />
+                  {totalImages > 1 && (
+                    <>
+                      <a
+                        href={modalPrev(i, totalImages)}
+                        class="btn btn-circle absolute left-3 top-1/2 -translate-y-1/2 border border-paper/30 bg-paper/90 text-ink hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:left-5 theme-dark:border-paper-dark/30 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
+                        aria-label="Show previous image"
+                      >❮</a>
+                      <a
+                        href={modalNext(i, totalImages)}
+                        class="btn btn-circle absolute right-3 top-1/2 -translate-y-1/2 border border-paper/30 bg-paper/90 text-ink hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:right-5 theme-dark:border-paper-dark/30 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
+                        aria-label="Show next image"
+                      >❯</a>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+          <form method="dialog" class="modal-backdrop">
+            <button aria-label="Close lightbox">close</button>
+          </form>
+        </dialog>
+      )}
+    </div>
   )}
 </Layout>
 
 <script>
-  document.querySelectorAll<HTMLElement>("[data-gallery]").forEach((gallery) => {
-    const slides = Array.from(gallery.querySelectorAll<HTMLElement>("[data-gallery-slide]"));
-    const previous = gallery.querySelector<HTMLButtonElement>("[data-gallery-previous]");
-    const next = gallery.querySelector<HTMLButtonElement>("[data-gallery-next]");
-    const status = gallery.querySelector<HTMLElement>("[data-gallery-status]");
-    let current = 0;
+  const pad = (n: number) => String(n).padStart(2, "0");
 
-    const show = (index: number, loop = true) => {
-      current = loop
-        ? ((index % slides.length) + slides.length) % slides.length
-        : Math.max(0, Math.min(index, slides.length - 1));
-      slides.forEach((slide, slideIndex) => {
-        const active = slideIndex === current;
-        slide.hidden = !active;
-        slide.setAttribute("aria-hidden", String(!active));
-      });
-      if (status) status.textContent = `${current + 1} / ${slides.length}`;
-    };
+  const heroCarousel = document.querySelector<HTMLElement>("[data-hero-carousel]");
+  const heroStatus = document.querySelector<HTMLElement>("[data-hero-status]");
 
-    previous?.addEventListener("click", () => show(current - 1));
-    next?.addEventListener("click", () => show(current + 1));
-    gallery.addEventListener("keydown", (event) => {
-      if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        show(current - 1);
-      } else if (event.key === "ArrowRight") {
-        event.preventDefault();
-        show(current + 1);
-      } else if (event.key === "Home") {
-        event.preventDefault();
-        show(0, false);
-      } else if (event.key === "End") {
-        event.preventDefault();
-        show(slides.length - 1, false);
+  const readHeroSlide = (): number => {
+    const hash = window.location.hash;
+    const m = hash.match(/#slide(\d+)/);
+    return m ? Math.max(1, Math.min(parseInt(m[1], 10), heroCarousel?.querySelectorAll(".carousel-item").length ?? 1)) : 1;
+  };
+
+  const renderHeroStatus = () => {
+    if (!heroStatus || !heroCarousel) return;
+    const total = heroCarousel.querySelectorAll(".carousel-item").length;
+    heroStatus.textContent = `${pad(readHeroSlide())} / ${pad(total)}`;
+  };
+
+  if (heroCarousel) {
+    renderHeroStatus();
+    heroCarousel.addEventListener("scroll", () => {
+      if (!heroCarousel) return;
+      const items = Array.from(heroCarousel.querySelectorAll<HTMLElement>(".carousel-item"));
+      if (items.length === 0) return;
+      const w = heroCarousel.clientWidth || 1;
+      const idx = Math.round(heroCarousel.scrollLeft / w);
+      const slideNum = Math.max(1, Math.min(idx + 1, items.length));
+      heroStatus && (heroStatus.textContent = `${pad(slideNum)} / ${pad(items.length)}`);
+    }, { passive: true });
+  }
+  window.addEventListener("hashchange", renderHeroStatus);
+
+  const lightbox = document.getElementById("hero-lightbox") as HTMLDialogElement | null;
+  const modalCarousel = lightbox?.querySelector<HTMLElement>("[data-modal-carousel]") ?? null;
+
+  document.querySelectorAll<HTMLButtonElement>("[data-open-lightbox]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (!lightbox) return;
+      lightbox.showModal();
+      if (modalCarousel) {
+        const idx = parseInt(button.getAttribute("data-open-lightbox") ?? "0", 10);
+        const target = modalCarousel.querySelectorAll<HTMLElement>(".carousel-item")[idx];
+        if (target) {
+          requestAnimationFrame(() => {
+            modalCarousel.scrollTo({ left: target.offsetLeft, behavior: "auto" });
+          });
+        }
       }
     });
-
-    show(0);
   });
+
+  if (lightbox && modalCarousel) {
+    lightbox.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      const items = Array.from(modalCarousel.querySelectorAll<HTMLElement>(".carousel-item"));
+      if (items.length === 0) return;
+      const w = modalCarousel.clientWidth || 1;
+      const currentIdx = Math.min(items.length - 1, Math.max(0, Math.round(modalCarousel.scrollLeft / w)));
+      const nextIdx = event.key === "ArrowLeft"
+        ? (currentIdx === 0 ? items.length - 1 : currentIdx - 1)
+        : (currentIdx === items.length - 1 ? 0 : currentIdx + 1);
+      event.preventDefault();
+      modalCarousel.scrollTo({ left: items[nextIdx].offsetLeft, behavior: "smooth" });
+    });
+  }
 </script>
+</content>
+</invoke>
