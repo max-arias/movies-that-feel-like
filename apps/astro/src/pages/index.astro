@@ -88,7 +88,7 @@ const allTagSizes = "--tag-mobile-size: 6rem; --tag-285-size: 10rem; --tag-300-s
                     {post.images.length > 0 ? (
                       <div class="relative aspect-square overflow-hidden bg-gallery" data-gallery aria-label={`Image gallery for ${post.title}`}>
                         <a class="group block h-full w-full overflow-hidden focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark" href={`/posts/${post.redditPostId}/`} aria-label={`View details for ${post.title}`}>
-                          <div class="gallery-track scrollbar-hidden flex h-full w-full snap-x snap-mandatory overflow-x-auto motion-reduce:scroll-auto">
+                          <div class="gallery-track scrollbar-hidden flex h-full w-full snap-x snap-mandatory overflow-x-auto overflow-y-clip motion-reduce:scroll-auto">
                             {post.images.map((image, imageIndex) => (
                               <img class="block h-full min-h-0 w-full basis-full snap-start object-cover transition duration-450 ease-gallery motion-reduce:transition-none group-hover:scale-105 group-hover:brightness-75 group-focus-visible:scale-105 group-focus-visible:brightness-75" src={image.url} alt={`${post.title} — image ${imageIndex + 1}`} loading="lazy" />
                             ))}
