@@ -2,6 +2,7 @@
   "name": "movies-that-feel-like",
   "private": true,
   "workspaces": ["apps/*", "packages/*"],
+  "packageManager": "bun@1.3.14",
   "scripts": {
     "dev": "npm run dev -w apps/astro",
     "build": "npm run build -w apps/astro",
