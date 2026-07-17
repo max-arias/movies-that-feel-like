@@ -2,7 +2,7 @@
   "name": "db",
   "private": true,
   "dependencies": {
-    "drizzle-orm": "^0.41.0"
+    "drizzle-orm": "^0.45.2"
   },
   "scripts": {
     "migrate": "wrangler d1 migrations apply movies-that-feel-like --local",
