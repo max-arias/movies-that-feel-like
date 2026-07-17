@@ -101,4 +101,4 @@
   mask-image: linear-gradient(to bottom, transparent 0, black 14px, black calc(100% - 18px), transparent 100%);
 }
 
-@utility index-grid { grid-template-columns: minmax(0, 1fr) clamp(280px, 25vw, 360px); }
+@utility index-grid { grid-template-columns: minmax(0, 1fr) clamp(200px, 25vw, 200px); }
