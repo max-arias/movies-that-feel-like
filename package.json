@@ -9,7 +9,7 @@
     "cf:deploy": "npm run cf:build && wrangler d1 migrations apply movies-that-feel-like --remote --config apps/astro/wrangler.jsonc && wrangler deploy --config apps/astro/dist/server/wrangler.json",
     "cf:deploy:prod": "npm run cf:build && wrangler d1 migrations apply movies-that-feel-like --remote --config apps/astro/wrangler.jsonc && wrangler deploy --config apps/astro/dist/server/wrangler.json",
     "cf:deploy:preview": "npm run cf:build && wrangler d1 migrations apply movies-that-feel-like --remote --config apps/astro/wrangler.jsonc && wrangler deploy --config apps/astro/dist/server/wrangler.json --env preview",
-    "check": "npm run check -w apps/astro",
+    "check": "npm run validate-schema -w packages/db && npm run check -w apps/astro",
     "seed": "npm run pipeline:load -- --reset && npm run db:migrate",
     "pipeline:fetch": "npm run fetch -w apps/pipeline --",
     "pipeline:normalize": "npm run normalize -w apps/pipeline --",

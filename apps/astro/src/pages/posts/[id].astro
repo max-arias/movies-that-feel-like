@@ -2,13 +2,13 @@
 // Post detail page — shows a single imported vibe post with images, tags, recommendations.
 
 import Layout from "../../layouts/Layout.astro";
-import { getPostByRedditId } from "../../lib/db";
+import { getDb, getPostByRedditId } from "../../lib/db";
 import { env } from "cloudflare:workers";
 
 // In server mode, params exist at request time even for non-prerendered fallback
 let post: Awaited<ReturnType<typeof getPostByRedditId>>;
 try {
-  const db = env.DB;
+  const db = getDb(env);
   post = await getPostByRedditId(db, Astro.params.id!);
 } catch {
   post = null;
@@ -103,9 +103,9 @@ try {
         <div>
           <h1 class="text-3xl font-bold mb-2">{post.title}</h1>
 
-          {post.vibe_summary && (
+          {post.vibeSummary && (
             <div class="mb-4 p-4 bg-base-300 rounded-box">
-              <p class="text-sm italic text-base-content/80">{post.vibe_summary}</p>
+              <p class="text-sm italic text-base-content/80">{post.vibeSummary}</p>
             </div>
           )}
 
@@ -153,10 +153,10 @@ try {
               <div class="grid grid-cols-1 gap-4">
                 {post.recommendations.map((rec) => (
                   <div class="card card-side bg-base-300 shadow-sm">
-                    {rec.poster_url && (
+                    {rec.posterUrl && (
                       <figure class="w-24 shrink-0">
                         <img
-                          src={rec.poster_url}
+                          src={rec.posterUrl}
                           alt={rec.title}
                           class="h-full w-full object-cover"
                           loading="lazy"
@@ -172,15 +172,15 @@ try {
                           {rec.title}
                         </a>
                         <span class="badge badge-soft badge-sm">
-                          {rec.media_type === "game" ? "🎮" : rec.media_type === "movie" ? "🎬" : "📺"} {rec.media_type}
+                          {rec.mediaType === "game" ? "🎮" : rec.mediaType === "movie" ? "🎬" : "📺"} {rec.mediaType}
                         </span>
                       </div>
-                      {rec.release_year && (
-                        <p class="text-sm text-base-content/60">{rec.release_year}</p>
+                      {rec.releaseYear && (
+                        <p class="text-sm text-base-content/60">{rec.releaseYear}</p>
                       )}
-                      {rec.vote_average && (
+                      {rec.voteAverage && (
                         <p class="text-xs text-base-content/50">
-                          ⭐ {rec.vote_average.toFixed(1)}
+                          ⭐ {rec.voteAverage.toFixed(1)}
                         </p>
                       )}
                     </div>

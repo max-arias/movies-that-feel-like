@@ -1,7 +1,20 @@
 {
   "name": "db",
   "private": true,
+  "dependencies": {
+    "drizzle-orm": "^0.41.0"
+  },
   "scripts": {
-    "migrate": "wrangler d1 migrations apply movies-that-feel-like --local"
+    "migrate": "wrangler d1 migrations apply movies-that-feel-like --local",
+    "validate-schema": "tsx validate-schema.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0"
+  },
+  "exports": {
+    "./schema": {
+      "import": "./schema.ts",
+      "types": "./schema.ts"
+    }
   }
 }

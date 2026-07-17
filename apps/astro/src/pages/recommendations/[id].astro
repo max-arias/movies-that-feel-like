@@ -3,31 +3,22 @@
 
 import Layout from "../../layouts/Layout.astro";
 import {
+  getDb,
   getRecommendationById,
   getPostsForRecommendation,
 } from "../../lib/db";
 import { env } from "cloudflare:workers";
 
 const recId = Number(Astro.params.id!);
-let rec: Awaited<ReturnType<typeof getRecommendationById>>;
+let rec: Awaited<ReturnType<typeof getRecommendationById>> | null;
 let posts: Awaited<ReturnType<typeof getPostsForRecommendation>>;
 try {
-  const db = env.DB;
+  const db = getDb(env);
   rec = await getRecommendationById(db, recId);
   posts = rec ? await getPostsForRecommendation(db, recId) : [];
 } catch {
   rec = null;
   posts = [];
-}
-
-// Parse platforms JSON for game records
-let platforms: string[] = [];
-if (rec && rec.platforms) {
-  try {
-    platforms = JSON.parse(rec.platforms);
-  } catch {
-    platforms = [];
-  }
 }
 ---
 
@@ -52,9 +43,9 @@ if (rec && rec.platforms) {
 
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div>
-          {rec.poster_url ? (
+          {rec.posterUrl ? (
             <img
-              src={rec.poster_url}
+              src={rec.posterUrl}
               alt={rec.title}
               class="w-full rounded-box shadow-sm"
             />
@@ -68,18 +59,18 @@ if (rec && rec.platforms) {
         <div class="lg:col-span-2">
           <div class="flex items-start gap-3 flex-wrap mb-2">
             <h1 class="text-3xl font-bold">{rec.title}</h1>
-            {rec.release_year && (
-              <span class="text-2xl text-base-content/50">({rec.release_year})</span>
+            {rec.releaseYear && (
+              <span class="text-2xl text-base-content/50">({rec.releaseYear})</span>
             )}
           </div>
 
           <div class="flex flex-wrap gap-2 mb-4">
             <span class="badge badge-soft badge-primary">
-              {rec.media_type === "game" ? "🎮 Game" : rec.media_type === "movie" ? "🎬 Movie" : "📺 TV"}
+              {rec.mediaType === "game" ? "🎮 Game" : rec.mediaType === "movie" ? "🎬 Movie" : "📺 TV"}
             </span>
-            {rec.vote_average && (
+            {rec.voteAverage && (
               <span class="badge badge-soft badge-accent">
-                ⭐ {rec.vote_average.toFixed(1)}
+                ⭐ {rec.voteAverage.toFixed(1)}
               </span>
             )}
             {rec.popularity && (
@@ -93,18 +84,18 @@ if (rec && rec.platforms) {
             </div>
           )}
 
-          {rec.media_type === "game" ? (
+          {rec.mediaType === "game" ? (
             <div class="stats stats-vertical shadow-sm mb-6">
-              {rec.igdb_id && (
+              {rec.igdbId && (
                 <div class="stat">
                   <div class="stat-title">IGDB</div>
                   <div class="stat-value text-lg">
-                    {rec.external_url ? (
-                      <a href={rec.external_url} class="link link-primary focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark" target="_blank">
-                        #{rec.igdb_id} ↗
+                    {rec.externalUrl ? (
+                      <a href={rec.externalUrl} class="link link-primary focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark" target="_blank">
+                        #{rec.igdbId} ↗
                       </a>
                     ) : (
-                      <span>#{rec.igdb_id}</span>
+                      <span>#{rec.igdbId}</span>
                     )}
                   </div>
                 </div>
@@ -112,30 +103,30 @@ if (rec && rec.platforms) {
             </div>
           ) : (
             <div class="stats stats-vertical shadow-sm mb-6">
-              {rec.imdb_id && (
+              {rec.imdbId && (
                 <div class="stat">
                   <div class="stat-title">IMDb</div>
                   <div class="stat-value text-lg">
                     <a
-                      href={`https://www.imdb.com/title/${rec.imdb_id}/`}
+                      href={`https://www.imdb.com/title/${rec.imdbId}/`}
                       class="link link-primary focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark"
                       target="_blank"
                     >
-                      {rec.imdb_id} ↗
+                      {rec.imdbId} ↗
                     </a>
                   </div>
                 </div>
               )}
-              {rec.tmdb_id && (
+              {rec.tmdbId && (
                 <div class="stat">
                   <div class="stat-title">TMDB</div>
                   <div class="stat-value text-lg">
                     <a
-                      href={`https://www.themoviedb.org/${rec.media_type}/${rec.tmdb_id}`}
+                      href={`https://www.themoviedb.org/${rec.mediaType}/${rec.tmdbId}`}
                       class="link link-primary focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark"
                       target="_blank"
                     >
-                      #{rec.tmdb_id} ↗
+                      #{rec.tmdbId} ↗
                     </a>
                   </div>
                 </div>
@@ -143,11 +134,11 @@ if (rec && rec.platforms) {
             </div>
           )}
 
-          {rec.media_type === "game" && platforms.length > 0 && (
+          {rec.mediaType === "game" && rec.platforms && rec.platforms.length > 0 && (
             <div class="mb-6">
               <h3 class="text-sm font-semibold text-base-content/70 mb-2">Platforms</h3>
               <div class="flex flex-wrap gap-2">
-                {platforms.map((p) => (
+                {rec.platforms.map((p) => (
                   <span class="badge badge-soft badge-outline">{p}</span>
                 ))}
               </div>
@@ -166,14 +157,14 @@ if (rec && rec.platforms) {
                   <div class="card card-side bg-base-300 shadow-sm">
                     <div class="card-body p-4">
                       <a
-                        href={`/posts/${post.reddit_post_id}/`}
+                        href={`/posts/${post.redditPostId}/`}
                         class="card-title text-base hover:link focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark"
                       >
                         {post.title}
                       </a>
-                      {post.extracted_text && (
+                      {post.extractedText && (
                         <p class="text-sm text-base-content/60">
-                          Mentioned as: <span class="italic">"{post.extracted_text}"</span>
+                          Mentioned as: <span class="italic">"{post.extractedText}"</span>
                         </p>
                       )}
                       <div class="flex items-center gap-2 mt-1">
