@@ -31,9 +31,6 @@ export const importedVibePosts = sqliteTable(
       .$type<"pending" | "processing" | "publishable" | "failed" | "skipped">(),
     errorInfo: text("error_info"),
     processingRunId: integer("processing_run_id"),
-    summaryContractVersion: text("summary_contract_version"),
-    summaryGeneratedAt: text("summary_generated_at"),
-    summarySourceHash: text("summary_source_hash"),
     createdAt: text("created_at")
       .notNull()
       .default(sql`(datetime('now'))`),
