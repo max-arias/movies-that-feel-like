@@ -2,9 +2,8 @@ name: Import Reddit posts
 
 on:
   schedule:
-    # GitHub cron is UTC and this is a calendar schedule (every third day of
-    # the month), not a rolling 72-hour interval.
-    - cron: '17 3 */3 * *'
+    # GitHub cron is UTC. Runs daily at midnight UTC.
+    - cron: '0 0 * * *'
   workflow_dispatch:
     inputs:
       limit:
@@ -147,7 +146,10 @@ jobs:
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
         env:
           OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
-        run: npm run pipeline:extract
+        # --allow-errors lets a single malformed LLM response (e.g. invalid
+        # JSON escape) drop just that post instead of failing the whole run.
+        # The other 99 posts still flow through enrich → load → migration.
+        run: npm run pipeline:extract -- --allow-errors
 
       - name: Enrich recommendations
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
@@ -155,7 +157,7 @@ jobs:
           TMDB_ACCESS_TOKEN: ${{ secrets.TMDB_ACCESS_TOKEN }}
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
-        run: npm run pipeline:enrich
+        run: npm run pipeline:enrich -- --allow-failed-extraction
 
       - name: Reject enrichment errors
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
@@ -172,7 +174,7 @@ jobs:
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
         run: |
           git ls-files --others --exclude-standard -- 'packages/db/migrations/*.sql' > /tmp/migrations-before
-          npm run pipeline:load
+          npm run pipeline:load -- --allow-partial-extraction
 
       - name: Reject load errors
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'

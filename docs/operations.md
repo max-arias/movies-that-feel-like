@@ -1,11 +1,9 @@
 # Production Reddit import operations
 
 The production import is `.github/workflows/import-reddit.yml`. It runs at
-`03:17 UTC` on calendar days `1, 4, 7, ...` (`17 3 */3 * *`), and can also be
-started with **Run workflow**. This is not a rolling 72-hour schedule: month
-boundaries and different month lengths determine the calendar dates.
-The import currently targets the fixed source year `2026` and fetches newest
-first with `--sort desc`.
+`00:00 UTC` every day (`0 0 * * *`), and can also be started with
+**Run workflow**. The import currently targets the fixed source year `2026`
+and fetches newest first with `--sort desc`.
 
 ## Configuration
 
@@ -38,13 +36,22 @@ newline-delimited file and passes that file to both fetch (`--exclude-reddit-ids
 and normalize. New data then runs through fetch, normalize, cache-assets,
 extract, enrich, and load.
 
+Extraction runs with `--allow-errors`, so an individual extraction failure is
+tolerated and that post is deferred while successful posts continue through the
+pipeline. Enrich runs with `--allow-failed-extraction`, and load runs with
+`--allow-partial-extraction`, which loads only posts with successful extraction
+results. Failed posts are not marked imported or skipped and remain eligible
+for a later refresh. If every extraction fails, load stops; errors from
+enrichment or loading still fail the workflow before commit and apply.
+
 `load` creates data migrations under `packages/db/migrations`. Before a normal
 run, the workflow queries remote `d1_migrations` and refuses to proceed if any
 tracked migration was already pending. It stages only newly generated SQL,
 pushes those files to `main`, rechecks that the remote pending set is exactly
 the new files, and then runs tracked Wrangler
 `d1 migrations apply --remote` (without unsupported flags). A load or
-enrichment error stops before commit and apply.
+enrichment error stops before commit and apply; extraction errors are tolerated
+per post as described above.
 
 For migration recovery, dispatch manually with `apply_only: true`. The
 workflow performs a status check, lists the pending migrations that are already

@@ -190,6 +190,47 @@ def _build_merge_index(
     return idx
 
 
+def _check_extraction_health(
+    extraction: dict[str, Any],
+    *,
+    allow_partial: bool,
+    allow_empty: bool,
+) -> None:
+    """Reject unsafe extraction artifacts unless an explicit override applies."""
+    status = extraction.get("status", "")
+    summary = extraction.get("summary", {})
+    success_count = summary.get("success_count", 0)
+    error_count = summary.get("error_count", 0)
+
+    if status == "failed" and not allow_empty:
+        raise ValueError(
+            "extraction artifact has failed status; rerun extraction with a "
+            "working API key or pass --allow-empty-extraction to override"
+        )
+    if error_count > 0 and success_count == 0 and not allow_empty:
+        raise ValueError(
+            "extraction artifact has no successful results; pass "
+            "--allow-empty-extraction to override"
+        )
+    if error_count > 0 and success_count > 0 and not (allow_partial or allow_empty):
+        raise ValueError(
+            "extraction artifact contains failed target posts; pass "
+            "--allow-partial-extraction to load successful posts only"
+        )
+
+
+def _select_post_ids_for_load(
+    post_ids: list[str],
+    extraction_by_post: dict[str, dict[str, Any]],
+    *,
+    allow_partial: bool,
+) -> list[str]:
+    """Exclude normalized posts without a successful extraction in partial mode."""
+    if not allow_partial:
+        return post_ids
+    return [pid for pid in post_ids if pid in extraction_by_post]
+
+
 # ── DB operations ─────────────────────────────────────────────────────
 
 
@@ -797,6 +838,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Proceed even if the extraction artifact has no successes (default: abort)",
     )
+    parser.add_argument(
+        "--allow-partial-extraction",
+        action="store_true",
+        help="Load only posts with successful extraction results when some posts fail",
+    )
     return parser
 
 
@@ -845,33 +891,18 @@ def main(argv: list[str] | None = None) -> None:
     assets = read_json_artifact(assets_path)
     extraction = read_json_artifact(ext_path)
     try:
-        validate_complete_extraction(extraction, allow_failed=args.allow_empty_extraction)
+        validate_complete_extraction(
+            extraction,
+            allow_failed=args.allow_empty_extraction or args.allow_partial_extraction,
+        )
+        _check_extraction_health(
+            extraction,
+            allow_partial=args.allow_partial_extraction,
+            allow_empty=args.allow_empty_extraction,
+        )
     except ValueError as exc:
         raise SystemExit(f"[pipeline:load] {exc}") from exc
     enrichment = read_json_artifact(enrich_path)
-
-    # ── Extraction health check ─────────────────────────────────────────
-    ext_status = extraction.get("status", "")
-    ext_summary = extraction.get("summary", {})
-    ext_success = ext_summary.get("success_count", 0)
-    ext_errors = ext_summary.get("error_count", 0)
-
-    if ext_status == "failed" or (ext_success == 0 and ext_errors > 0):
-        if not args.allow_empty_extraction:
-            print(
-                f"[pipeline:load] REFUSING to load from extraction artifact "
-                f"'{ext_path.name}' — status={ext_status!r}, "
-                f"success_count={ext_success}, error_count={ext_errors}. "
-                f"Rerun extraction with a working API key or pass "
-                f"--allow-empty-extraction to override."
-            )
-            raise SystemExit(1)
-        else:
-            print(
-                f"[pipeline:load] WARNING: loading from extraction artifact "
-                f"'{ext_path.name}' with success_count={ext_success}, "
-                f"error_count={ext_errors} (--allow-empty-extraction active)"
-            )
 
     # Build merge index ---------------------------------------------------
     idx = _build_merge_index(norm, assets, extraction, enrichment)
@@ -881,6 +912,10 @@ def main(argv: list[str] | None = None) -> None:
     extraction_by_post = idx["extraction_by_post"]
     enrich_match_by_key = idx["enrich_match_by_key"]
     enrich_candidate_by_key = idx["enrich_candidate_by_key"]
+
+    post_ids = _select_post_ids_for_load(
+        post_ids, extraction_by_post, allow_partial=args.allow_partial_extraction
+    )
 
     print(f"[pipeline:load] Found {len(post_ids)} post(s) to process")
 
