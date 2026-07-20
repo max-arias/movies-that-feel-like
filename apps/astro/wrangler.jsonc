@@ -14,6 +14,7 @@
       "binding": "DB",
       "database_name": "movies-that-feel-like",
       "database_id": "0e45f57f-016f-4c47-b2ba-e2ae0bb94f6f",
+      "remote": true,
       "migrations_dir": "../../packages/db/migrations"
     }
   ]

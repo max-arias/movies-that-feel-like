@@ -2,31 +2,20 @@
 // Movies That Feel Like — discovery feed of imported Reddit vibe posts.
 
 import Layout from "../layouts/Layout.astro";
-import { getDb, getPublishedPosts, getPostCount } from "../lib/db";
+import { getDb, getPublishedPosts } from "../lib/db";
 import { env } from "cloudflare:workers";
 
 const db = getDb(env);
 
-let posts: Awaited<ReturnType<typeof getPublishedPosts>> = [];
-let postCount = 0;
-let dbError: string | undefined;
-try {
-  postCount = await getPostCount(db);
-  posts = await getPublishedPosts(db);
-} catch (e) {
-  dbError = String(e);
-}
+const posts = await getPublishedPosts(db);
 
 const tagCounts = new Map<string, number>();
 for (const post of posts) {
   for (const { tag } of post.tags) tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
 }
 const tags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-const requestedTag = Astro.url.searchParams.get("tag");
-const selectedTag = requestedTag && tagCounts.has(requestedTag) ? requestedTag : "all";
-const visiblePosts = selectedTag === "all"
-  ? posts
-  : posts.filter((post) => post.tags.some(({ tag }) => tag === selectedTag));
+const selectedTag = "all";
+const visiblePosts = posts;
 const tagHref = (tag: string) => tag === "all"
   ? Astro.url.pathname
   : `${Astro.url.pathname}?tag=${encodeURIComponent(tag)}`;
@@ -42,16 +31,7 @@ const allTagSizes = "--tag-mobile-size: 6rem; --tag-285-size: 10rem; --tag-300-s
 
 <Layout title="Movies That Feel Like — a visual discovery index">
   {
-    dbError ? (
-      <div class="mb-20 border border-line p-empty transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:border-line-dark">
-          <h2 class="mb-2.5 font-display text-5xl uppercase">Database error</h2>
-          <p class="text-error text-red transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-red-dark">{dbError}</p>
-          <p class="text-error text-quiet theme-dark:text-quiet-dark">
-              Make sure the local D1 database is initialized:
-              <code class="ml-1">npm run db:migrate</code>
-          </p>
-      </div>
-    ) : posts.length === 0 ? (
+    posts.length === 0 ? (
       <div class="mb-20 border border-line p-empty transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:border-line-dark">
           <h2 class="mb-2.5 font-display text-5xl uppercase">No posts loaded yet</h2>
           <p class="text-error text-quiet theme-dark:text-quiet-dark">
@@ -83,8 +63,8 @@ const allTagSizes = "--tag-mobile-size: 6rem; --tag-285-size: 10rem; --tag-300-s
           <div class="grid grid-cols-1 gap-mobile-rail-gap md:grid-cols-2 md:gap-rail-gap">
             {[0, 1].map((rail) => (
               <div class:list={["min-w-0 pt-0", { "md:pt-rail-offset": rail === 1 }]} data-rail={rail}>
-                {visiblePosts.filter((_, index) => index % 2 === rail).map((post, index) => (
-                  <article class="mb-post-mobile pt-post-top md:mb-post">
+                {visiblePosts.filter((_, index) => index % 2 === rail).map((post) => (
+                  <article class="mb-post-mobile pt-post-top md:mb-post" data-post-tags={post.tags.map(({ tag }) => tag).join("|")}>
                     {post.images.length > 0 ? (
                       <div class="relative aspect-square overflow-hidden bg-gallery" data-gallery aria-label={`Image gallery for ${post.title}`}>
                         <a class="group block h-full w-full overflow-hidden focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark" href={`/posts/${post.redditPostId}/`} aria-label={`View details for ${post.title}`}>
@@ -121,6 +101,13 @@ const allTagSizes = "--tag-mobile-size: 6rem; --tag-285-size: 10rem; --tag-300-s
 </Layout>
 
 <script>
+  const requestedTag = new URLSearchParams(window.location.search).get("tag");
+  const knownTags = new Set(Array.from(document.querySelectorAll<HTMLElement>("[data-post-tags]")).flatMap((post) => (post.dataset.postTags ?? "").split("|").filter(Boolean)));
+  const selectedTag = requestedTag && knownTags.has(requestedTag) ? requestedTag : "all";
+  document.querySelectorAll<HTMLElement>("[data-post-tags]").forEach((post) => {
+    post.hidden = selectedTag !== "all" && !(post.dataset.postTags ?? "").split("|").includes(selectedTag);
+  });
+
   document.querySelectorAll<HTMLElement>("[data-gallery]").forEach((gallery) => {
     const track = gallery.querySelector<HTMLElement>(".gallery-track");
     const slides = Array.from(gallery.querySelectorAll<HTMLImageElement>("img"));

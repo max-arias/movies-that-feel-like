@@ -6,7 +6,8 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "check": "astro check"
+    "check": "astro check",
+    "cf:build": "astro build && node scripts/generate-deploy-config.mjs && node scripts/verify-static-artifact.mjs"
   },
   "dependencies": {
     "@astrojs/check": "^0.9.9",

@@ -72,7 +72,7 @@ export async function getPublishedPosts(db: DrizzleD1Database) {
     .select()
     .from(importedVibePosts)
     .where(eq(importedVibePosts.status, "publishable"))
-    .orderBy(desc(importedVibePosts.createdUtc));
+    .orderBy(desc(importedVibePosts.createdUtc), desc(importedVibePosts.id));
 
   if (posts.length === 0) return [];
 
@@ -87,7 +87,7 @@ export async function getPublishedPosts(db: DrizzleD1Database) {
           .select()
           .from(importedPostImages)
           .where(inArray(importedPostImages.importedVibePostId, ids))
-          .orderBy(asc(importedPostImages.sortOrder))
+          .orderBy(asc(importedPostImages.sortOrder), asc(importedPostImages.id))
       )
     ).then((r) => r.flat()),
 
@@ -142,7 +142,8 @@ export async function getPublishedPosts(db: DrizzleD1Database) {
           )
           .orderBy(
             desc(recommendations.evidenceScore),
-            desc(recommendations.popularity)
+            desc(recommendations.popularity),
+            asc(recommendations.id)
           )
       )
     ).then((r) => r.flat()),
@@ -197,7 +198,7 @@ export async function getPostByRedditId(
       .where(
         eq(importedPostImages.importedVibePostId, post.id)
       )
-      .orderBy(asc(importedPostImages.sortOrder)),
+      .orderBy(asc(importedPostImages.sortOrder), asc(importedPostImages.id)),
     db
       .select()
       .from(vibeTags)
@@ -230,7 +231,8 @@ export async function getPostByRedditId(
       .orderBy(
         desc(sql`COUNT(${recommendationEvidence.id})`),
         desc(recommendations.evidenceScore),
-        desc(recommendations.popularity)
+        desc(recommendations.popularity),
+        asc(recommendations.id)
       ),
   ]);
 
@@ -262,7 +264,8 @@ export async function getRecommendationsForPost(
     .groupBy(recommendations.id)
     .orderBy(
       desc(recommendations.evidenceScore),
-      desc(recommendations.popularity)
+      desc(recommendations.popularity),
+      asc(recommendations.id)
     );
 }
 
@@ -278,7 +281,7 @@ export async function getImagesForPost(
     .select()
     .from(importedPostImages)
     .where(eq(importedPostImages.importedVibePostId, postId))
-    .orderBy(asc(importedPostImages.sortOrder));
+    .orderBy(asc(importedPostImages.sortOrder), asc(importedPostImages.id));
 }
 
 /**
@@ -340,7 +343,7 @@ export async function getPostsForRecommendation(
         eq(importedVibePosts.status, "publishable")
       )
     )
-    .orderBy(desc(importedVibePosts.createdUtc));
+    .orderBy(desc(importedVibePosts.createdUtc), desc(importedVibePosts.id));
 }
 
 /**
@@ -376,7 +379,7 @@ export async function getAllPostIds(db: DrizzleD1Database) {
     .select({ redditPostId: importedVibePosts.redditPostId })
     .from(importedVibePosts)
     .where(eq(importedVibePosts.status, "publishable"))
-    .orderBy(desc(importedVibePosts.createdUtc));
+    .orderBy(desc(importedVibePosts.createdUtc), desc(importedVibePosts.id));
 }
 
 /**
