@@ -2,9 +2,9 @@
  * Public D1 database API.
  *
  * Usage:
- *   import { getDb, getPublishedPosts } from "../lib/db";
+ *   import { getDb, getBuildData } from "../lib/db";
  *   const db = getDb(env);
- *   const posts = await getPublishedPosts(db);
+ *   const { posts } = await getBuildData(db);
  *
  * The `getDb()` factory returns a lightweight Drizzle wrapper around
  * the D1 binding. It does NOT cache — call it per-request as needed.
@@ -17,14 +17,5 @@ export function getDb(env: { DB: D1Database }) {
 }
 
 export {
-  getPublishedPosts,
-  getPostByRedditId,
-  getRecommendationsForPost,
-  getImagesForPost,
-  getTagsForPost,
-  getRecommendationById,
-  getPostsForRecommendation,
-  getAllRecommendationIds,
-  getAllPostIds,
-  getPostCount,
+  getBuildData,
 } from "./queries";

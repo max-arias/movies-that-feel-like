@@ -8,11 +8,11 @@ if (config.assets?.directory?.includes("dist/server") || config.assets?.director
 const client = resolve(root, "dist/client");
 if (!(await stat(client)).isDirectory()) throw new Error("dist/client is missing");
 for (const route of ["index.html"]) await access(resolve(client, route));
-for (const route of ["posts", "recommendations"]) {
+for (const route of ["posts"]) {
   const entries = await readdir(resolve(client, route), { withFileTypes: true });
   if (!entries.some((entry) => entry.isDirectory())) throw new Error(`no static ${route} route artifacts found`);
 }
-for (const source of ["src/pages/index.astro", "src/pages/posts/[id].astro", "src/pages/recommendations/[id].astro"]) {
+for (const source of ["src/pages/index.astro", "src/pages/posts/[id].astro"]) {
   if ((await readFile(resolve(root, source), "utf8")).match(/prerender\s*=\s*false/)) throw new Error(`${source} opts out of prerendering`);
 }
 console.log("Static deployment artifact verified");

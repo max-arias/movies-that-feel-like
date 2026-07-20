@@ -5,15 +5,15 @@
 // a full-screen DaisyUI carousel of the same images. See issue #4 for the spec.
 
 import Layout from "../../layouts/Layout.astro";
-import { getDb, getPublishedPosts } from "../../lib/db";
+import { getDb, getBuildData } from "../../lib/db";
 import { env } from "cloudflare:workers";
 
 export async function getStaticPaths() {
-  const posts = await getPublishedPosts(getDb(env));
+  const { posts } = await getBuildData(getDb(env));
   return posts.map((post) => ({ params: { id: post.redditPostId }, props: { post } }));
 }
 
-const post = Astro.props.post as Awaited<ReturnType<typeof getPublishedPosts>>[number] | undefined;
+const post = Astro.props.post as Awaited<ReturnType<typeof getBuildData>>["posts"][number] | undefined;
 
 const slideId = (i: number) => `slide${i + 1}`;
 const modalSlideId = (i: number) => `modal-slide${i + 1}`;
