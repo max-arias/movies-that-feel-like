@@ -55,6 +55,8 @@
   --container-drawer-panel: min(84vw, 360px);
   --container-content: 1440px;
   --aspect-poster: 2 / 3;
+  --aspect-recommendation-hero: 2 / 1;
+  --spacing-recommendation-overlay: 45%;
   --text-body: 15px;
   --text-brand: .625rem;
   --text-label: .625rem;
@@ -76,6 +78,10 @@
   --text-count--letter-spacing: .05em;
   --text-summary: 12px;
   --text-summary--line-height: 1.5;
+  --text-vibe-summary: 20px;
+  --text-vibe-summary--line-height: .92;
+  --text-vibe-summary-desktop: 30px;
+  --text-vibe-summary-desktop--line-height: .92;
   --text-error: 13px;
   --text-no-image: 11px;
   --text-caption: clamp(1.5rem, 2.5vw, 2.35rem);

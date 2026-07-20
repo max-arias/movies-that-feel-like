@@ -41,7 +41,6 @@ const externalLabel = (rec: Recommendation): string => {
   if (rec.tmdbId) return "TMDB";
   return rec.externalUrl ? "Source" : "";
 };
-const formatMentions = (count: number) => `${count} ${count === 1 ? "mention" : "mentions"}`;
 ---
 
 <Layout title={post ? `${post.vibeSummary ?? "Vibe post"} — Movies That Feel Like` : "Post not found"}>
@@ -71,7 +70,7 @@ const formatMentions = (count: number) => `${count} ${count === 1 ? "mention" : 
           </div>
         </div>
       ) : (
-        <section class="mb-12 grid grid-cols-1 items-center gap-8 lg:grid-cols-[7fr_3fr]" aria-label="Post hero">
+        <section class="pt-4 mb-1.5 grid grid-cols-1 items-center gap-8 lg:grid-cols-[7fr_3fr]" aria-label="Post hero">
           <div class="relative">
             <div
               class="carousel aspect-video w-full overflow-hidden bg-gallery"
@@ -98,14 +97,22 @@ const formatMentions = (count: number) => `${count} ${count === 1 ? "mention" : 
                     <>
                       <a
                         href={heroPrev(i, totalImages)}
-                        class="btn btn-circle btn-sm absolute left-3 top-1/2 -translate-y-1/2 border border-ink/20 bg-paper/90 text-ink shadow-md hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:left-5 sm:btn-md theme-dark:border-ink-dark/20 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
+                        class="btn btn-circle btn-sm absolute left-4 top-1/2 -translate-y-1/2 border border-ink/20 bg-paper/90 text-ink shadow-md hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:btn-md theme-dark:border-ink-dark/20 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
                         aria-label="Show previous image"
-                      >❮</a>
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" aria-hidden="true">
+                          <path d="m15 18-6-6 6-6" />
+                        </svg>
+                      </a>
                       <a
                         href={heroNext(i, totalImages)}
-                        class="btn btn-circle btn-sm absolute right-3 top-1/2 -translate-y-1/2 border border-ink/20 bg-paper/90 text-ink shadow-md hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:right-5 sm:btn-md theme-dark:border-ink-dark/20 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
+                        class="btn btn-circle btn-sm absolute right-4 top-1/2 -translate-y-1/2 border border-ink/20 bg-paper/90 text-ink shadow-md hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:btn-md theme-dark:border-ink-dark/20 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
                         aria-label="Show next image"
-                      >❯</a>
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" aria-hidden="true">
+                          <path d="m9 18 6-6-6-6" />
+                        </svg>
+                      </a>
                     </>
                   )}
                 </div>
@@ -124,16 +131,16 @@ const formatMentions = (count: number) => `${count} ${count === 1 ? "mention" : 
             )}
           </div>
 
-          <aside class="flex flex-col gap-6" aria-label="Post mood and source">
+          <aside class="flex flex-col gap-4" aria-label="Post mood and source">
             {post.vibeSummary && (
-              <p class="font-body text-body text-quiet leading-relaxed text-pretty transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">
+              <p class="font-body text-vibe-summary lg:text-vibe-summary-desktop font-normal text-quiet text-pretty transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">
                 {post.vibeSummary}
               </p>
             )}
             {post.permalink && (
               <a
                 href={redditHref(post.permalink)}
-                class="btn btn-outline btn-sm self-start normal-case focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark"
+                class="btn btn-outline btn-sm self-start border border-ink bg-paper text-ink normal-case transition-colors duration-240 ease-theme motion-reduce:transition-none hover:border-ink hover:bg-ink hover:text-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:border-ink-dark theme-dark:bg-paper-dark theme-dark:text-ink-dark theme-dark:hover:border-ink-dark theme-dark:hover:bg-ink-dark theme-dark:hover:text-paper-dark theme-dark:outline-red-dark"
                 target="_blank"
                 rel="noopener noreferrer"
               >
@@ -145,7 +152,7 @@ const formatMentions = (count: number) => `${count} ${count === 1 ? "mention" : 
       )}
 
       {post.tags.length > 0 && (
-        <nav class="mb-12" aria-label="Post tags">
+        <nav class="mb-6" aria-label="Post tags">
           <ul class="scrollbar-hidden flex flex-row flex-nowrap gap-2 overflow-x-auto">
             {post.tags.map(({ tag }) => (
               <li class="shrink-0">
@@ -161,13 +168,22 @@ const formatMentions = (count: number) => `${count} ${count === 1 ? "mention" : 
 
       {post.recommendations.length > 0 && (
         <section aria-label="Recommendations">
-          <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-            {post.recommendations.map((rec) => {
+          <div class="grid grid-cols-2 gap-4 md:grid-cols-4 md:gap-4">
+            {post.recommendations.map((rec, i) => {
               const href = externalHref(rec);
-              const cardClass = "group block focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark";
+              const isGalleryHero = post.recommendations.length >= 4 && i === 0;
+              const isSparseHero = post.recommendations.length === 1 && i === 0;
+              const isWide = post.recommendations.length >= 4 && i > 0 && i % 5 === 4;
+              const cardClass = [
+                "group relative block overflow-hidden bg-gallery focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark",
+                !isGalleryHero && !isSparseHero && "aspect-square",
+                isGalleryHero && "col-span-2 aspect-recommendation-hero md:col-span-1 md:col-start-4 md:row-start-1 md:row-span-3 md:aspect-auto md:h-full",
+                isSparseHero && "col-span-2 aspect-recommendation-hero md:col-span-4",
+                isWide && "md:col-span-2 md:aspect-auto md:h-full",
+              ].filter(Boolean).join(" ");
               const cardInner = (
                 <>
-                  <div class="relative mb-2 aspect-poster overflow-hidden bg-gallery transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-gallery">
+                  <div class="absolute inset-0 bg-gallery transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-gallery">
                     {rec.posterUrl ? (
                       <img
                         src={rec.posterUrl}
@@ -180,27 +196,23 @@ const formatMentions = (count: number) => `${count} ${count === 1 ? "mention" : 
                       <div class="flex h-full w-full items-center justify-center text-no-image text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">No poster</div>
                     )}
                   </div>
-                  <h3 class="flex items-baseline gap-1 text-sm font-semibold leading-tight transition-colors duration-240 ease-theme motion-reduce:transition-none group-hover:text-red group-focus-visible:text-red theme-dark:group-hover:text-red-dark theme-dark:group-focus-visible:text-red-dark">
-                    <span class="min-w-0">{rec.title}</span>
-                    {href && (
-                      <span class="shrink-0 text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none group-hover:text-red group-focus-visible:text-red theme-dark:text-quiet-dark theme-dark:group-hover:text-red-dark theme-dark:group-focus-visible:text-red-dark" aria-hidden="true">↗</span>
-                    )}
-                  </h3>
-                  <p class="mt-1 text-xs text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">
-                    {rec.mentionCount > 1 && (
-                      <>
-                        <span>{formatMentions(rec.mentionCount)}</span>
-                        <span aria-hidden="true"> · </span>
-                      </>
-                    )}
-                    {rec.releaseYear ?? "—"}
+                  <div class="pointer-events-none absolute inset-x-0 bottom-0 flex h-recommendation-overlay flex-col justify-end bg-gradient-to-t from-ink via-ink/70 to-transparent px-3 pb-3 pt-8 text-paper transition-colors duration-240 ease-theme motion-reduce:transition-none">
+                    <h3 class="flex items-baseline gap-1 text-base font-semibold leading-tight group-hover:text-red group-focus-visible:text-red theme-dark:group-hover:text-red-dark theme-dark:group-focus-visible:text-red-dark">
+                      <span class="min-w-0">{rec.title}</span>
+                      {href && (
+                        <span class="shrink-0" aria-hidden="true">↗</span>
+                      )}
+                    </h3>
+                    <p class="mt-1 text-xs text-paper/75 theme-dark:text-paper-dark/75">
+                      {rec.releaseYear ?? "—"}
                     {rec.voteAverage != null && (
                       <>
                         <span aria-hidden="true"> · </span>
                         <span aria-label={`Rating ${rec.voteAverage.toFixed(1)} out of 10`}>⭐ {rec.voteAverage.toFixed(1)}</span>
                       </>
                     )}
-                  </p>
+                    </p>
+                  </div>
                 </>
               );
               return href ? (
@@ -253,12 +265,20 @@ const formatMentions = (count: number) => `${count} ${count === 1 ? "mention" : 
                         href={modalPrev(i, totalImages)}
                         class="btn btn-circle absolute left-3 top-1/2 -translate-y-1/2 border border-paper/30 bg-paper/90 text-ink hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:left-5 theme-dark:border-paper-dark/30 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
                         aria-label="Show previous image"
-                      >❮</a>
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5" aria-hidden="true">
+                          <path d="m15 18-6-6 6-6" />
+                        </svg>
+                      </a>
                       <a
                         href={modalNext(i, totalImages)}
                         class="btn btn-circle absolute right-3 top-1/2 -translate-y-1/2 border border-paper/30 bg-paper/90 text-ink hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:right-5 theme-dark:border-paper-dark/30 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
                         aria-label="Show next image"
-                      >❯</a>
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5" aria-hidden="true">
+                          <path d="m9 18 6-6-6-6" />
+                        </svg>
+                      </a>
                     </>
                   )}
                 </div>
