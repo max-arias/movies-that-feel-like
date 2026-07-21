@@ -1,6 +1,26 @@
 @import "tailwindcss";
 @plugin "daisyui";
 
+@font-face {
+  font-family: "Bebas Neue";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/bebas-neue-latin-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Newsreader";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/fonts/newsreader-latin-opsz-wght.woff2") format("woff2");
+}
+
+body {
+  font-optical-sizing: auto;
+}
+
 @theme {
   --color-paper: oklch(98% 0 0);
   --color-paper-dark: oklch(13% 0 0);
