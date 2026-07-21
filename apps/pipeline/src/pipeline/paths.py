@@ -40,15 +40,9 @@ def raw_dir() -> Path:
     return data_dir() / "raw"
 
 
-def assets_dir() -> Path:
-    """Return ``root/data/assets/reddit``."""
-    return data_dir() / "assets" / "reddit"
-
-
 def ensure_pipeline_dirs() -> None:
     """Create pipeline data directories if missing."""
     raw_dir().mkdir(parents=True, exist_ok=True)
     working_dir().mkdir(parents=True, exist_ok=True)
     normalized_dir().mkdir(parents=True, exist_ok=True)
     checkpoints_dir().mkdir(parents=True, exist_ok=True)
-    assets_dir().mkdir(parents=True, exist_ok=True)

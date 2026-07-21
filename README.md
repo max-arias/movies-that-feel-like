@@ -98,15 +98,14 @@ npm run pipeline:ingest
 ```
 
 The stages consume the latest artifacts already present under `data/`; the
-command runs normalize, asset caching, extraction, enrichment, and local D1
-seeding in that order. It does not run `pipeline:fetch`.
+command runs normalize, extraction, enrichment, and local D1 seeding in that
+order. It does not run `pipeline:fetch`.
 
 A small end-to-end sample looks like this:
 
 ```bash
 npm run pipeline:fetch -- --limit 10
 npm run pipeline:normalize
-npm run pipeline:cache-assets
 npm run pipeline:extract -- --limit 10
 npm run pipeline:enrich -- --limit 50
 npm run seed

@@ -57,15 +57,10 @@ export const importedPostImages = sqliteTable(
     importedVibePostId: integer("imported_vibe_post_id")
       .notNull()
       .references(() => importedVibePosts.id, { onDelete: "cascade" }),
-    url: text("url").notNull(),
-    cacheKey: text("cache_key"),
-    cacheStatus: text("cache_status")
-      .notNull()
-      .default("pending")
-      .$type<"pending" | "cached" | "failed" | "fallback">(),
+    sourceUrl: text("source_url").notNull(),
+    previewUrl: text("preview_url"),
     width: integer("width"),
     height: integer("height"),
-    remoteUrl: text("remote_url"),
     sortOrder: integer("sort_order").notNull().default(0),
     createdAt: text("created_at")
       .notNull()

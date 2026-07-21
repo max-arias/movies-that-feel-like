@@ -46,7 +46,18 @@ async function loadBuildData(db: DrizzleD1Database) {
 
   const [allImages, allTags, allRecs] = await Promise.all([
     db
-      .select({ image: importedPostImages })
+      .select({
+        image: {
+          id: importedPostImages.id,
+          importedVibePostId: importedPostImages.importedVibePostId,
+          sourceUrl: importedPostImages.sourceUrl,
+          previewUrl: importedPostImages.previewUrl,
+          width: importedPostImages.width,
+          height: importedPostImages.height,
+          sortOrder: importedPostImages.sortOrder,
+          createdAt: importedPostImages.createdAt,
+        },
+      })
       .from(importedPostImages)
       .innerJoin(importedVibePosts, eq(importedVibePosts.id, importedPostImages.importedVibePostId))
       .where(eq(importedVibePosts.status, "publishable"))

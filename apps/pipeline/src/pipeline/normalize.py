@@ -1,7 +1,4 @@
-"""
-pipeline.normalize — Convert raw Arctic Shift artifacts into normalized records
-with deduplicated original/source image URLs (no preview resolutions).
-"""
+"""Convert raw Arctic Shift artifacts into exact source/preview URL records."""
 
 from __future__ import annotations
 
@@ -19,31 +16,64 @@ _IMAGE_EXT_RE = re.compile(r"\.(jpe?g|png|webp|gif)(\?|$)", re.IGNORECASE)
 _IMAGE_HOST_RE = re.compile(r"^https?://(i\.)?redd\.it/", re.IGNORECASE)
 
 
-def _decode(url: str) -> str:
-    """Decode HTML entities in a URL."""
-    return html.unescape(url)
-
-
 def _is_image_url(url: str) -> bool:
     """Rough check if a URL looks like a direct image link."""
     return bool(_IMAGE_EXT_RE.search(url) or _IMAGE_HOST_RE.match(url))
 
 
-def _extract_preview_images(post: dict[str, Any]) -> list[str]:
-    """Extract source URLs from ``preview.images[*].source.url``.
+_MIN_PREVIEW_WIDTH = 802
 
-    This captures the best-quality preview variant but still excludes
-    the ``resolutions`` array (smaller size variants).
-    """
-    urls: list[str] = []
+
+def _smallest_qualifying_preview(image: dict[str, Any]) -> dict[str, Any] | None:
+    candidates = [r for r in image.get("resolutions") or [] if isinstance(r, dict)]
+    qualifying = []
+    for r in candidates:
+        width = r.get("x", r.get("width"))
+        if isinstance(width, int) and width >= _MIN_PREVIEW_WIDTH and r.get("u", r.get("url")):
+            qualifying.append(r)
+    return min(qualifying, key=lambda r: r["x"] if "x" in r else r["width"]) if qualifying else None
+
+
+def _provider_url(value: Any) -> str | None:
+    return html.unescape(value) if isinstance(value, str) and value else None
+
+
+def _provider_dimensions(value: dict[str, Any]) -> tuple[int | None, int | None]:
+    width = value.get("x", value.get("width"))
+    height = value.get("y", value.get("height"))
+    return (width if isinstance(width, int) else None, height if isinstance(height, int) else None)
+
+
+def _preview_for_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    selected = _smallest_qualifying_preview({"resolutions": metadata.get("p") or metadata.get("resolutions") or []})
+    if not selected:
+        return {"preview_url": None}
+    width, height = _provider_dimensions(selected)
+    return {
+        "preview_url": _provider_url(selected.get("u", selected.get("url"))),
+        "preview_width": width,
+        "preview_height": height,
+    }
+
+
+def _extract_preview_images(post: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract source/preview pairs from preview metadata in provider order."""
+    urls: list[dict[str, Any]] = []
     preview = post.get("preview")
     if not preview:
         return urls
     for img in preview.get("images") or []:
-        src = img.get("source") or {}
-        url = src.get("url")
-        if url:
-            urls.append(_decode(url))
+        selected = _smallest_qualifying_preview(img)
+        if selected:
+            source = img.get("source") or {}
+            source_url = _provider_url(source.get("u", source.get("url")))
+            preview = _preview_for_metadata(img)
+            media_id = img.get("media_id", img.get("id")) or source.get("media_id", source.get("id"))
+            urls.append({"source_url": source_url, "media_id": media_id, **preview})
+        else:
+            source_url = _provider_url((img.get("source") or {}).get("u", (img.get("source") or {}).get("url")))
+            if source_url:
+                urls.append({"source_url": source_url, "preview_url": None})
     return urls
 
 
@@ -53,34 +83,33 @@ def _extract_post_url(post: dict[str, Any]) -> list[str]:
     for key in ("url", "url_overridden_by_dest"):
         val = post.get(key)
         if val and _is_image_url(val):
-            urls.append(_decode(val))
+            decoded = _provider_url(val)
+            if decoded:
+                urls.append(decoded)
     return urls
 
 
-def _extract_gallery_images(post: dict[str, Any]) -> list[str]:
-    """Extract source image URLs from gallery ``media_metadata``.
-
-    Prefers ``s.u`` (the source/original-like field). Falls back to
-    ``p[-1].u`` (largest resolution variant) only if ``s`` is absent.
-    Never includes the full ``p`` resolution array.
-    """
-    urls: list[str] = []
-    mm = post.get("media_metadata")
-    if not mm:
-        return urls
-    for item in mm.values():
-        if item.get("status") != "valid" and item.get("e") != "Image":
+def _extract_gallery_images(post: dict[str, Any]) -> list[dict[str, Any]]:
+    """Join gallery order to metadata by media_id, never by dict order."""
+    metadata = post.get("media_metadata") or {}
+    items = (post.get("gallery_data") or {}).get("items") or []
+    records: list[dict[str, Any]] = []
+    for gallery_item in items:
+        media_id = gallery_item.get("media_id")
+        item = metadata.get(media_id) or metadata.get(str(media_id))
+        if not isinstance(item, dict):
+            continue
+        if item.get("status") != "valid" or item.get("e") != "Image":
             continue
         s = item.get("s") or {}
-        u = s.get("u")
+        u = _provider_url(s.get("u", s.get("url")))
         if u:
-            urls.append(_decode(u))
+            source_url = u
         else:
-            # fallback: use the last (largest) resolution variant
-            p = item.get("p") or []
-            if p:
-                urls.append(_decode(p[-1]["u"]))
-    return urls
+            # A source-less provider record is not an image record.
+            continue
+        records.append({"source_url": source_url, **_preview_for_metadata(item)})
+    return records
 
 
 def _collect_images(post: dict[str, Any]) -> list[dict[str, Any]]:
@@ -97,40 +126,54 @@ def _collect_images(post: dict[str, Any]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     records: list[dict[str, Any]] = []
 
-    def add_urls(
-        urls: list[str], kind: str, source_post_id: str | None = None
+    def add_records(
+        images: list[dict[str, Any]], kind: str, source_post_id: str | None = None
     ) -> None:
-        for url in urls:
+        for image in images:
+            url = image.get("source_url")
+            if not isinstance(url, str) or not url:
+                continue
             if url in seen:
                 continue
             seen.add(url)
-            records.append(
-                {
-                    "source_url": url,
-                    "sort_order": len(records),
-                    "kind": kind,
-                    **({"source_post_id": source_post_id} if source_post_id else {}),
-                }
-            )
+            records.append({"source_url": url, "sort_order": len(records), "kind": kind,
+                            **({"source_post_id": source_post_id} if source_post_id else {}),
+                            **{k: v for k, v in image.items() if k != "source_url"}})
+
+    def attach_direct_previews(previews: list[dict[str, Any]]) -> None:
+        # Direct Reddit posts normally have one media item. When media IDs are
+        # present, use them; otherwise cardinality must make the association
+        # unambiguous. Never compare or rewrite signed URLs to join records.
+        if len(records) == 1 and len(previews) == 1:
+            records[0].update({k: v for k, v in previews[0].items() if k not in {"source_url", "media_id"}})
+        elif len(records) == len(previews) and len({p.get("media_id") for p in previews}) == len(previews) and all(p.get("media_id") for p in previews):
+            for record, preview in zip(records, previews):
+                record.update({k: v for k, v in preview.items() if k not in {"source_url", "media_id"}})
+        else:
+            for record in records:
+                record.setdefault("preview_url", None)
 
     gallery_urls = _extract_gallery_images(post)
     post_urls = _extract_post_url(post)
-    preview_urls = _extract_preview_images(post)
+    preview_images = _extract_preview_images(post)
 
     # Gallery posts: use gallery source URLs only. Do not add preview variants.
     if gallery_urls:
-        add_urls(gallery_urls, "reddit_gallery_source")
+        add_records(gallery_urls, "reddit_gallery_source")
         return records
 
     # Direct image posts: prefer the source/original post URL over preview URLs.
     if post_urls:
-        add_urls(post_urls, "reddit_source")
+        add_records([{"source_url": url} for url in post_urls], "reddit_source")
+        attach_direct_previews(preview_images)
         return records
 
     # Preview-only fallback: use the source field from Reddit preview,
     # still excluding the smaller resolutions array.
-    if preview_urls:
-        add_urls(preview_urls, "reddit_preview_source")
+    if preview_images:
+        for preview in preview_images:
+            source_url = preview["source_url"]
+            add_records([preview], "reddit_preview_source")
         return records
 
     # Crosspost fallback: if the post itself has no images, but the
@@ -143,17 +186,19 @@ def _collect_images(post: dict[str, Any]) -> list[dict[str, Any]]:
         parent_id = parent.get("id")
         parent_gallery = _extract_gallery_images(parent)
         if parent_gallery:
-            add_urls(parent_gallery, "reddit_crosspost_gallery", parent_id)
+            add_records(parent_gallery, "reddit_crosspost_gallery", parent_id)
             return records
 
         parent_post_urls = _extract_post_url(parent)
         if parent_post_urls:
-            add_urls(parent_post_urls, "reddit_crosspost_source", parent_id)
+            add_records([{"source_url": url} for url in parent_post_urls], "reddit_crosspost_source", parent_id)
+            attach_direct_previews(_extract_preview_images(parent))
             return records
 
         parent_preview = _extract_preview_images(parent)
         if parent_preview:
-            add_urls(parent_preview, "reddit_crosspost_preview", parent_id)
+            for preview in parent_preview:
+                add_records([preview], "reddit_crosspost_preview", parent_id)
             return records
 
     return records
@@ -174,7 +219,7 @@ def _normalize_post(
         "score": post.get("score"),
         "num_comments": post.get("num_comments"),
         "permalink": post.get("permalink", ""),
-        "source_url": post.get("url", ""),
+        "source_url": _provider_url(post.get("url_overridden_by_dest") or post.get("url", "")) or "",
         "over_18": bool(post.get("over_18", False)),
         "spoiler": bool(post.get("spoiler", False)),
         "images": images,
@@ -291,11 +336,20 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     # Build output artifact ------------------------------------------------
+    embedded_outcomes = raw_artifact.get("refetch_outcomes")
+    if not isinstance(embedded_outcomes, dict):
+        embedded_outcomes = {
+            "outcomes": [
+                {"reddit_post_id": post.get("id"), "attempted": True, "status": "success"}
+                for post in raw_posts if post.get("id")
+            ]
+        }
     artifact: dict[str, Any] = {
         "status": "normalized",
         "source": "pipeline.normalize",
         "normalized_at": datetime.now(timezone.utc).isoformat(),
         "raw_artifact": str(raw_path),
+        "refetch_outcomes": embedded_outcomes,
         "posts": normalized_posts,
         "comments_by_post": comments_by_post,
         "summary": {

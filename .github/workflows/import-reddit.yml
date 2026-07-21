@@ -138,10 +138,6 @@ jobs:
             exit 1
           fi
 
-      - name: Cache assets
-        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
-        run: npm run pipeline:cache-assets
-
       - name: Extract recommendations
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
         env:
@@ -173,7 +169,6 @@ jobs:
       - name: Load and generate migrations
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
         run: |
-          git ls-files --others --exclude-standard -- 'packages/db/migrations/*.sql' > /tmp/migrations-before
           npm run pipeline:load -- --allow-partial-extraction
 
       - name: Reject load errors
@@ -183,56 +178,24 @@ jobs:
             | sort -nr | cut -d' ' -f2- | head -n1)
           errors=$(jq -r '.summary.errors // 0' "$load_artifact")
           if [ "$errors" -ne 0 ]; then
-            echo "Load artifact contains $errors error(s); refusing to commit or apply migrations." >&2
+            echo "Load artifact contains $errors error(s); refusing to continue." >&2
             exit 1
           fi
 
-      - name: Commit and push only new migrations
-        id: migrations
+      - name: Report generated migrations for review
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git ls-files --others --exclude-standard -- 'packages/db/migrations/*.sql' > /tmp/migrations-after
-          comm -13 /tmp/migrations-before /tmp/migrations-after > /tmp/new-migration-paths
-          while IFS= read -r path; do basename "$path"; done < /tmp/new-migration-paths \
-            | sort -u > /tmp/new-migrations
-          if [ ! -s /tmp/new-migration-paths ]; then
-            echo 'No new migration files were generated.'
-            echo 'pushed=false' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          while IFS= read -r migration; do git add -- "$migration"; done < /tmp/new-migration-paths
-          if git diff --cached --name-only | grep -qEv '^packages/db/migrations/[^/]+\.sql$'; then
-            echo 'Unexpected staged path.' >&2
-            exit 1
-          fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'data: import Reddit posts'
-          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          git push origin HEAD:main
-          echo 'pushed=true' >> "$GITHUB_OUTPUT"
+          echo 'Generated migrations remain in the workspace for explicit review; no commit or push is performed.'
 
-      - name: Verify pushed migrations are the only pending migrations
-        if: steps.migrations.outputs.pushed == 'true'
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          git ls-files 'packages/db/migrations/*.sql' \
-            | while IFS= read -r path; do basename "$path"; done \
-            | sort -u > /tmp/local-migrations-after
-          npx wrangler d1 execute movies-that-feel-like --remote \
-            --config apps/astro/wrangler.jsonc \
-            --command 'SELECT name FROM d1_migrations ORDER BY name' --json \
-            | jq -r '.[0].results[]?.name' | sort -u > /tmp/remote-migrations-after
-          comm -23 /tmp/local-migrations-after /tmp/remote-migrations-after > /tmp/pending-after-push
-          if ! cmp -s /tmp/new-migrations /tmp/pending-after-push; then
-            echo 'Remote pending migrations do not exactly match newly generated migrations.' >&2
-            diff -u /tmp/new-migrations /tmp/pending-after-push || true
-            exit 1
-          fi
+      - name: Upload generated migrations for review
+        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: reddit-import-migrations-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            packages/db/migrations/*.sql
+            data/working/load-*.json
 
       - name: Recover committed pending migrations
         if: inputs.apply_only == true
@@ -250,10 +213,3 @@ jobs:
             git ls-files --error-unmatch "packages/db/migrations/$migration" >/dev/null
           done < /tmp/pending-migrations
           npx wrangler d1 migrations apply movies-that-feel-like --remote --config apps/astro/wrangler.jsonc
-
-      - name: Apply pushed migrations to production D1
-        if: steps.migrations.outputs.pushed == 'true'
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: npx wrangler d1 migrations apply movies-that-feel-like --remote --config apps/astro/wrangler.jsonc

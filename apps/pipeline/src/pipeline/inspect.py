@@ -40,15 +40,6 @@ def _summarize(path: Path) -> str:
             f"posts={post_count} images={img_count} noimg={noimg}"
         )
 
-    if status == "assets_cached" and source == "pipeline.cache_assets":
-        attempted = summary.get("attempted", "?")
-        cached = summary.get("cached", "?")
-        failed = summary.get("failed", "?")
-        return (
-            f"  status={status} source={source} "
-            f"attempted={attempted} cached={cached} failed={failed}"
-        )
-
     if status == "extraction_dry_run" and source == "pipeline.extract":
         post_count = summary.get("post_count", "?")
         comment_count = summary.get("total_comment_count", "?")
@@ -155,14 +146,7 @@ def main() -> None:
     if norm_artifacts:
         _print_group("normalized", norm_artifacts)
 
-    # assets-cache manifests in working/
     wdir = working_dir()
-    cache_artifacts: list[Path] = []
-    if wdir.is_dir():
-        cache_artifacts = sorted(wdir.glob("assets-cache-*.json"))
-    print(f"[pipeline:inspect] Found {len(cache_artifacts)} artifact(s) in data/working/ (assets-cache)")
-    if cache_artifacts:
-        _print_group("assets-cache", cache_artifacts)
 
     # extraction artifacts in working/
     extraction_artifacts: list[Path] = []

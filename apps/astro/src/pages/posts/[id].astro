@@ -85,7 +85,7 @@ const externalLabel = (rec: Recommendation): string => {
                     aria-label={`Open image ${i + 1} of ${totalImages} at full size`}
                   >
                     <img
-                      src={img.url}
+                      src={img.previewUrl ?? img.sourceUrl}
                       alt={`Post image ${i + 1} of ${totalImages}`}
                       class="h-full w-full object-cover"
                       loading={i === 0 ? "eager" : "lazy"}
@@ -252,7 +252,7 @@ const externalLabel = (rec: Recommendation): string => {
               {post.images.map((img, i) => (
                 <div id={modalSlideId(i)} class="carousel-item relative h-full w-full">
                   <img
-                    src={img.url}
+                    src={img.previewUrl ?? img.sourceUrl}
                     alt={`Post image ${i + 1} of ${totalImages}`}
                     class="h-full w-full object-contain"
                     loading={i === 0 ? "eager" : "lazy"}

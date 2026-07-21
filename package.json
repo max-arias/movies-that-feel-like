@@ -14,10 +14,10 @@
     "seed": "npm run pipeline:load -- --reset && npm run db:migrate",
     "pipeline:fetch": "npm run fetch -w apps/pipeline --",
     "pipeline:normalize": "npm run normalize -w apps/pipeline --",
-    "pipeline:cache-assets": "npm run cache-assets -w apps/pipeline --",
+    "pipeline:backfill-images": "npm run backfill-images -w apps/pipeline --",
     "pipeline:extract": "npm run extract -w apps/pipeline --",
     "pipeline:enrich": "npm run enrich -w apps/pipeline --",
-    "pipeline:ingest": "npm run pipeline:normalize && npm run pipeline:cache-assets && npm run pipeline:extract && npm run pipeline:enrich && npm run seed",
+    "pipeline:ingest": "npm run pipeline:normalize && npm run pipeline:extract && npm run pipeline:enrich && npm run seed",
     "pipeline:load": "npm run load -w apps/pipeline --",
     "pipeline:inspect": "npm run inspect -w apps/pipeline --",
     "db:migrate": "wrangler d1 migrations apply movies-that-feel-like --local --config apps/astro/wrangler.jsonc"

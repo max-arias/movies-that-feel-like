@@ -4,7 +4,7 @@
   "scripts": {
     "fetch": "PYTHONPATH=src uv run python -m pipeline.fetch",
     "normalize": "PYTHONPATH=src uv run python -m pipeline.normalize",
-    "cache-assets": "PYTHONPATH=src uv run python -m pipeline.cache_assets",
+    "backfill-images": "PYTHONPATH=src uv run python -m pipeline.backfill_images",
     "extract": "PYTHONPATH=src uv run python -m pipeline.extract",
     "enrich": "PYTHONPATH=src uv run python -m pipeline.enrich",
     "load": "PYTHONPATH=src uv run python -m pipeline.load",

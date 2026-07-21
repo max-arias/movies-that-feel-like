@@ -1,5 +1,5 @@
 """
-pipeline.load — Merge normalized / assets / extraction / enrichment artifacts
+pipeline.load — Merge normalized / extraction / enrichment artifacts
 and write publishable records into a local D1-compatible SQLite database.
 """
 
@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.artifacts import read_json_artifact, timestamp_slug, validate_complete_extraction, write_json_artifact
-import pipeline.git_ops as git_ops
 from pipeline.paths import ensure_pipeline_dirs, normalized_dir, project_root, working_dir
 
 # ── Constants ──────────────────────────────────────────────────────────
@@ -65,39 +64,15 @@ def _candidate_key(title: str, year: int | None, media_type: str) -> str:
     return f"{_normalize_title(title)}|{year or ''}|{media_type}"
 
 
-def _has_usable_image(
-    asset_list: list[dict[str, Any]], normalized_image_count: int
-) -> bool:
-    """Return ``True`` if the post has at least one normalized image and
-    at least one cached asset (or no asset info is available yet).
-
-    A post with zero normalized images is treated as having no usable
-    image, regardless of the asset artifact state — otherwise text-only
-    posts and gallery posts with unprocessed media slip through as
-    "publishable" and render with an empty image panel on the site.
-
-    When *asset_list* is empty but images exist (assets-cache stage not
-    run yet, or partial coverage) we optimistically return ``True`` so
-    that no signal is lost.
-    """
-    if normalized_image_count == 0:
-        return False
-    if not asset_list:
-        return True  # no asset info available — do not block
-    return any(a.get("cache_status") == "cached" for a in asset_list)
+def _has_usable_image(images: list[dict[str, Any]]) -> bool:
+    """Only nonblank source URLs can make a post publishable."""
+    return bool(images) and all(isinstance(image.get("source_url"), str) and image["source_url"] for image in images)
 
 
 def _latest_normalized() -> Path:
     candidates = sorted(normalized_dir().glob("*.json"))
     if not candidates:
         raise SystemExit("[pipeline:load] No normalized artifacts found")
-    return candidates[-1]
-
-
-def _latest_assets() -> Path:
-    candidates = sorted(working_dir().glob("assets-cache-*.json"))
-    if not candidates:
-        raise SystemExit("[pipeline:load] No assets-cache artifacts found")
     return candidates[-1]
 
 
@@ -152,7 +127,7 @@ def _apply_migrations(
 
 def _build_merge_index(
     norm: dict[str, Any],
-    assets: dict[str, Any],
+    assets: dict[str, Any] | None,
     extraction: dict[str, Any],
     enrichment: dict[str, Any],
 ) -> dict[str, Any]:
@@ -161,13 +136,6 @@ def _build_merge_index(
 
     # Normalized posts
     idx["posts_by_id"] = {p["reddit_post_id"]: p for p in norm.get("posts", [])}
-
-    # Assets by reddit_post_id
-    assets_by_post: dict[str, list[dict[str, Any]]] = {}
-    for a in assets.get("assets", []):
-        pid = a.get("reddit_post_id", "")
-        assets_by_post.setdefault(pid, []).append(a)
-    idx["assets_by_post"] = assets_by_post
 
     # Extraction results by reddit_post_id
     idx["extraction_by_post"] = {
@@ -314,9 +282,8 @@ def _upsert_images(
     post_id: int,
     reddit_post_id: str,
     post: dict[str, Any],
-    assets_for_post: list[dict[str, Any]],
 ) -> int:
-    """Delete existing images for the post and re-insert from normalized + assets.
+    """Delete existing images and re-insert normalized source/preview pairs.
 
     Returns the count of images inserted.
     """
@@ -325,35 +292,21 @@ def _upsert_images(
         (post_id,),
     )
 
-    # Build a lookup: source_url -> asset info
-    asset_by_url: dict[str, dict[str, Any]] = {}
-    for a in assets_for_post:
-        asset_by_url[a.get("source_url", "")] = a
-
     count = 0
     for img in post.get("images", []):
-        source_url = img.get("source_url", "")
-        asset = asset_by_url.get(source_url, {})
-        cache_status_raw = asset.get("cache_status", "")
-        # Map cache_status from assets-cache to schema enum
-        cache_status_map = {
-            "cached": "cached",
-            "error": "failed",
-        }
-        cache_status = cache_status_map.get(cache_status_raw, "pending")
-        cache_path = asset.get("cache_path", "")
-
+        source_url = img.get("source_url")
+        if not isinstance(source_url, str) or not source_url:
+            raise ValueError(f"normalized image for {reddit_post_id} has a blank source_url")
         db.execute(
             """INSERT INTO imported_post_images
-               (imported_vibe_post_id, url, cache_key, cache_status,
-                remote_url, sort_order)
+               (imported_vibe_post_id, source_url, preview_url, width, height, sort_order)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (
                 post_id,
                 source_url,
-                cache_path,
-                cache_status,
-                source_url,  # remote_url fallback = source_url
+                img.get("preview_url"),
+                img.get("preview_width"),
+                img.get("preview_height"),
                 img.get("sort_order", 0),
             ),
         )
@@ -790,11 +743,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to normalized artifact (default: latest)",
     )
     parser.add_argument(
-        "--assets",
-        default=None,
-        help="Path to assets-cache artifact (default: latest)",
-    )
-    parser.add_argument(
         "--extraction",
         default=None,
         help="Path to extraction artifact (default: latest real)",
@@ -863,7 +811,6 @@ def main(argv: list[str] | None = None) -> None:
     root = project_root()
 
     norm_path = Path(args.normalized) if args.normalized else _latest_normalized()
-    assets_path = Path(args.assets) if args.assets else _latest_assets()
     ext_path = Path(args.extraction) if args.extraction else _latest_extraction()
     enrich_path = (
         Path(args.enrichment) if args.enrichment else _latest_enrichment()
@@ -879,7 +826,6 @@ def main(argv: list[str] | None = None) -> None:
         schema_src = root / "packages" / "db" / "migrations"
 
     print(f"[pipeline:load] Normalized:  {norm_path.name}")
-    print(f"[pipeline:load] Assets:      {assets_path.name}")
     print(f"[pipeline:load] Extraction:  {ext_path.name}")
     print(f"[pipeline:load] Enrichment:  {enrich_path.name}")
     print(f"[pipeline:load] DB:          {db_path}")
@@ -888,7 +834,6 @@ def main(argv: list[str] | None = None) -> None:
 
     # Read all artifacts --------------------------------------------------
     norm = read_json_artifact(norm_path)
-    assets = read_json_artifact(assets_path)
     extraction = read_json_artifact(ext_path)
     try:
         validate_complete_extraction(
@@ -905,10 +850,9 @@ def main(argv: list[str] | None = None) -> None:
     enrichment = read_json_artifact(enrich_path)
 
     # Build merge index ---------------------------------------------------
-    idx = _build_merge_index(norm, assets, extraction, enrichment)
+    idx = _build_merge_index(norm, None, extraction, enrichment)
     post_ids = idx["all_post_ids"]
     posts_by_id = idx["posts_by_id"]
-    assets_by_post = idx["assets_by_post"]
     extraction_by_post = idx["extraction_by_post"]
     enrich_match_by_key = idx["enrich_match_by_key"]
     enrich_candidate_by_key = idx["enrich_candidate_by_key"]
@@ -930,10 +874,7 @@ def main(argv: list[str] | None = None) -> None:
         for pid in post_ids:
             post = posts_by_id[pid]
             ext_result = extraction_by_post.get(pid)
-            asset_list = assets_by_post.get(pid, [])
-            has_usable_image = _has_usable_image(
-                asset_list, len(post.get("images", []))
-            )
+            has_usable_image = _has_usable_image(post.get("images", []))
 
             # Count matches for this post (by candidate_key from extraction)
             match_count = 0
@@ -965,7 +906,6 @@ def main(argv: list[str] | None = None) -> None:
                     "reddit_post_id": pid,
                     "title": post.get("title", ""),
                     "image_count": len(post.get("images", [])),
-                    "cached_asset_count": sum(1 for a in asset_list if a.get("cache_status") == "cached"),
                     "has_usable_image": has_usable_image,
                     "has_vibe": vibe_has,
                     "vibe_tags": tags,
@@ -1004,7 +944,6 @@ def main(argv: list[str] | None = None) -> None:
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "db_path": str(db_path),
                 "normalized_artifact": str(norm_path),
-                "assets_artifact": str(assets_path),
                 "extraction_artifact": str(ext_path),
                 "enrichment_artifact": str(enrich_path),
                 "args": {"dry_run": True, "reset": args.reset, "schema": str(schema_src)},
@@ -1057,12 +996,16 @@ def main(argv: list[str] | None = None) -> None:
                 )
             if "igdb_id" not in rec_cols:
                 missing.append("recommendations.igdb_id")
+            image_cols = {r[1] for r in db.execute("PRAGMA table_info(imported_post_images)").fetchall()}
+            for column in ("source_url", "preview_url"):
+                if column not in image_cols:
+                    missing.append(f"imported_post_images.{column}")
             if missing:
                 print(
                     f"[pipeline:load] Existing DB is missing required columns: "
                     f"{', '.join(missing)}. "
                     f"Run with --reset to re-create the DB from migrations, "
-                    f"or manually apply packages/db/migrations/0002_evidence_scores.sql"
+                    f"or apply the image URL schema migration before loading"
                 )
                 raise SystemExit(1)
 
@@ -1085,10 +1028,7 @@ def main(argv: list[str] | None = None) -> None:
         for pid in post_ids:
             post = posts_by_id[pid]
             ext_result = extraction_by_post.get(pid)
-            asset_list = assets_by_post.get(pid, [])
-            has_usable_image = _has_usable_image(
-                asset_list, len(post.get("images", []))
-            )
+            has_usable_image = _has_usable_image(post.get("images", []))
             posts_seen += 1
 
             # Count matchable recommendations for this post
@@ -1153,7 +1093,7 @@ def main(argv: list[str] | None = None) -> None:
             # Images
             try:
                 img_count = _upsert_images(
-                    db, post_row_id, pid, post, asset_list
+                    db, post_row_id, pid, post
                 )
                 images_inserted += img_count
             except Exception as exc:
@@ -1259,7 +1199,6 @@ def main(argv: list[str] | None = None) -> None:
             "loaded_at": datetime.now(timezone.utc).isoformat(),
             "db_path": str(db_path),
             "normalized_artifact": str(norm_path),
-            "assets_artifact": str(assets_path),
             "extraction_artifact": str(ext_path),
             "enrichment_artifact": str(enrich_path),
             "summary": {
@@ -1282,8 +1221,6 @@ def main(argv: list[str] | None = None) -> None:
         # migration to packages/db/migrations/ so ``wrangler d1
         # migrations apply`` picks it up alongside the schema migrations.
         # The migration IS the SQL output — there's no separate dump
-        # path.  The file is then auto-committed and pushed via
-        # git_ops.auto_commit_and_push().
         migrations_dir = Path(args.migrations_dir)
         if not migrations_dir.is_absolute():
             migrations_dir = root / migrations_dir

@@ -33,8 +33,8 @@ is exposed only to the commit/push step.
 Each normal import first queries production D1 for every
 `imported_vibe_posts.reddit_post_id`. It writes those IDs to a temporary
 newline-delimited file and passes that file to both fetch (`--exclude-reddit-ids-file`)
-and normalize. New data then runs through fetch, normalize, cache-assets,
-extract, enrich, and load.
+and normalize. New data then runs through fetch, normalize, extract, enrich,
+and load.
 
 Extraction runs with `--allow-errors`, so an individual extraction failure is
 tolerated and that post is deferred while successful posts continue through the
@@ -44,14 +44,21 @@ results. Failed posts are not marked imported or skipped and remain eligible
 for a later refresh. If every extraction fails, load stops; errors from
 enrichment or loading still fail the workflow before commit and apply.
 
-`load` creates data migrations under `packages/db/migrations`. Before a normal
-run, the workflow queries remote `d1_migrations` and refuses to proceed if any
-tracked migration was already pending. It stages only newly generated SQL,
-pushes those files to `main`, rechecks that the remote pending set is exactly
-the new files, and then runs tracked Wrangler
-`d1 migrations apply --remote` (without unsupported flags). A load or
-enrichment error stops before commit and apply; extraction errors are tolerated
-per post as described above.
+`load` creates data migrations under `packages/db/migrations`; pipeline commands
+do not commit or push them. Apply generated SQL through the repository's normal
+reviewed migration process. A load or enrichment error stops before migration
+generation; extraction errors are tolerated per post as described above.
+
+For historical image URLs, first re-fetch and normalize the target posts. The
+normalized artifact embeds one explicit successful refetch outcome per fetched
+post; unavailable target outcomes can be supplied in the raw artifact. Then
+generate row-safe updates (never reset or reinsert historical image rows):
+
+```sh
+npm run pipeline:backfill-images -- --db data/app.db \
+  --normalized data/working/normalized/normalized-<artifact>.json \
+  --out data/working/image-backfill.sql
+```
 
 For migration recovery, dispatch manually with `apply_only: true`. The
 workflow performs a status check, lists the pending migrations that are already

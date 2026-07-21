@@ -5,6 +5,18 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class NormalizedImage(BaseModel):
+    """An image reference emitted by normalize; no local/cache byte fields."""
+
+    source_url: str
+    preview_url: str | None = None
+    preview_width: int | None = None
+    preview_height: int | None = None
+    sort_order: int = 0
+    kind: str = "reddit_source"
+    source_post_id: str | None = None
+
+
 class RecommendationEvidence(BaseModel):
     """A single extracted mention of a recommended movie, series, or video game from a comment."""
 
