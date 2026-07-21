@@ -40,6 +40,26 @@ const externalLabel = (rec: Recommendation): string => {
   if (rec.tmdbId) return "TMDB";
   return rec.externalUrl ? "Source" : "";
 };
+
+type ImageRole = "poster" | "backdrop";
+
+/**
+ * TMDB has a documented size ladder. Other providers, including IMDb, must
+ * keep their exact supplied URL rather than receiving a fabricated variant.
+ */
+const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
+  const match = url.match(/^https:\/\/image\.tmdb\.org\/t\/p\/[^/]+(\/.*)$/);
+  if (!match) return { src: url, sizes };
+
+  const widths = role === "poster" ? [300, 500, 780] : [500, 780, 1280];
+  const makeUrl = (width: number) => `https://image.tmdb.org/t/p/w${width}${match[1]}`;
+
+  return {
+    src: makeUrl(widths[1]),
+    srcset: widths.map((width) => `${makeUrl(width)} ${width}w`).join(", "),
+    sizes,
+  };
+};
 ---
 
 <Layout title={post ? `${post.vibeSummary ?? "Vibe post"} — Movies That Feel Like` : "Post not found"}>
@@ -174,9 +194,22 @@ const externalLabel = (rec: Recommendation): string => {
               const isGalleryHero = post.recommendations.length >= 4 && i === 0;
               const isSparseHero = post.recommendations.length === 1 && i === 0;
               const isWide = post.recommendations.length >= 4 && i > 0 && i % 5 === 4;
+              const isWideArt = isGalleryHero || isSparseHero || isWide;
+              const usesBackdrop = isWideArt && !!rec.backdropUrl;
+              const imageUrl = usesBackdrop ? rec.backdropUrl : rec.posterUrl;
+              const imageSizes = isGalleryHero
+                ? "(min-width: 768px) 25vw, 100vw"
+                : isSparseHero
+                  ? "100vw"
+                : isWide
+                  ? "(min-width: 768px) 50vw, 100vw"
+                  : "(min-width: 768px) 25vw, 50vw";
+              const image = imageUrl
+                ? responsiveImage(imageUrl, usesBackdrop ? "backdrop" : "poster", imageSizes)
+                : null;
               const cardClass = [
                 "group relative block overflow-hidden bg-gallery focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark",
-                !isGalleryHero && !isSparseHero && "aspect-square",
+                !isGalleryHero && !isSparseHero && "aspect-poster",
                 isGalleryHero && "col-span-2 aspect-recommendation-hero md:col-span-1 md:col-start-4 md:row-start-1 md:row-span-3 md:aspect-auto md:h-full",
                 isSparseHero && "col-span-2 aspect-recommendation-hero md:col-span-4",
                 isWide && "md:col-span-2 md:aspect-auto md:h-full",
@@ -184,11 +217,16 @@ const externalLabel = (rec: Recommendation): string => {
               const cardInner = (
                 <>
                   <div class="absolute inset-0 bg-gallery transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-gallery">
-                    {rec.posterUrl ? (
+                    {image ? (
                       <img
-                        src={rec.posterUrl}
+                        src={image.src}
+                        {...(image.srcset ? { srcset: image.srcset } : {})}
+                        sizes={image.sizes}
                         alt={rec.title}
-                        class="h-full w-full object-cover transition duration-450 ease-gallery motion-reduce:transition-none group-hover:scale-105 group-focus-visible:scale-105"
+                        class:list={[
+                          "h-full w-full transition duration-450 ease-gallery motion-reduce:transition-none group-hover:scale-105 group-focus-visible:scale-105",
+                          usesBackdrop ? "object-cover" : "object-contain",
+                        ]}
                         loading="lazy"
                         decoding="async"
                       />
