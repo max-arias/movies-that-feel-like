@@ -29,7 +29,10 @@ const tagSize = (count: number) => {
 const allTagSizes = "--tag-mobile-size: 6rem; --tag-285-size: 10rem; --tag-300-size: 9.216rem; --tag-desktop-size: 10.368rem";
 ---
 
-<Layout title="Movies That Feel Like — a visual discovery index">
+<Layout
+  title="Movies That Feel Like — a visual discovery index"
+  description="Discover movies that match the feeling of the stories, places, and moments you love."
+>
   {
     posts.length === 0 ? (
       <div class="mb-20 border border-line p-empty transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:border-line-dark">
@@ -70,7 +73,7 @@ const allTagSizes = "--tag-mobile-size: 6rem; --tag-285-size: 10rem; --tag-300-s
                         <a class="group block h-full w-full overflow-hidden focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark" href={`/posts/${post.redditPostId}/`} aria-label={`View details for ${post.title}`}>
                           <div class="gallery-track scrollbar-hidden flex h-full w-full snap-x snap-mandatory overflow-x-auto overflow-y-clip motion-reduce:scroll-auto">
                             {post.images.map((image, imageIndex) => (
-                              <img class="block h-full min-h-0 w-full basis-full snap-start object-cover transition duration-450 ease-gallery motion-reduce:transition-none group-hover:scale-105 group-hover:brightness-75 group-focus-visible:scale-105 group-focus-visible:brightness-75" src={image.previewUrl ?? image.sourceUrl} alt={`${post.title} — image ${imageIndex + 1}`} loading="lazy" />
+                              <img class="block h-full min-h-0 w-full basis-full snap-start object-cover transition duration-450 ease-gallery motion-reduce:transition-none group-hover:scale-105 group-hover:brightness-75 group-focus-visible:scale-105 group-focus-visible:brightness-75" {...(imageIndex === 0 ? { src: image.previewUrl ?? image.sourceUrl } : { "data-src": image.previewUrl ?? image.sourceUrl })} alt={`${post.title} — image ${imageIndex + 1}`} loading={imageIndex === 0 && post === visiblePosts[0] ? "eager" : "lazy"} decoding="async" fetchpriority={imageIndex === 0 && post === visiblePosts[0] ? "high" : undefined} />
                             ))}
                           </div>
                         </a>
@@ -115,6 +118,11 @@ const allTagSizes = "--tag-mobile-size: 6rem; --tag-285-size: 10rem; --tag-300-s
     let current = 0;
     const move = (direction: number) => {
       current = (current + direction + slides.length) % slides.length;
+      const selectedSlide = slides[current];
+      if (!selectedSlide.hasAttribute("src")) {
+        const deferredSource = selectedSlide.dataset.src;
+        if (deferredSource) selectedSlide.src = deferredSource;
+      }
       track?.scrollTo({ left: current * (track.clientWidth || 1), behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
       if (status) status.textContent = `${String(current + 1).padStart(2, "0")} / ${String(slides.length).padStart(2, "0")}`;
     };

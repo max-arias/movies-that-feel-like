@@ -90,6 +90,7 @@ const externalLabel = (rec: Recommendation): string => {
                       class="h-full w-full object-cover"
                       loading={i === 0 ? "eager" : "lazy"}
                       decoding="async"
+                      fetchpriority={i === 0 ? "high" : undefined}
                     />
                   </button>
                   {totalImages > 1 && (
