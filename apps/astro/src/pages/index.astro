@@ -114,6 +114,9 @@ const allTagSizes = "--tag-mobile-size: 6rem; --tag-285-size: 10rem; --tag-300-s
     post.hidden = selectedTag !== "all" && !(post.dataset.postTags ?? "").split("|").includes(selectedTag);
   });
 
+  const deferredHydration = new Map<Element, () => void>();
+  const supportsIntersectionObserver = "IntersectionObserver" in window;
+
   document.querySelectorAll<HTMLElement>("[data-gallery]").forEach((gallery) => {
     const track = gallery.querySelector<HTMLElement>(".gallery-track");
     const slides = Array.from(gallery.querySelectorAll<HTMLImageElement>("img"));
@@ -134,20 +137,25 @@ const allTagSizes = "--tag-mobile-size: 6rem; --tag-285-size: 10rem; --tag-300-s
     gallery.querySelector("[data-gallery-next]")?.addEventListener("click", () => move(1));
 
     if (gallery.dataset.galleryIndex && Number(gallery.dataset.galleryIndex) >= 4) {
-      if ("IntersectionObserver" in window) {
-        let observer: IntersectionObserver | null = null;
-        observer = new IntersectionObserver(([entry]) => {
-          if (!entry.isIntersecting) return;
-          hydrate(slides[0]);
-          observer?.unobserve(gallery);
-          observer?.disconnect();
-          observer = null;
-        }, { rootMargin: "400px 0px" });
-        observer.observe(gallery);
+      if (supportsIntersectionObserver) {
+        deferredHydration.set(gallery, () => hydrate(slides[0]));
       } else {
         hydrate(slides[0]);
       }
     }
   });
+
+  if (supportsIntersectionObserver && deferredHydration.size > 0) {
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        deferredHydration.get(entry.target)?.();
+        deferredHydration.delete(entry.target);
+        observer.unobserve(entry.target);
+      }
+      if (deferredHydration.size === 0) observer.disconnect();
+    }, { rootMargin: "400px 0px" });
+    deferredHydration.forEach((_, gallery) => observer.observe(gallery));
+  }
 
 </script>

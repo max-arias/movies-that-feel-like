@@ -13,6 +13,7 @@ const { title, description } = Astro.props;
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title ?? "Movies That Feel Like"}</title>
     <meta name="description" content={description ?? "A visual index of movies that feel like something."} />
+    <link rel="preload" href="/fonts/newsreader-latin-opsz-wght.woff2" as="font" type="font/woff2" crossorigin />
     <slot name="head" />
   </head>
   <body class="min-w-80 bg-paper font-body text-body text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark theme-dark:text-ink-dark">
