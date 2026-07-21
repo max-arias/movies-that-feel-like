@@ -210,7 +210,7 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
               const cardClass = [
                 "group relative block overflow-hidden bg-gallery focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark",
                 !isGalleryHero && !isSparseHero && "aspect-poster",
-                isGalleryHero && "col-span-2 aspect-recommendation-hero md:col-span-1 md:col-start-4 md:row-start-1 md:row-span-3 md:aspect-auto md:h-full",
+                isGalleryHero && "col-span-2 aspect-recommendation-hero md:col-span-1 md:col-start-4 md:row-start-1 md:row-span-2 md:aspect-auto md:h-full",
                 isSparseHero && "col-span-2 aspect-recommendation-hero md:col-span-4",
                 isWide && "md:col-span-2 md:aspect-auto md:h-full",
               ].filter(Boolean).join(" ");
