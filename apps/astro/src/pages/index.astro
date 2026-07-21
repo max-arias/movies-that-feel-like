@@ -66,14 +66,16 @@ const allTagSizes = "--tag-mobile-size: 6rem; --tag-285-size: 10rem; --tag-300-s
           <div class="grid grid-cols-1 gap-mobile-rail-gap md:grid-cols-2 md:gap-rail-gap">
             {[0, 1].map((rail) => (
               <div class:list={["min-w-0 pt-0", { "md:pt-rail-offset": rail === 1 }]} data-rail={rail}>
-                {visiblePosts.filter((_, index) => index % 2 === rail).map((post) => (
+                {visiblePosts.filter((_, index) => index % 2 === rail).map((post) => {
+                  const galleryIndex = visiblePosts.findIndex((visiblePost) => visiblePost.redditPostId === post.redditPostId);
+                  return (
                   <article class="mb-post-mobile pt-post-top md:mb-post" data-post-tags={post.tags.map(({ tag }) => tag).join("|")}>
                     {post.images.length > 0 ? (
-                      <div class="relative aspect-square overflow-hidden bg-gallery" data-gallery aria-label={`Image gallery for ${post.title}`}>
+                      <div class="relative aspect-square overflow-hidden bg-gallery" data-gallery data-gallery-index={galleryIndex} aria-label={`Image gallery for ${post.title}`}>
                         <a class="group block h-full w-full overflow-hidden focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark" href={`/posts/${post.redditPostId}/`} aria-label={`View details for ${post.title}`}>
                           <div class="gallery-track scrollbar-hidden flex h-full w-full snap-x snap-mandatory overflow-x-auto overflow-y-clip motion-reduce:scroll-auto">
                             {post.images.map((image, imageIndex) => (
-                              <img class="block h-full min-h-0 w-full basis-full snap-start object-cover transition duration-450 ease-gallery motion-reduce:transition-none group-hover:scale-105 group-hover:brightness-75 group-focus-visible:scale-105 group-focus-visible:brightness-75" {...(imageIndex === 0 ? { src: image.previewUrl ?? image.sourceUrl } : { "data-src": image.previewUrl ?? image.sourceUrl })} alt={`${post.title} — image ${imageIndex + 1}`} loading={imageIndex === 0 && post === visiblePosts[0] ? "eager" : "lazy"} decoding="async" fetchpriority={imageIndex === 0 && post === visiblePosts[0] ? "high" : undefined} />
+                              <img class="block h-full min-h-0 w-full basis-full snap-start object-cover transition duration-450 ease-gallery motion-reduce:transition-none group-hover:scale-105 group-hover:brightness-75 group-focus-visible:scale-105 group-focus-visible:brightness-75" {...(galleryIndex < 4 ? { src: image.previewUrl ?? image.sourceUrl } : { "data-src": image.previewUrl ?? image.sourceUrl })} alt={`${post.title} — image ${imageIndex + 1}`} loading={imageIndex === 0 && galleryIndex === 0 ? "eager" : "lazy"} decoding="async" fetchpriority={imageIndex === 0 && galleryIndex === 0 ? "high" : undefined} />
                             ))}
                           </div>
                         </a>
@@ -87,7 +89,8 @@ const allTagSizes = "--tag-mobile-size: 6rem; --tag-285-size: 10rem; --tag-300-s
                       </p>
                     )}
                   </article>
-                ))}
+                  );
+                })}
               </div>
             ))}
           </div>
@@ -115,19 +118,36 @@ const allTagSizes = "--tag-mobile-size: 6rem; --tag-285-size: 10rem; --tag-300-s
     const track = gallery.querySelector<HTMLElement>(".gallery-track");
     const slides = Array.from(gallery.querySelectorAll<HTMLImageElement>("img"));
     const status = gallery.querySelector<HTMLElement>("[data-gallery-status]");
+    const hydrate = (slide: HTMLImageElement) => {
+      if (slide.hasAttribute("src")) return;
+      const deferredSource = slide.dataset.src;
+      if (deferredSource) slide.src = deferredSource;
+    };
     let current = 0;
     const move = (direction: number) => {
       current = (current + direction + slides.length) % slides.length;
-      const selectedSlide = slides[current];
-      if (!selectedSlide.hasAttribute("src")) {
-        const deferredSource = selectedSlide.dataset.src;
-        if (deferredSource) selectedSlide.src = deferredSource;
-      }
+      hydrate(slides[current]);
       track?.scrollTo({ left: current * (track.clientWidth || 1), behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
       if (status) status.textContent = `${String(current + 1).padStart(2, "0")} / ${String(slides.length).padStart(2, "0")}`;
     };
     gallery.querySelector("[data-gallery-previous]")?.addEventListener("click", () => move(-1));
     gallery.querySelector("[data-gallery-next]")?.addEventListener("click", () => move(1));
+
+    if (gallery.dataset.galleryIndex && Number(gallery.dataset.galleryIndex) >= 4) {
+      if ("IntersectionObserver" in window) {
+        let observer: IntersectionObserver | null = null;
+        observer = new IntersectionObserver(([entry]) => {
+          if (!entry.isIntersecting) return;
+          hydrate(slides[0]);
+          observer?.unobserve(gallery);
+          observer?.disconnect();
+          observer = null;
+        }, { rootMargin: "400px 0px" });
+        observer.observe(gallery);
+      } else {
+        hydrate(slides[0]);
+      }
+    }
   });
 
 </script>
