@@ -5,9 +5,9 @@
   "packageManager": "bun@1.3.14",
   "scripts": {
     "dev": "npm run dev -w apps/astro",
-    "build": "CF_REMOTE_BINDINGS=true npm run cf:build -w apps/astro",
+    "build": "npm run cf:build",
     "cf:build": "CF_REMOTE_BINDINGS=true wrangler d1 migrations apply movies-that-feel-like --remote --config apps/astro/wrangler.jsonc && CF_REMOTE_BINDINGS=true npm run cf:build -w apps/astro",
-    "cf:deploy": "npm run cf:build && wrangler deploy --config apps/astro/dist/wrangler.json",
+    "cf:deploy": "wrangler deploy --config apps/astro/dist/wrangler.json",
     "cf:deploy:prod": "npm run cf:build && wrangler deploy --config apps/astro/dist/wrangler.json",
     "cf:deploy:preview": "npm run cf:build && wrangler deploy --config apps/astro/dist/wrangler.json --env preview",
     "check": "npm run validate-schema -w packages/db && npm run check -w apps/astro",
