@@ -27,26 +27,6 @@ const tagSize = (count: number) => {
   return `--tag-mobile-size: ${mobile}rem; --tag-desktop-size: ${desktop}rem`;
 };
 const allTagSizes = "--tag-mobile-size: 6rem; --tag-285-size: 10rem; --tag-300-size: 9.216rem; --tag-desktop-size: 10.368rem";
-const feedImageWidths = [480, 768, 1024, 1440];
-const responsiveImageUrl = (source: string, width: number): string | null => {
-  try {
-    const url = new URL(source);
-    if (url.hostname !== "preview.redd.it") return null;
-    url.searchParams.set("width", String(width));
-    url.searchParams.set("crop", "smart");
-    url.searchParams.set("auto", "webp");
-    return url.toString();
-  } catch {
-    return null;
-  }
-};
-const responsiveSrcSet = (source: string) => {
-  const urls = feedImageWidths.map((width) => {
-    const url = responsiveImageUrl(source, width);
-    return url ? `${url} ${width}w` : null;
-  });
-  return urls.every(Boolean) ? urls.join(", ") : undefined;
-};
 ---
 
 <Layout
@@ -94,16 +74,9 @@ const responsiveSrcSet = (source: string) => {
                       <div class="relative aspect-square overflow-hidden bg-gallery" data-gallery data-gallery-index={galleryIndex} aria-label={`Image gallery for ${post.title}`}>
                         <a class="group block h-full w-full overflow-hidden focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark" href={`/posts/${post.redditPostId}/`} aria-label={`View details for ${post.title}`}>
                           <div class="gallery-track scrollbar-hidden flex h-full w-full snap-x snap-mandatory overflow-x-auto overflow-y-clip motion-reduce:scroll-auto">
-                            {post.images.map((image, imageIndex) => {
-                              const source = image.previewUrl ?? image.sourceUrl;
-                              const srcSet = responsiveSrcSet(source);
-                              const responsiveAttributes = srcSet
-                                ? { srcset: srcSet, sizes: "(min-width: 768px) 50vw, 100vw" }
-                                : {};
-                              return (
-                                <img class="block h-full min-h-0 w-full basis-full snap-start object-cover transition duration-450 ease-gallery motion-reduce:transition-none group-hover:scale-105 group-hover:brightness-75 group-focus-visible:scale-105 group-focus-visible:brightness-75" {...(galleryIndex < 4 ? { src: source, ...responsiveAttributes } : { "data-src": source, ...(srcSet ? { "data-srcset": srcSet, "data-sizes": "(min-width: 768px) 50vw, 100vw" } : {}) })} alt={`${post.title} — image ${imageIndex + 1}`} loading={imageIndex === 0 && galleryIndex === 0 ? "eager" : "lazy"} decoding="async" fetchpriority={imageIndex === 0 && galleryIndex === 0 ? "high" : undefined} />
-                              );
-                            })}
+                            {post.images.map((image, imageIndex) => (
+                              <img class="block h-full min-h-0 w-full basis-full snap-start object-cover transition duration-450 ease-gallery motion-reduce:transition-none group-hover:scale-105 group-hover:brightness-75 group-focus-visible:scale-105 group-focus-visible:brightness-75" {...(galleryIndex < 4 ? { src: image.previewUrl ?? image.sourceUrl } : { "data-src": image.previewUrl ?? image.sourceUrl })} alt={`${post.title} — image ${imageIndex + 1}`} loading={imageIndex === 0 && galleryIndex === 0 ? "eager" : "lazy"} decoding="async" fetchpriority={imageIndex === 0 && galleryIndex === 0 ? "high" : undefined} />
+                            ))}
                           </div>
                         </a>
                         <div class="pointer-events-none absolute inset-x-0 bottom-0 h-gallery-overlay bg-gradient-to-b from-transparent to-gallery-overlay"></div>
@@ -148,11 +121,7 @@ const responsiveSrcSet = (source: string) => {
     const hydrate = (slide: HTMLImageElement) => {
       if (slide.hasAttribute("src")) return;
       const deferredSource = slide.dataset.src;
-      if (deferredSource) {
-        if (slide.dataset.srcset) slide.srcset = slide.dataset.srcset;
-        if (slide.dataset.sizes) slide.sizes = slide.dataset.sizes;
-        slide.src = deferredSource;
-      }
+      if (deferredSource) slide.src = deferredSource;
     };
     let current = 0;
     const move = (direction: number) => {

@@ -25,26 +25,6 @@ const totalImages = post?.images.length ?? 0;
 const hasHero = !!post && totalImages > 0;
 const tagHref = (tag: string) => `/?tag=${encodeURIComponent(tag)}`;
 const redditHref = (permalink: string) => `https://reddit.com${permalink}`;
-const heroImageWidths = [480, 768, 1024, 1440];
-const responsiveImageUrl = (source: string, width: number): string | null => {
-  try {
-    const url = new URL(source);
-    if (url.hostname !== "preview.redd.it") return null;
-    url.searchParams.set("width", String(width));
-    url.searchParams.set("crop", "smart");
-    url.searchParams.set("auto", "webp");
-    return url.toString();
-  } catch {
-    return null;
-  }
-};
-const responsiveSrcSet = (source: string) => {
-  const urls = heroImageWidths.map((width) => {
-    const url = responsiveImageUrl(source, width);
-    return url ? `${url} ${width}w` : null;
-  });
-  return urls.every(Boolean) ? urls.join(", ") : undefined;
-};
 
 type Recommendation = NonNullable<typeof post>["recommendations"][number];
 const externalHref = (rec: Recommendation): string | null => {
@@ -106,9 +86,6 @@ const externalLabel = (rec: Recommendation): string => {
                   >
                     <img
                       src={img.previewUrl ?? img.sourceUrl}
-                      {...(responsiveSrcSet(img.previewUrl ?? img.sourceUrl)
-                        ? { srcset: responsiveSrcSet(img.previewUrl ?? img.sourceUrl), sizes: "(min-width: 1024px) 70vw, 100vw" }
-                        : {})}
                       alt={`Post image ${i + 1} of ${totalImages}`}
                       class="h-full w-full object-cover"
                       loading={i === 0 ? "eager" : "lazy"}
@@ -277,9 +254,6 @@ const externalLabel = (rec: Recommendation): string => {
                 <div id={modalSlideId(i)} class="carousel-item relative h-full w-full">
                   <img
                     src={img.previewUrl ?? img.sourceUrl}
-                    {...(responsiveSrcSet(img.previewUrl ?? img.sourceUrl)
-                      ? { srcset: responsiveSrcSet(img.previewUrl ?? img.sourceUrl), sizes: "(min-width: 1024px) 70vw, 100vw" }
-                      : {})}
                     alt={`Post image ${i + 1} of ${totalImages}`}
                     class="h-full w-full object-contain"
                     loading={i === 0 ? "eager" : "lazy"}
