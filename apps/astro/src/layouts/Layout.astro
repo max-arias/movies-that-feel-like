@@ -1,5 +1,6 @@
 ---
 import "../styles/app.css";
+import { ClientRouter } from "astro:transitions";
 export interface Props {
   title?: string;
   description?: string;
@@ -14,6 +15,7 @@ const { title, description } = Astro.props;
     <title>{title ?? "Movies That Feel Like"}</title>
     <meta name="description" content={description ?? "A visual index of movies that feel like something."} />
     <link rel="preload" href="/fonts/newsreader-latin-opsz-wght.woff2" as="font" type="font/woff2" crossorigin />
+    <ClientRouter />
     <slot name="head" />
   </head>
   <body class="min-w-80 bg-paper font-body text-body text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark theme-dark:text-ink-dark">
@@ -35,3 +37,23 @@ const { title, description } = Astro.props;
     </main>
   </body>
 </html>
+
+<script>
+  document.addEventListener("astro:before-preparation", (event) => {
+    const sourceElement = (event as Event & { sourceElement?: Element | null }).sourceElement;
+    if (!(sourceElement instanceof HTMLAnchorElement)) return;
+
+    const article = sourceElement.closest("article");
+    if (!article) return;
+
+    const destination = new URL(sourceElement.href, window.location.href);
+    const postMatch = destination.pathname.match(/^\/posts\/([^/]+)\/?$/);
+    if (!postMatch) return;
+
+    const postId = decodeURIComponent(postMatch[1]);
+    const primaryImage = article.querySelector<HTMLImageElement>("img");
+    const vibeSummary = article.querySelector<HTMLParagraphElement>(":scope > p");
+    if (primaryImage) primaryImage.style.viewTransitionName = `post-image-${postId}`;
+    if (vibeSummary) vibeSummary.style.viewTransitionName = `post-vibe-${postId}`;
+  });
+</script>
