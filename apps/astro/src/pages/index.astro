@@ -27,12 +27,6 @@ const tagSize = (count: number) => {
   return `--tag-mobile-size: ${mobile}rem; --tag-desktop-size: ${desktop}rem`;
 };
 const allTagSizes = "--tag-mobile-size: 6rem; --tag-285-size: 10rem; --tag-300-size: 9.216rem; --tag-desktop-size: 10.368rem";
-const transitionToken = (id: string) => [...id].map((character) => character.codePointAt(0)!.toString(16)).join("-");
-const transitionNames = posts.flatMap((post) => [
-  ...(post.images.length > 0 ? [`post-image-${transitionToken(post.redditPostId)}`] : []),
-  ...(post.vibeSummary ? [`post-vibe-${transitionToken(post.redditPostId)}`] : []),
-]);
-const transitionStyles = `${transitionNames.map((name) => `::view-transition-group(${name}) { animation: none; } ::view-transition-old(${name}) { animation: mtfl-view-transition-fade-out 240ms ease both; } ::view-transition-new(${name}) { animation: mtfl-view-transition-fade-in 240ms ease both; }`).join("\n")}\n@media (prefers-reduced-motion: reduce) { ${transitionNames.map((name) => `::view-transition-old(${name}), ::view-transition-new(${name}), ::view-transition-group(${name})`).join(",\n")} { animation: none; } }`;
 ---
 
 <Layout
@@ -74,25 +68,23 @@ const transitionStyles = `${transitionNames.map((name) => `::view-transition-gro
               <div class:list={["min-w-0 pt-0", { "md:pt-rail-offset": rail === 1 }]} data-rail={rail}>
                 {visiblePosts.filter((_, index) => index % 2 === rail).map((post) => {
                   const galleryIndex = visiblePosts.findIndex((visiblePost) => visiblePost.redditPostId === post.redditPostId);
-                  const imageTransitionName = `post-image-${transitionToken(post.redditPostId)}`;
-                  const vibeTransitionName = `post-vibe-${transitionToken(post.redditPostId)}`;
                   return (
                   <article class="mb-post-mobile pt-post-top md:mb-post" data-post-tags={post.tags.map(({ tag }) => tag).join("|")}>
                     {post.images.length > 0 ? (
                       <div class="relative aspect-square overflow-hidden bg-gallery" data-gallery data-gallery-index={galleryIndex} aria-label={`Image gallery for ${post.title}`}>
-                        <a class="post-card-image-link group block h-full w-full overflow-hidden focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark" href={`/posts/${post.redditPostId}/`} aria-label={`View details for ${post.title}`}>
+                        <a class="group block h-full w-full overflow-hidden focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark" href={`/posts/${post.redditPostId}/`} aria-label={`View details for ${post.title}`}>
                           <div class="gallery-track scrollbar-hidden flex h-full w-full snap-x snap-mandatory overflow-x-auto overflow-y-clip motion-reduce:scroll-auto">
                             {post.images.map((image, imageIndex) => (
-                              <img class="post-card-image block h-full min-h-0 w-full basis-full shrink-0 snap-start object-cover transition duration-450 ease-gallery motion-reduce:transition-none group-hover:scale-105 group-hover:brightness-75 group-focus-visible:scale-105 group-focus-visible:brightness-75" {...(galleryIndex < 4 ? { src: image.previewUrl ?? image.sourceUrl } : { "data-src": image.previewUrl ?? image.sourceUrl })} {...(imageIndex === 0 ? { style: `view-transition-name: ${imageTransitionName};` } : {})} alt={`${post.title} — image ${imageIndex + 1}`} loading={imageIndex === 0 && galleryIndex === 0 ? "eager" : "lazy"} decoding="async" fetchpriority={imageIndex === 0 && galleryIndex === 0 ? "high" : undefined} />
+                              <img class="block h-full min-h-0 w-full basis-full shrink-0 snap-start object-cover transition duration-450 ease-gallery motion-reduce:transition-none group-hover:scale-105 group-hover:brightness-75 group-focus-visible:scale-105 group-focus-visible:brightness-75" {...(galleryIndex < 4 ? { src: image.previewUrl ?? image.sourceUrl } : { "data-src": image.previewUrl ?? image.sourceUrl })} alt={`${post.title} — image ${imageIndex + 1}`} loading={imageIndex === 0 && galleryIndex === 0 ? "eager" : "lazy"} decoding="async" fetchpriority={imageIndex === 0 && galleryIndex === 0 ? "high" : undefined} />
                             ))}
                           </div>
                         </a>
                         <div class="pointer-events-none absolute inset-x-0 bottom-0 h-gallery-overlay bg-gradient-to-b from-transparent to-gallery-overlay"></div>
-                        {post.images.length > 1 && <div class="absolute bottom-0 right-0 z-10 flex items-center gap-control bg-paper px-control-x py-control-y text-label transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark" data-gallery-controls><button class="cursor-pointer border-0 bg-transparent p-0 text-control text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-ink-dark" type="button" data-gallery-previous aria-label="Previous image">←</button><span class="tabular-nums text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark" data-gallery-status>01 / {String(post.images.length).padStart(2, "0")}</span><button class="cursor-pointer border-0 bg-transparent p-0 text-control text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-ink-dark" type="button" data-gallery-next aria-label="Next image">→</button></div>}
+                        {post.images.length > 1 && <div class="absolute bottom-0 right-0 z-10 flex items-center gap-control bg-paper px-control-x py-control-y text-label transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark"><button class="cursor-pointer border-0 bg-transparent p-0 text-control text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-ink-dark" type="button" data-gallery-previous aria-label="Previous image">←</button><span class="tabular-nums text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark" data-gallery-status>01 / {String(post.images.length).padStart(2, "0")}</span><button class="cursor-pointer border-0 bg-transparent p-0 text-control text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-ink-dark" type="button" data-gallery-next aria-label="Next image">→</button></div>}
                       </div>
                     ) : <div class="flex aspect-square items-center justify-center bg-gallery-empty text-no-image text-gallery-empty-text">No image loaded</div>}
                     {post.vibeSummary && (
-                      <p class="post-card-vibe mt-3 text-summary text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark" style={`view-transition-name: ${vibeTransitionName};`}>
+                      <p class="mt-3 text-summary text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">
                         {post.vibeSummary}
                       </p>
                     )}
@@ -113,8 +105,6 @@ const transitionStyles = `${transitionNames.map((name) => `::view-transition-gro
     )
   }
 </Layout>
-
-<style is:global set:html={transitionStyles}></style>
 
 <script>
   const requestedTag = new URLSearchParams(window.location.search).get("tag");
