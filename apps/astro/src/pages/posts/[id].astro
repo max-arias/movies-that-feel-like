@@ -93,6 +93,7 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
           <div class="relative">
             <div
               class="carousel aspect-video w-full overflow-hidden bg-gallery"
+              transition:name={`post-image-${post.redditPostId}`}
               data-hero-carousel
               aria-label={`Image gallery. ${totalImages} image${totalImages === 1 ? "" : "s"}.`}
             >
@@ -105,7 +106,6 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
                     aria-label={`Open image ${i + 1} of ${totalImages} at full size`}
                   >
                     <img
-                      transition:name={i === 0 ? `post-image-${post.redditPostId}` : undefined}
                       src={img.previewUrl ?? img.sourceUrl}
                       alt={`Post image ${i + 1} of ${totalImages}`}
                       class="h-full w-full object-cover"

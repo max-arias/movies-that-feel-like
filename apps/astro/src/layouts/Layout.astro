@@ -8,7 +8,7 @@ export interface Props {
 const { title, description } = Astro.props;
 ---
 <!doctype html>
-<html lang="en" class="bg-paper font-body text-ink scroll-smooth motion-reduce:scroll-auto transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark theme-dark:text-ink-dark">
+<html transition:name="root" transition:animate="none" lang="en" class="bg-paper font-body text-ink scroll-smooth motion-reduce:scroll-auto transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark theme-dark:text-ink-dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -40,7 +40,7 @@ const { title, description } = Astro.props;
 
 <script>
   document.addEventListener("astro:before-preparation", (event) => {
-    const preparation = event as Event & { sourceElement?: Element | null; signal?: AbortSignal };
+    const preparation = event as Event & { sourceElement?: Element | null };
     const sourceElement = preparation.sourceElement;
     if (!(sourceElement instanceof HTMLAnchorElement)) return;
 
@@ -52,26 +52,13 @@ const { title, description } = Astro.props;
     if (!postMatch) return;
 
     const postId = decodeURIComponent(postMatch[1]);
-    const primaryImage = article.querySelector<HTMLImageElement>("img");
+    const gallery = article.querySelector<HTMLElement>("[data-gallery]");
     const vibeSummary = article.querySelector<HTMLParagraphElement>(":scope > p");
-    if (primaryImage) primaryImage.style.viewTransitionName = `post-image-${postId}`;
+    if (gallery) {
+      const track = gallery.querySelector<HTMLElement>(".gallery-track");
+      if (track) track.scrollLeft = 0;
+      gallery.style.viewTransitionName = `post-image-${postId}`;
+    }
     if (vibeSummary) vibeSummary.style.viewTransitionName = `post-vibe-${postId}`;
-
-    const hiddenSlides = Array.from(article.querySelectorAll<HTMLImageElement>("img")).slice(1);
-    const previousVisibility = hiddenSlides.map((image) => image.style.visibility);
-    hiddenSlides.forEach((image) => {
-      image.style.visibility = "hidden";
-    });
-
-    let restored = false;
-    const restoreSlides = () => {
-      if (restored) return;
-      restored = true;
-      hiddenSlides.forEach((image, index) => {
-        image.style.visibility = previousVisibility[index];
-      });
-    };
-    document.addEventListener("astro:before-swap", restoreSlides, { once: true });
-    preparation.signal?.addEventListener("abort", restoreSlides, { once: true });
   });
 </script>
