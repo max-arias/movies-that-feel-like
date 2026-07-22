@@ -1,6 +1,18 @@
 @import "tailwindcss";
 @plugin "daisyui";
 
+@view-transition {
+  navigation: auto;
+}
+
+@keyframes mtfl-view-transition-fade-out {
+  to { opacity: 0; }
+}
+
+@keyframes mtfl-view-transition-fade-in {
+  from { opacity: 0; }
+}
+
 @font-face {
   font-family: "Bebas Neue";
   font-style: normal;

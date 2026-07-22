@@ -23,6 +23,11 @@ const modalPrev = (i: number, total: number) => (i === 0 ? `#${modalSlideId(tota
 const modalNext = (i: number, total: number) => (i === total - 1 ? `#${modalSlideId(0)}` : `#${modalSlideId(i + 1)}`);
 const totalImages = post?.images.length ?? 0;
 const hasHero = !!post && totalImages > 0;
+const transitionToken = (id: string) => [...id].map((character) => character.codePointAt(0)!.toString(16)).join("-");
+const imageTransitionName = post ? `post-image-${transitionToken(post.redditPostId)}` : undefined;
+const vibeTransitionName = post ? `post-vibe-${transitionToken(post.redditPostId)}` : undefined;
+const transitionNames = [imageTransitionName, post?.vibeSummary ? vibeTransitionName : undefined].filter((name): name is string => !!name);
+const transitionStyles = `${transitionNames.map((name) => `::view-transition-group(${name}) { animation: none; } ::view-transition-old(${name}) { animation: mtfl-view-transition-fade-out 240ms ease both; } ::view-transition-new(${name}) { animation: mtfl-view-transition-fade-in 240ms ease both; }`).join("\n")}\n@media (prefers-reduced-motion: reduce) { ${transitionNames.map((name) => `::view-transition-old(${name}), ::view-transition-new(${name}), ::view-transition-group(${name})`).join(",\n")} { animation: none; } }`;
 const tagHref = (tag: string) => `/?tag=${encodeURIComponent(tag)}`;
 const redditHref = (permalink: string) => `https://reddit.com${permalink}`;
 
@@ -107,7 +112,8 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
                     <img
                       src={img.previewUrl ?? img.sourceUrl}
                       alt={`Post image ${i + 1} of ${totalImages}`}
-                      class="h-full w-full object-cover"
+                      class="post-detail-hero-image h-full w-full object-cover"
+                      {...(i === 0 && imageTransitionName ? { style: `view-transition-name: ${imageTransitionName};` } : {})}
                       loading={i === 0 ? "eager" : "lazy"}
                       decoding="async"
                       fetchpriority={i === 0 ? "high" : undefined}
@@ -153,7 +159,7 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
 
           <aside class="flex flex-col gap-4" aria-label="Post mood and source">
             {post.vibeSummary && (
-              <p class="font-body text-vibe-summary lg:text-vibe-summary-desktop font-normal text-quiet text-pretty transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">
+              <p class="post-detail-vibe font-body text-vibe-summary lg:text-vibe-summary-desktop font-normal text-quiet text-pretty transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark" {...(vibeTransitionName ? { style: `view-transition-name: ${vibeTransitionName};` } : {})}>
                 {post.vibeSummary}
               </p>
             )}
@@ -359,6 +365,8 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
     </div>
   )}
 </Layout>
+
+<style is:global set:html={transitionStyles}></style>
 
 <script>
   const pad = (n: number) => String(n).padStart(2, "0");
