@@ -108,6 +108,10 @@ body {
   --text-caption--line-height: .92;
   --text-caption--letter-spacing: -.045em;
   --text-caption--font-weight: 700;
+  --text-tag-all-mobile: 6rem;
+  --text-tag-all-desktop: 10rem;
+  --text-tag-all-2xs: 9.216rem;
+  --text-tag-all-xs: 10.368rem;
   --leading-tag: .9;
   --leading-half: .5;
   --tracking-theme: .1em;
@@ -125,6 +129,18 @@ body {
 
 @utility tag-mask {
   mask-image: linear-gradient(to bottom, transparent 0, black 14px, black calc(100% - 18px), transparent 100%);
+}
+
+@utility tag-list {
+  --tag-max-count: attr(data-max-count type(<number>), 1);
+}
+
+@utility tag-size {
+  font-size: clamp(1rem, calc(1rem + .65rem * (attr(data-count type(<number>), 1) / var(--tag-max-count))), 1.65rem);
+
+  @media (min-width: 768px) {
+    font-size: clamp(.792rem, calc(.792rem + 2.016rem * (attr(data-count type(<number>), 1) / var(--tag-max-count))), 2.808rem);
+  }
 }
 
 @utility index-grid { grid-template-columns: minmax(0, 1fr) clamp(200px, 25vw, 200px); }
