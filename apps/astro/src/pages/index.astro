@@ -16,7 +16,9 @@ for (const post of posts) {
 const tags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 const requestedTag = Astro.url.searchParams.get("tag");
 const selectedTag = requestedTag && tags.some(([tag]) => tag === requestedTag) ? requestedTag : "all";
-const visiblePosts = posts;
+const visiblePosts = selectedTag === "all"
+  ? posts
+  : posts.filter((post) => post.tags.some(({ tag }) => tag === selectedTag));
 const tagHref = (tag: string) => tag === "all"
   ? Astro.url.pathname
   : `${Astro.url.pathname}?tag=${encodeURIComponent(tag)}`;
@@ -57,13 +59,10 @@ const maxTagCount = Math.max(1, ...tags.map(([, count]) => count));
               </div>
             </div>
           </div>
-          <div class="grid grid-cols-1 gap-mobile-rail-gap md:grid-cols-2 md:gap-rail-gap">
-            {[0, 1].map((rail) => (
-              <div class:list={["min-w-0 pt-0", { "md:pt-rail-offset": rail === 1 }]} data-rail={rail}>
-                {visiblePosts.filter((_, index) => index % 2 === rail).map((post) => {
-                  const galleryIndex = visiblePosts.findIndex((visiblePost) => visiblePost.redditPostId === post.redditPostId);
-                  return (
-                  <article class="mb-post-mobile pt-post-top md:mb-post" data-post-tags={post.tags.map(({ tag }) => tag).join("|")}>
+          <ul class="grid grid-cols-1 gap-mobile-rail-gap md:grid-cols-2 md:gap-rail-gap">
+            {visiblePosts.map((post, galleryIndex) => (
+              <li class="min-w-0 md:[&:nth-child(even)]:translate-y-rail-offset" data-post-tags={post.tags.map(({ tag }) => tag).join("|")}>
+                <article class="pt-post-top">
                     {post.images.length > 0 ? (
                       <div class="relative aspect-square overflow-hidden bg-gallery" data-gallery data-gallery-index={galleryIndex} aria-label={`Image gallery for ${post.title}`}>
                         <a class="group block h-full w-full overflow-hidden focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark" href={`/posts/${post.redditPostId}/`} aria-label={`View details for ${post.title}`}>
@@ -78,16 +77,14 @@ const maxTagCount = Math.max(1, ...tags.map(([, count]) => count));
                       </div>
                     ) : <div class="flex aspect-square items-center justify-center bg-gallery-empty text-no-image text-gallery-empty-text">No image loaded</div>}
                     {post.vibeSummary && (
-                      <p class="mt-3 text-summary text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">
+                      <p class="mt-3 text-body text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">
                         {post.vibeSummary}
                       </p>
                     )}
-                  </article>
-                  );
-                })}
-              </div>
+                </article>
+              </li>
             ))}
-          </div>
+          </ul>
         </section>
         <aside class="@container static w-full min-w-0 md:sticky md:top-6" aria-label="Filter by feeling">
           <div class="tag-list tag-mask scrollbar-hidden max-h-sidebar-height hidden flex-col gap-1.5 overflow-y-auto overscroll-contain pt-sidebar-top pb-sidebar-bottom md:flex" data-max-count={maxTagCount} role="group" aria-label="Filter posts by tag">
