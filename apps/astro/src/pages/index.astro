@@ -14,7 +14,8 @@ for (const post of posts) {
   for (const { tag } of post.tags) tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
 }
 const tags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-const selectedTag = "all";
+const requestedTag = Astro.url.searchParams.get("tag");
+const selectedTag = requestedTag && tags.some(([tag]) => tag === requestedTag) ? requestedTag : "all";
 const visiblePosts = posts;
 const tagHref = (tag: string) => tag === "all"
   ? Astro.url.pathname
@@ -100,12 +101,19 @@ const maxTagCount = Math.max(1, ...tags.map(([, count]) => count));
 </Layout>
 
 <script>
-  const requestedTag = new URLSearchParams(window.location.search).get("tag");
-  const knownTags = new Set(Array.from(document.querySelectorAll<HTMLElement>("[data-post-tags]")).flatMap((post) => (post.dataset.postTags ?? "").split("|").filter(Boolean)));
-  const selectedTag = requestedTag && knownTags.has(requestedTag) ? requestedTag : "all";
-  document.querySelectorAll<HTMLElement>("[data-post-tags]").forEach((post) => {
-    post.hidden = selectedTag !== "all" && !(post.dataset.postTags ?? "").split("|").includes(selectedTag);
-  });
+  const applyTagFilter = () => {
+    const requestedTag = new URLSearchParams(window.location.search).get("tag");
+    const posts = Array.from(document.querySelectorAll<HTMLElement>("[data-post-tags]"));
+    const knownTags = new Set(posts.flatMap((post) => (post.dataset.postTags ?? "").split("|").filter(Boolean)));
+    const selectedTag = requestedTag && knownTags.has(requestedTag) ? requestedTag : "all";
+
+    posts.forEach((post) => {
+      post.hidden = selectedTag !== "all" && !(post.dataset.postTags ?? "").split("|").includes(selectedTag);
+    });
+  };
+
+  applyTagFilter();
+  document.addEventListener("astro:page-load", applyTagFilter);
 
   const deferredHydration = new Map<Element, () => void>();
   const supportsIntersectionObserver = "IntersectionObserver" in window;
