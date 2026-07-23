@@ -4,7 +4,7 @@ A small Cloudflare-native site inspired by [`r/MoviesThatFeelLike`](https://www.
 
 People post images to Reddit asking for movies or series with the same feeling. This project imports those Reddit posts, processes the recommendation discussion, resolves suggested titles through TMDB, and turns the result into a browseable discovery site.
 
-The first version is intentionally presentational: users browse imported Reddit data rather than creating new submissions.
+The first version is intentionally read-only: users browse imported Reddit data rather than creating new submissions.
 
 ## What the site does
 
