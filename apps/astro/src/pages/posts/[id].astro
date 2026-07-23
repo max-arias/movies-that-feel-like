@@ -5,11 +5,10 @@
 // a full-screen DaisyUI carousel of the same images. See issue #4 for the spec.
 
 import Layout from "../../layouts/Layout.astro";
-import { getDb, getBuildData } from "../../lib/db";
-import { env } from "cloudflare:workers";
+import { getBuildData } from "../../lib/build-data";
 
 export async function getStaticPaths() {
-  const { posts } = await getBuildData(getDb(env));
+  const { posts } = await getBuildData();
   return posts.map((post) => ({ params: { id: post.redditPostId }, props: { post } }));
 }
 
@@ -192,15 +191,17 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
           <div class="grid grid-cols-2 gap-4 md:grid-cols-5 md:gap-4">
             {post.recommendations.map((rec, i) => {
               const href = externalHref(rec);
-              const isGalleryHero = post.recommendations.length >= 4 && i === 0;
+              const isGalleryHero = post.recommendations.length >= 5 && i === 0;
+              const isFourCardLead = post.recommendations.length === 4 && i === 0;
               const isSparseHero = post.recommendations.length === 1 && i === 0;
+              const isThreeCardWide = post.recommendations.length === 3 && i === 0;
               const isSixth = post.recommendations.length >= 6 && i === 5;
               const nonHeroCount = post.recommendations.length - 1;
               let trailingSpan = 1;
 
               // Keep the cards around the two-column feature balanced, then
               // widen the final card to close a partial row.
-              if (isSixth) {
+              if (isThreeCardWide || isSixth) {
                 trailingSpan = 2;
               } else if (!isGalleryHero && post.recommendations.length >= 4 && i > 0) {
                 if (nonHeroCount < 5 && i === post.recommendations.length - 1) {
@@ -226,11 +227,13 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
                   ? "md:col-span-3"
                   : "md:col-span-2";
               const wideDesktopSize = trailingSpan === 5 ? "100vw" : trailingSpan === 4 ? "80vw" : trailingSpan === 3 ? "60vw" : "40vw";
-              const isWideArt = isGalleryHero || isSparseHero || isWide;
+              const isWideArt = isGalleryHero || isFourCardLead || isSparseHero || isWide;
               const usesBackdrop = !isGalleryHero && isWideArt && !!rec.backdropUrl;
               const imageUrl = usesBackdrop ? rec.backdropUrl : rec.posterUrl;
               const imageSizes = isGalleryHero
                 ? "(min-width: 768px) 25vw, 100vw"
+                : isFourCardLead
+                  ? `(min-width: 768px) ${wideDesktopSize}, 100vw`
                 : isSparseHero
                   ? "100vw"
                 : isWide
@@ -241,8 +244,9 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
                 : null;
               const cardClass = [
                 "group relative block overflow-hidden bg-gallery focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark",
-                !isGalleryHero && !isSparseHero && "aspect-poster",
+                !isGalleryHero && !isFourCardLead && !isSparseHero && "aspect-poster",
                 isGalleryHero && "col-span-2 aspect-recommendation-hero md:col-span-2 md:col-start-1 md:row-start-1 md:row-span-2 md:aspect-auto md:h-full",
+                isFourCardLead && "col-span-2 aspect-recommendation-hero md:col-span-2 md:aspect-auto md:h-full",
                 isSparseHero && "col-span-2 aspect-recommendation-hero md:col-span-4",
                 isWide && `${trailingSpanClass} md:aspect-auto md:h-full`,
               ].filter(Boolean).join(" ");
