@@ -2,12 +2,9 @@
 // Movies That Feel Like — discovery feed of imported Reddit vibe posts.
 
 import Layout from "../layouts/Layout.astro";
-import { getDb, getBuildData } from "../lib/db";
-import { env } from "cloudflare:workers";
+import { getBuildData } from "../lib/build-data";
 
-const db = getDb(env);
-
-const { posts } = await getBuildData(db);
+const { posts } = await getBuildData();
 
 const tagCounts = new Map<string, number>();
 for (const post of posts) {
