@@ -21,9 +21,10 @@ The workflow uses Node 22, Python 3.11, Bun with `bun install --frozen-lockfile`
 `apps/astro/wrangler.jsonc`. Secrets are supplied only as environment
 variables; do not print them or put them in artifacts.
 
-Manual runs accept `limit` (default `100`), `max_pages` (default `10`), and
+Manual runs accept `limit` (default `100`), `max_pages` (default `50`), and
 `apply_only`. Both numeric inputs must be positive integers; a small `limit`
-is useful for a controlled smoke run.
+is useful for a controlled smoke run. The default 50 pages is a bounded scan;
+use a higher `max_pages` for a controlled backfill when needed.
 `apply_only` skips the D1 post-ID query, fetch/pipeline, commit, and push
 entirely. Checkout credentials are not persisted, and the GitHub write token
 is exposed only to the commit/push step.

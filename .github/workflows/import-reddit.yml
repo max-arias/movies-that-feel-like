@@ -14,7 +14,7 @@ on:
       max_pages:
         description: 'Maximum fetch pages before stopping (positive integer)'
         required: true
-        default: '10'
+        default: '50'
         type: string
       apply_only:
         description: 'Apply already-committed pending migrations only'
@@ -104,7 +104,7 @@ jobs:
         if: inputs.apply_only != true
         env:
           IMPORT_LIMIT: ${{ inputs.limit || '100' }}
-          IMPORT_MAX_PAGES: ${{ inputs.max_pages || '10' }}
+          IMPORT_MAX_PAGES: ${{ inputs.max_pages || '50' }}
         run: |
           if ! [[ "$IMPORT_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
             echo "limit must be a positive integer; got: $IMPORT_LIMIT" >&2
