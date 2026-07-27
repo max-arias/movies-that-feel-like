@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from pipeline.artifacts import read_json_artifact, timestamp_slug, validate_complete_extraction, write_json_artifact
+from pipeline.enrich_cache import CACHE_COLUMNS
 from pipeline.paths import ensure_pipeline_dirs, normalized_dir, project_root, working_dir
 
 # ── Constants ──────────────────────────────────────────────────────────
@@ -657,6 +658,7 @@ def _write_data_migration(
     run_started_at: datetime,
     id_floors: dict[str, int],
     touched_recommendation_ids: set[int] | None = None,
+    cache_records: list[dict[str, Any]] | None = None,
 ) -> list[Path]:
     """Emit a sequence of versioned data migrations to *migrations_dir*.
 
@@ -722,7 +724,43 @@ def _write_data_migration(
         written.append(path)
         print(f"[pipeline:load] Data migration written to {path}")
 
+    # Cache rows are deliberately a final, independent chunk.  They are
+    # append-only provider observations and never participate in canonical
+    # recommendation upserts or foreign-key ordering.
+    sequence = base_sequence + len(_DATA_MIGRATION_CHUNKS)
+    filename = _migration_filename(sequence, run_started_at, "06_resolution_cache")
+    path = migrations_dir / filename
+    if path.exists():
+        raise SystemExit(f"[pipeline:load] Refusing to overwrite existing migration {path}.")
+    inserts: list[str] = []
+    for record in cache_records or []:
+        if record.get("outcome") not in ("matched", "not_found"):
+            continue
+        values = ", ".join(_sql_literal(record.get(column)) for column in CACHE_COLUMNS)
+        columns = ", ".join(_quote_sql_identifier(c) for c in CACHE_COLUMNS)
+        inserts.append(
+            f'INSERT OR IGNORE INTO "enrichment_resolution_cache" ({columns}) VALUES ({values});'
+        )
+    header = (
+        f"-- {filename}: append-only provider resolution cache observations.\n"
+        f"-- Cache rows are emitted only for matched and explicit not_found outcomes.\n"
+    )
+    path.write_text(header + "\n".join(inserts) + ("\n" if inserts else ""), encoding="utf-8")
+    written.append(path)
+    print(f"[pipeline:load] Cache migration written to {path}")
+
     return written
+
+
+def _sql_literal(value: Any) -> str:
+    """Return a SQLite literal with correct escaping, including JSON payloads."""
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"
 
 
 # ── CLI ────────────────────────────────────────────────────────────────
@@ -1230,6 +1268,7 @@ def main(argv: list[str] | None = None) -> None:
             run_started_at,
             data_table_id_floors,
             touched_recommendation_ids,
+            enrichment.get("cache_records", []),
         )
 
         print(

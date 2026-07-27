@@ -31,11 +31,27 @@ import asyncio
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from pipeline.paths import working_dir
+
+CANDIDATE_KEY_VERSION = 1
+RESOLVER_VERSION = "1"
+PAYLOAD_SCHEMA_VERSION = 1
+CACHE_TTLS = {
+    "matched": timedelta(days=90),
+    "not_found": timedelta(days=7),
+}
+CACHE_COLUMNS = (
+    "provider", "candidate_key", "candidate_key_version", "query_title",
+    "query_year", "query_media_type", "language", "include_adult",
+    "resolver_version", "outcome", "provider_record_id", "resolved_type",
+    "resolved_title", "resolved_year", "normalized_payload", "fetched_at",
+    "fresh_until", "source_run_id", "source_artifact_checksum",
+    "payload_schema_version",
+)
 
 
 class ProviderCache:
@@ -50,11 +66,13 @@ class ProviderCache:
         no-op.  Use this for the ``--no-cache`` / force-refresh path.
     """
 
-    def __init__(self, path: Path, *, enabled: bool = True) -> None:
+    def __init__(self, path: Path, *, enabled: bool = True,
+                 snapshot: list[dict[str, Any]] | None = None) -> None:
         self._path = path
         self._enabled = enabled
         self._entries: dict[str, dict] = {}
         self._fh: Any = None  # file handle, opened lazily on first put
+        self._snapshot: dict[tuple, dict[str, Any]] = {}
 
         if not enabled:
             return
@@ -62,6 +80,9 @@ class ProviderCache:
         # Load existing entries if the file exists
         if path.exists():
             self._load()
+        for row in snapshot or []:
+            if isinstance(row, dict) and row.get("outcome") in ("matched", "not_found"):
+                self._set_snapshot_row(row)
 
     # ── Public API ──────────────────────────────────────────────────────
 
@@ -73,6 +94,57 @@ class ProviderCache:
         if not self._enabled:
             return None
         return self._entries.get(key)
+
+    @staticmethod
+    def identity(row: dict[str, Any]) -> tuple:
+        return (row.get("provider"), row.get("candidate_key"),
+                row.get("candidate_key_version"), row.get("query_title"),
+                row.get("query_year"), row.get("query_media_type"),
+                row.get("language", "en-US"), bool(row.get("include_adult", False)),
+                row.get("resolver_version"))
+
+    @staticmethod
+    def _snapshot_order(row: dict[str, Any]) -> tuple[datetime, int]:
+        """Return the ordering used when duplicate snapshot identities exist."""
+        try:
+            fetched_at = datetime.fromisoformat(str(row["fetched_at"]).replace("Z", "+00:00"))
+            if fetched_at.tzinfo is None:
+                fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+        except (KeyError, TypeError, ValueError):
+            fetched_at = datetime.min.replace(tzinfo=timezone.utc)
+        try:
+            row_id = int(row.get("id", -1))
+        except (TypeError, ValueError):
+            row_id = -1
+        return fetched_at, row_id
+
+    def _set_snapshot_row(self, row: dict[str, Any]) -> None:
+        identity = self.identity(row)
+        current = self._snapshot.get(identity)
+        # Keep the newest row even when Wrangler returns rows newest-first.
+        if current is None or self._snapshot_order(row) > self._snapshot_order(current):
+            self._snapshot[identity] = row
+
+    async def lookup(self, *, provider: str, candidate: dict[str, Any],
+                     language: str, include_adult: bool) -> dict[str, Any] | None:
+        """Return a fresh authoritative snapshot row, if its full identity matches."""
+        row = self._snapshot.get((provider, candidate["candidate_key"],
+                                  CANDIDATE_KEY_VERSION, candidate.get("title"),
+                                  candidate.get("year"), candidate.get("media_type"),
+                                  language, include_adult, RESOLVER_VERSION))
+        if row is None:
+            return None
+        try:
+            fresh = datetime.fromisoformat(str(row["fresh_until"]).replace("Z", "+00:00"))
+            if fresh <= datetime.now(timezone.utc):
+                return None
+        except (KeyError, TypeError, ValueError):
+            return None
+        return row
+
+    def add_record(self, row: dict[str, Any]) -> None:
+        if row.get("outcome") in ("matched", "not_found"):
+            self._set_snapshot_row(row)
 
     async def put(self, key: str, match: dict) -> None:
         """Append *match* for *key* to the cache file and update in-memory index.
@@ -174,4 +246,45 @@ def make_cache(args: argparse.Namespace) -> ProviderCache:
     else:
         path = working_dir() / "caches" / "provider-cache.jsonl"
 
-    return ProviderCache(path)
+    snapshot = getattr(args, "cache_snapshot_rows", None)
+    return ProviderCache(path, snapshot=snapshot)
+
+
+def read_cache_snapshot(path: str | Path) -> list[dict[str, Any]]:
+    """Read Wrangler's ``d1 execute --json`` envelope.
+
+    Wrangler emits ``[{"results": [...] }]``; accepting only that shape avoids
+    accidentally treating a CLI error or a raw object as authoritative cache.
+    """
+    value = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(value, list):
+        raise ValueError("cache snapshot must be Wrangler's top-level results array")
+    rows: list[dict[str, Any]] = []
+    for envelope in value:
+        if isinstance(envelope, dict) and isinstance(envelope.get("results"), list):
+            rows.extend(r for r in envelope["results"] if isinstance(r, dict))
+    return rows
+
+
+def make_cache_record(*, provider: str, candidate: dict[str, Any], language: str,
+                      include_adult: bool, outcome: str, payload: dict[str, Any] | None,
+                      source_run_id: str | None = None,
+                      source_artifact_checksum: str | None = None) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    media = (payload or {}).get("media_type")
+    record_id = (payload or {}).get("tmdb_id") if provider == "tmdb" else (payload or {}).get("igdb_id")
+    row = {
+        "provider": provider, "candidate_key": candidate["candidate_key"],
+        "candidate_key_version": CANDIDATE_KEY_VERSION, "query_title": candidate.get("title", ""),
+        "query_year": candidate.get("year"), "query_media_type": candidate.get("media_type"),
+        "language": language, "include_adult": int(include_adult),
+        "resolver_version": RESOLVER_VERSION, "outcome": outcome,
+        "provider_record_id": record_id, "resolved_type": media,
+        "resolved_title": (payload or {}).get("title"), "resolved_year": (payload or {}).get("release_year"),
+        "normalized_payload": json.dumps(payload, ensure_ascii=False, sort_keys=True) if payload is not None else None,
+        "fetched_at": now.isoformat().replace("+00:00", "Z"),
+        "fresh_until": (now + CACHE_TTLS[outcome]).isoformat().replace("+00:00", "Z"),
+        "source_run_id": source_run_id, "source_artifact_checksum": source_artifact_checksum,
+        "payload_schema_version": PAYLOAD_SCHEMA_VERSION,
+    }
+    return row

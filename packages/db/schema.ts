@@ -229,3 +229,57 @@ export const pipelineArtifacts = sqliteTable(
     index("idx_pipeline_artifacts_post").on(table.importedVibePostId),
   ]
 );
+
+// ── enrichment_resolution_cache ───────────────────────────────
+
+export const enrichmentResolutionCache = sqliteTable(
+  "enrichment_resolution_cache",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    provider: text("provider").notNull(),
+    candidateKey: text("candidate_key").notNull(),
+    candidateKeyVersion: integer("candidate_key_version").notNull().default(1),
+    queryTitle: text("query_title").notNull(),
+    queryYear: integer("query_year"),
+    queryMediaType: text("query_media_type")
+      .notNull()
+      .$type<"movie" | "tv" | "game">(),
+    language: text("language").notNull().default("en-US"),
+    includeAdult: integer("include_adult", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    resolverVersion: text("resolver_version").notNull(),
+    outcome: text("outcome")
+      .notNull()
+      .$type<"matched" | "not_found">(),
+    providerRecordId: text("provider_record_id"),
+    resolvedType: text("resolved_type").$type<"movie" | "tv" | "game">(),
+    resolvedTitle: text("resolved_title"),
+    resolvedYear: integer("resolved_year"),
+    normalizedPayload: text("normalized_payload"),
+    fetchedAt: text("fetched_at").notNull(),
+    freshUntil: text("fresh_until").notNull(),
+    sourceRunId: integer("source_run_id").references(() => processingRuns.id, {
+      onDelete: "set null",
+    }),
+    sourceArtifactChecksum: text("source_artifact_checksum"),
+    payloadSchemaVersion: integer("payload_schema_version")
+      .notNull()
+      .default(1),
+  },
+  (table) => [
+    index("idx_enrichment_resolution_cache_lookup_newest").on(
+      table.provider,
+      table.candidateKey,
+      table.candidateKeyVersion,
+      table.queryTitle,
+      table.queryYear,
+      table.queryMediaType,
+      table.language,
+      table.includeAdult,
+      table.resolverVersion,
+      table.fetchedAt.desc(),
+      table.id.desc()
+    ),
+  ]
+);

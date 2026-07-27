@@ -25,6 +25,7 @@ const TABLES: Record<string, Record<string, unknown>> = {
   vibe_tags: schema.vibeTags,
   processing_runs: schema.processingRuns,
   pipeline_artifacts: schema.pipelineArtifacts,
+  enrichment_resolution_cache: schema.enrichmentResolutionCache,
 } as const;
 
 /**

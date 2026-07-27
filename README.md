@@ -145,7 +145,7 @@ The repo has a working tracer bullet:
 - extract recommendations and vibe summaries
 - enrich recommendations through TMDB
 - load into local SQLite and Wrangler local D1
-- render feed, post detail, and recommendation detail pages from D1
+- render feed and post detail pages from D1
 
 ## Next likely work
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import re
 import time as time_module
@@ -32,7 +33,7 @@ from pipeline.artifacts import (
     validate_complete_extraction,
     write_json_artifact,
 )
-from pipeline.enrich_cache import make_cache, ProviderCache
+from pipeline.enrich_cache import make_cache, make_cache_record, read_cache_snapshot, ProviderCache
 from pipeline.paths import ensure_pipeline_dirs, working_dir
 
 # ── Constants ──────────────────────────────────────────────────────────
@@ -370,6 +371,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to provider cache JSONL file (default: data/working/caches/provider-cache.jsonl)",
     )
     parser.add_argument(
+        "--cache-snapshot",
+        default=None,
+        help="Wrangler d1 execute --json snapshot of enrichment_resolution_cache",
+    )
+    parser.add_argument(
         "--max-attempts",
         type=int,
         default=3,
@@ -454,6 +460,7 @@ async def _process_one_candidate(
     unmatched: list[dict[str, Any]],
     errors: list[dict[str, Any]],
     progress: dict[str, int],
+    cache_records: list[dict[str, Any]],
 ) -> None:
     """Resolve a single candidate, populating *matches*, *unmatched*, or *errors*."""
     title = cand["title"]
@@ -461,13 +468,36 @@ async def _process_one_candidate(
     print(f"  {title} ({media_type}) …")
 
     # ── Cache check ──────────────────────────────────────────────────
-    if cache is not None:
-        cached = await cache.get(cand["candidate_key"])
-        if cached is not None:
+    provider = "tmdb" if media_type in ("movie", "tv") else "igdb" if media_type == "game" else None
+    if cache is not None and provider is not None:
+        row = await cache.lookup(provider=provider, candidate=cand,
+                                 language=args.language, include_adult=args.include_adult)
+        raw_payload = row.get("normalized_payload") if row else None
+        cached = (json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload) if raw_payload else None
+        if cached is None and row and row.get("outcome") == "not_found":
+            unmatched.append({"candidate_key": cand["candidate_key"], "title": title,
+                              "year": cand.get("year"), "media_type": media_type,
+                              "reason": "no compatible provider result found"})
+            progress["cache_hit"] += 1
+            assert row is not None
+            cache_records.append(row)
+            return
+        elif cached is not None:
             matches.append(cached)
             progress["cache_hit"] += 1
+            assert row is not None
+            cache_records.append(row)
             print(f"  {title} → cached hit")
             return
+        elif getattr(args, "cache_snapshot", None) is None:
+            cached = await cache.get(cand["candidate_key"])
+            if cached is not None:
+                matches.append(cached)
+                progress["cache_hit"] += 1
+                cache_records.append(make_cache_record(
+                    provider=provider, candidate=cand, language=args.language,
+                    include_adult=args.include_adult, outcome="matched", payload=cached))
+                return
 
     # ── Dispatch by media_type ───────────────────────────────────────
 
@@ -475,11 +505,13 @@ async def _process_one_candidate(
         await _process_tmdb_candidate(
             cand, tmdb_client, tmdb_limiter, args, cache,
             matches, unmatched, errors,
+            cache_records,
         )
     elif media_type == "game":
         await _process_igdb_candidate(
             cand, igdb_client, igdb_limiter, args, cache,
             matches, unmatched, errors,
+            cache_records,
         )
     elif media_type == "unknown":
         unmatched.append(
@@ -514,6 +546,7 @@ async def _process_tmdb_candidate(
     matches: list[dict[str, Any]],
     unmatched: list[dict[str, Any]],
     errors: list[dict[str, Any]],
+    cache_records: list[dict[str, Any]],
 ) -> None:
     """TMDB path — search multi, external IDs, build match record."""
     title = cand["title"]
@@ -558,6 +591,8 @@ async def _process_tmdb_candidate(
                 "reason": "no compatible movie/tv result found",
             }
         )
+        cache_records.append(make_cache_record(provider="tmdb", candidate=cand,
+            language=args.language, include_adult=args.include_adult, outcome="not_found", payload=None))
         print(f"  {title} → no match")
         return
 
@@ -611,6 +646,8 @@ async def _process_tmdb_candidate(
         "raw_result": best,
     }
     matches.append(match_record)
+    cache_records.append(make_cache_record(provider="tmdb", candidate=cand,
+        language=args.language, include_adult=args.include_adult, outcome="matched", payload=match_record))
     print(
         f"  {title} → {b_media_type} #{tmdb_id} "
         f"({match_record['title']})"
@@ -630,6 +667,7 @@ async def _process_igdb_candidate(
     matches: list[dict[str, Any]],
     unmatched: list[dict[str, Any]],
     errors: list[dict[str, Any]],
+    cache_records: list[dict[str, Any]],
 ) -> None:
     """IGDB path — search games, build match record."""
     title = cand["title"]
@@ -675,11 +713,15 @@ async def _process_igdb_candidate(
                 "reason": "no compatible game result found",
             }
         )
+        cache_records.append(make_cache_record(provider="igdb", candidate=cand,
+            language=args.language, include_adult=args.include_adult, outcome="not_found", payload=None))
         print(f"  {title} → no game match")
         return
 
     match_record = enrich_games.build_match(cand, best)
     matches.append(match_record)
+    cache_records.append(make_cache_record(provider="igdb", candidate=cand,
+        language=args.language, include_adult=args.include_adult, outcome="matched", payload=match_record))
     print(
         f"  {title} → game #{match_record['igdb_id']} "
         f"({match_record['title']})"
@@ -696,10 +738,10 @@ async def _process_igdb_candidate(
 async def _async_main(
     args: argparse.Namespace,
     candidates: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """Async enrichment loop.
 
-    Returns (*matches*, *unmatched*, *errors*).
+    Returns (*matches*, *unmatched*, *errors*, *cache_records*).
     """
     t0 = time_module.monotonic()
 
@@ -729,11 +771,13 @@ async def _async_main(
     # ── Cache ────────────────────────────────────────────────────────
     cache: ProviderCache | None = None
     if not args.dry_run:
+        args.cache_snapshot_rows = read_cache_snapshot(args.cache_snapshot) if args.cache_snapshot else None
         cache = make_cache(args)
 
     matches: list[dict[str, Any]] = []
     unmatched: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
+    cache_records: list[dict[str, Any]] = []
 
     sem = asyncio.Semaphore(_CONCURRENCY)
     progress: dict[str, int] = {"completed": 0, "cache_hit": 0}
@@ -753,6 +797,7 @@ async def _async_main(
                 unmatched,
                 errors,
                 progress,
+                cache_records,
             )
             progress["completed"] += 1
             completed = progress["completed"]
@@ -779,7 +824,7 @@ async def _async_main(
         f"({len(candidates)} candidate(s))"
     )
 
-    return matches, unmatched, errors
+    return matches, unmatched, errors, cache_records
 
 
 # ── Entry point ────────────────────────────────────────────────────────
@@ -879,7 +924,7 @@ def main(argv: list[str] | None = None) -> None:
     # ── Real enrichment ─────────────────────────────────────────────────
     print(f"[pipeline:enrich] Enriching {len(candidates)} candidate(s) …")
 
-    matches, unmatched, errors = asyncio.run(
+    matches, unmatched, errors, cache_records = asyncio.run(
         _async_main(args, candidates)
     )
 
@@ -909,6 +954,7 @@ def main(argv: list[str] | None = None) -> None:
         "matches": matches,
         "unmatched": unmatched,
         "errors": errors,
+        "cache_records": cache_records,
         "summary": {
             "candidate_count": len(candidates),
             "match_count": len(matches),
