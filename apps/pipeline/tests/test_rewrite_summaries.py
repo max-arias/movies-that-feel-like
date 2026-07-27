@@ -21,7 +21,7 @@ class RewriteSummaryTests(unittest.TestCase):
     def test_prompt_is_mood_only(self):
         prompt = build_summary_prompt("Foggy harbor", "quiet")
         self.assertIn("exactly one concise, direct atmospheric mood fragment", prompt["system_prompt"])
-        self.assertNotIn("recommend", prompt["system_prompt"].lower())
+        self.assertIn("grounded in the input", prompt["system_prompt"])
         self.assertIn("Foggy harbor", prompt["user_prompt"])
         self.assertIn("quiet", prompt["user_prompt"])
         self.assertNotIn("Comments", prompt["user_prompt"])

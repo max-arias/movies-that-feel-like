@@ -98,7 +98,8 @@ class EnrichmentResolutionCacheTests(unittest.TestCase):
                 sqlite3.connect(":memory:"), Path(directory), datetime.now(timezone.utc), {},
                 cache_records=[row],
             )
-            sql = paths[-1].read_text(encoding="utf-8")
+            enrichment_path = next(path for path in paths if "06_resolution_cache" in path.name)
+            sql = enrichment_path.read_text(encoding="utf-8")
         self.assertIn('"outcome"', sql)
         self.assertIn('"resolved_type"', sql)
         self.assertIn('"normalized_payload"', sql)

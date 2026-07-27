@@ -32,10 +32,14 @@ from typing import Any
 
 from pipeline.artifacts import read_json_artifact, timestamp_slug, write_json_artifact
 from pipeline.extraction_input import build_extraction_prompt, flatten_comments
+from pipeline.extraction_input import EXTRACTION_PROMPT_VERSION
+from pipeline.extraction_cache import (EXTRACTOR_VERSION, PAYLOAD_VERSION,
+                                       canonical_json, extraction_cache_key, lookup as lookup_cache,
+                                       make_cache_record, read_cache_snapshot)
 from pipeline.models import PostExtraction
 from pipeline.paths import checkpoints_dir, ensure_pipeline_dirs, normalized_dir, working_dir
 
-EXTRACTION_SCHEMA_VERSION = "post-extraction-v2"
+EXTRACTION_SCHEMA_VERSION = "post-extraction-v3"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -149,6 +153,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicitly allow failed posts in the output (unsafe; consumers may still reject it)",
     )
     parser.add_argument("--allow-empty", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--cache-snapshot", default=None,
+                        help="Raw Wrangler JSON snapshot ([{results:[...]}]) for extraction cache reads")
     return parser
 
 
@@ -464,6 +470,7 @@ def _build_prompts(
                 "reddit_post_id": post_id,
                 "title_length": len(post.get("title", "")),
                 "comment_count": len(comments),
+                "prompt_input": {"post": post, "comments": comments, "max_comments": max_comments},
                 **prompt,
             }
         )
@@ -565,20 +572,21 @@ def main(argv: list[str] | None = None) -> None:
     if args.api_base:
         print(f"[pipeline:extract] API base: {args.api_base}")
 
-    client, actual_model, provider_audit = _build_extraction_client(
-        provider=provider,
-        model=args.model,
-        mode=args.mode,
-        api_base=args.api_base,
-    )
+    # Resolve output-affecting identity without constructing a client. This is
+    # important for an all-hit snapshot run: it must not require an API key.
+    actual_model = args.model.removeprefix("openai/")
+    instructor_mode = args.mode or ("json" if provider == "openai" else "auto")
+    resolved_api_base = args.api_base or os.environ.get("OPENAI_BASE_URL")
+    if provider == "openai" and not resolved_api_base and os.environ.get("OPENCODE_GO_API_KEY"):
+        resolved_api_base = "https://opencode.ai/zen/go/v1"
 
     # Operational tuning must not invalidate completed work; output-affecting
     # provider/model/mode and prompt/schema inputs must.
     schema_content = json.dumps(PostExtraction.model_json_schema(), sort_keys=True)
     identity = {"model": actual_model, "requested_model": args.model,
-                "mode": provider_audit.get("mode"), "provider": provider,
-                "api_base": provider_audit.get("api_base"),
-                "max_comments": args.max_comments, "limit": args.limit,
+                "mode": instructor_mode, "provider": provider,
+                "api_base": resolved_api_base,
+                "prompt_version": EXTRACTION_PROMPT_VERSION,
                 "schema_version": EXTRACTION_SCHEMA_VERSION, "schema": schema_content}
     run_id = hashlib.sha256((input_path.read_bytes().decode("utf-8") + json.dumps(identity, sort_keys=True)).encode()).hexdigest()[:20]
     checkpoint = checkpoints_dir() / f"{run_id}.jsonl"
@@ -609,10 +617,24 @@ def main(argv: list[str] | None = None) -> None:
                         checkpoint_records[record["ordinal"]] = record
             except (ValueError, KeyError, IndexError, json.JSONDecodeError):
                 continue
+    # Snapshot rows are validated before they become results. Invalid and
+    # expired rows are misses, never errors.
+    snapshot_rows = read_cache_snapshot(args.cache_snapshot) if args.cache_snapshot else []
+    hit_results: dict[int, dict[str, Any]] = {}
     pending = []
     for ordinal, prompt in enumerate(prompts):
+        prompt["ordinal"] = ordinal
+        prompt["_cache_key"] = extraction_cache_key(
+            prompt_input=prompt["prompt_input"], system_prompt=prompt["system_prompt"],
+            user_prompt=prompt["user_prompt"], schema=PostExtraction.model_json_schema(),
+            provider=provider, model=actual_model, api_base=resolved_api_base,
+            instructor_mode=instructor_mode)
+        hit = lookup_cache(snapshot_rows, prompt["_cache_key"])
+        if hit is not None:
+            hit["reddit_post_id"] = prompt["reddit_post_id"]
+            hit_results[ordinal] = hit
+            continue
         if ordinal not in checkpoint_records:
-            prompt["ordinal"] = ordinal
             pending.append(prompt)
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     checkpoint_handle = checkpoint.open("a", encoding="utf-8")
@@ -624,6 +646,15 @@ def main(argv: list[str] | None = None) -> None:
         checkpoint_handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         checkpoint_handle.flush(); os.fsync(checkpoint_handle.fileno())
 
+    print(f"[pipeline:extract] Cache: {len(hit_results)} hit(s), {len(pending)} miss(es)")
+
+    client = None
+    provider_audit: dict[str, Any] = {"provider": provider, "mode": instructor_mode,
+                                      "api_base": resolved_api_base,
+                                      "api_base_set": resolved_api_base is not None}
+    if pending:
+        client, actual_model, provider_audit = _build_extraction_client(
+            provider=provider, model=args.model, mode=args.mode, api_base=args.api_base)
     print(f"[pipeline:extract] Extracting …")
 
     try:
@@ -638,10 +669,32 @@ def main(argv: list[str] | None = None) -> None:
         checkpoint_handle.close()
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
         lock_handle.close()
-    cached_results = [r["result"] for r in checkpoint_records.values() if r.get("result") is not None]
-    cached_errors = [r["error"] for r in checkpoint_records.values() if r.get("error") is not None]
-    results = cached_results + results
-    errors = cached_errors + errors
+    all_results: dict[int, dict[str, Any]] = dict(hit_results)
+    all_results.update({ordinal: record["result"] for ordinal, record in checkpoint_records.items() if record.get("result") is not None})
+    # _run_extraction returns pending order; use the prompt ordinal rather than
+    # relying on completion order.
+    for prompt, result in zip(pending, results):
+        all_results[prompt["ordinal"]] = result
+    all_errors = [r["error"] for r in checkpoint_records.values() if r.get("error") is not None] + errors
+    results = [all_results[i] for i in range(len(prompts)) if i in all_results]
+    errors = all_errors
+
+    cache_records: list[dict[str, Any]] = []
+    for ordinal, result in all_results.items():
+        if ordinal in hit_results:
+            continue
+        valid = PostExtraction.model_validate(result).model_dump()
+        outcome = "extracted" if valid.get("recommendations") else "no_result"
+        prompt_record = prompts[ordinal]
+        content_hash = hashlib.sha256(canonical_json(prompt_record["prompt_input"]).encode()).hexdigest()
+        rendered_hash = hashlib.sha256(canonical_json({"system": prompt_record["system_prompt"], "user": prompt_record["user_prompt"]}).encode()).hexdigest()
+        cache_records.append(make_cache_record(
+            key=prompt_record["_cache_key"], post_id=prompt_record["reddit_post_id"],
+            payload=valid, outcome=outcome, content_hash=content_hash,
+            prompt_hash=rendered_hash, prompt_version=EXTRACTION_PROMPT_VERSION,
+            provider=provider, model=actual_model, api_base=resolved_api_base,
+            instructor_mode=instructor_mode,
+            source_normalized_checksum=hashlib.sha256(input_path.read_bytes()).hexdigest()))
 
     # Count total recommendations across successes
     recommendation_count = sum(
@@ -684,6 +737,9 @@ def main(argv: list[str] | None = None) -> None:
             "mode": args.mode,
             "api_base": args.api_base,
             "provider": provider_audit,
+            "prompt_version": EXTRACTION_PROMPT_VERSION,
+            "schema_version": EXTRACTION_SCHEMA_VERSION,
+            "cache_records": cache_records,
         },
         "results": results,
         "errors": errors,
@@ -695,6 +751,9 @@ def main(argv: list[str] | None = None) -> None:
             "completed_count": success_count + error_count,
             "pending_count": 0,
             "recommendation_count": recommendation_count,
+            "cache_hits": len(hit_results),
+            "cache_misses": len(prompts) - len(hit_results),
+            "cache_writes": len(cache_records),
         },
     }
 

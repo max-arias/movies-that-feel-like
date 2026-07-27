@@ -50,6 +50,13 @@ _DATA_MIGRATION_CHUNKS: tuple[tuple[str, frozenset[str]], ...] = (
     ("05_tags", frozenset({"vibe_tags"})),
 )
 
+EXTRACTION_CACHE_COLUMNS = (
+    "cache_key", "reddit_post_id", "content_hash", "prompt_hash",
+    "prompt_version", "provider", "model", "api_base", "instructor_mode",
+    "extractor_version", "payload_schema_version", "outcome", "extraction_payload",
+    "source_normalized_checksum", "created_at", "fresh_until",
+)
+
 # ── Helpers ────────────────────────────────────────────────────────────
 
 
@@ -659,6 +666,7 @@ def _write_data_migration(
     id_floors: dict[str, int],
     touched_recommendation_ids: set[int] | None = None,
     cache_records: list[dict[str, Any]] | None = None,
+    extraction_cache_records: list[dict[str, Any]] | None = None,
 ) -> list[Path]:
     """Emit a sequence of versioned data migrations to *migrations_dir*.
 
@@ -748,6 +756,36 @@ def _write_data_migration(
     path.write_text(header + "\n".join(inserts) + ("\n" if inserts else ""), encoding="utf-8")
     written.append(path)
     print(f"[pipeline:load] Cache migration written to {path}")
+
+    # Extraction cache is intentionally the final append-only chunk. It is
+    # independent of the user-facing data and is consumed by a later extract
+    # invocation through a raw Wrangler snapshot.
+    sequence = base_sequence + len(_DATA_MIGRATION_CHUNKS) + 1
+    filename = _migration_filename(sequence, run_started_at, "07_extraction_cache")
+    path = migrations_dir / filename
+    if path.exists():
+        raise SystemExit(f"[pipeline:load] Refusing to overwrite existing migration {path}.")
+    columns = ", ".join(_quote_sql_identifier(c) for c in EXTRACTION_CACHE_COLUMNS)
+    extraction_inserts = []
+    for record in extraction_cache_records or []:
+        if record.get("outcome") not in ("extracted", "no_result"):
+            continue
+        values = ", ".join(
+            _sql_literal(json.dumps(record.get(c), ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+            if c == "extraction_payload" and isinstance(record.get(c), (dict, list))
+            else _sql_literal(record.get(c))
+            for c in EXTRACTION_CACHE_COLUMNS
+        )
+        extraction_inserts.append(
+            f'INSERT OR IGNORE INTO "extraction_result_cache" ({columns}) VALUES ({values});'
+        )
+    header = (
+        f"-- {filename}: append-only extraction cache observations.\n"
+        "-- Only validated extracted and no_result payloads are retained.\n"
+    )
+    path.write_text(header + "\n".join(extraction_inserts) + ("\n" if extraction_inserts else ""), encoding="utf-8")
+    written.append(path)
+    print(f"[pipeline:load] Extraction cache migration written to {path}")
 
     return written
 
@@ -1269,6 +1307,7 @@ def main(argv: list[str] | None = None) -> None:
             data_table_id_floors,
             touched_recommendation_ids,
             enrichment.get("cache_records", []),
+            extraction.get("cache_records", []),
         )
 
         print(

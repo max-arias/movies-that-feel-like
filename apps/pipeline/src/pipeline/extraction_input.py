@@ -106,12 +106,15 @@ def flatten_comments(
 # ── Prompt builder ───────────────────────────────────────────────────
 
 
+EXTRACTION_PROMPT_VERSION = "extraction-prompt-v3"
 SYSTEM_INSTRUCTION = (
-    "Write exactly one concise, direct atmospheric mood fragment for this post. "
-    "Use the title, selftext, and comments only as context for the feeling, never as the subject. "
-    "Return only the fragment: no explanation, no process notes, and no image analysis. "
-    "Do not describe the post, the author, the commenters, or how titles were offered. "
-    "Do not use labels, tags, or bullets."
+    "Extract the recommendations and the atmosphere from this Reddit post. Return exactly the "
+    "requested JSON schema. Only cite recommendations supported by the supplied post or comments. "
+    "The vibe summary must be exactly one concise, direct atmospheric mood fragment grounded in the input. "
+    "For every evidence item copy the exact comment_id, comment_text, score, and permalink from the "
+    "input; never invent identifiers or metadata. The reddit_post_id and reddit_title in the output "
+    "must be copied from the input. A post with no supported recommendation must return empty "
+    "recommendations. Do not add explanations outside the schema."
 )
 
 
@@ -132,6 +135,7 @@ def build_extraction_prompt(
 
     parts: list[str] = [
         f"## Post\n",
+        f"- **reddit_post_id**: {post_id}",
         f"- **Title**: {title}",
     ]
     if selftext.strip():
@@ -147,7 +151,11 @@ def build_extraction_prompt(
         if len(body) > 500:
             body = body[:500] + " […]"
         parts.append(
-            f"{i}. {body}"
+            f"{i}. **comment_id**: {c.get('id', '?')}\n"
+            f"   **score**: {c.get('score')}\n"
+            f"   **permalink**: {c.get('permalink', '')}\n"
+            f"   **author**: {c.get('author', '')}\n"
+            f"   **comment_text**: {body}"
         )
 
     user_prompt = "\n".join(parts)

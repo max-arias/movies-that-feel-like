@@ -156,6 +156,21 @@ jobs:
             exit 1
           fi
 
+      - name: Export extraction cache snapshot
+        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          mkdir -p data/working
+          npx wrangler d1 execute movies-that-feel-like --remote \
+            --config apps/astro/wrangler.jsonc \
+            --command "SELECT * FROM extraction_result_cache WHERE fresh_until > datetime('now') ORDER BY cache_key, created_at ASC, id ASC" \
+            --json \
+            | tee data/working/extraction-cache-snapshot.json \
+            | jq -e 'type == "array" and length == 1 and (.[0] | type == "object") and (.[0].results | type == "array")'
+
       - name: Extract recommendations
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
         env:
@@ -163,7 +178,7 @@ jobs:
         # --allow-errors lets a single malformed LLM response (e.g. invalid
         # JSON escape) drop just that post instead of failing the whole run.
         # The other 99 posts still flow through enrich → load → migration.
-        run: npm run pipeline:extract -- --allow-errors
+        run: npm run pipeline:extract -- --allow-errors --cache-snapshot "$GITHUB_WORKSPACE/data/working/extraction-cache-snapshot.json"
 
       - name: Export enrichment cache snapshot
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
@@ -229,7 +244,9 @@ jobs:
           path: |
             packages/db/migrations/*.sql
             data/working/load-*.json
+            data/working/extract-*.json
             data/working/enrichment-*.json
+            data/working/extraction-cache-snapshot.json
             data/working/enrichment-cache-snapshot.json
 
       - name: Recover committed pending migrations

@@ -6,6 +6,7 @@ import {
   real,
   index,
   uniqueIndex,
+  check,
 } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
@@ -279,6 +280,56 @@ export const enrichmentResolutionCache = sqliteTable(
       table.includeAdult,
       table.resolverVersion,
       table.fetchedAt.desc(),
+      table.id.desc()
+    ),
+  ]
+);
+
+// ── extraction_result_cache ───────────────────────────────────
+
+export const extractionResultCache = sqliteTable(
+  "extraction_result_cache",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    cacheKey: text("cache_key").notNull(),
+    redditPostId: text("reddit_post_id").notNull(),
+    contentHash: text("content_hash").notNull(),
+    promptHash: text("prompt_hash").notNull(),
+    promptVersion: text("prompt_version").notNull(),
+    provider: text("provider").notNull(),
+    model: text("model").notNull(),
+    apiBase: text("api_base"),
+    instructorMode: text("instructor_mode")
+      .notNull()
+      .$type<"auto" | "json" | "md_json" | "tools">(),
+    extractorVersion: text("extractor_version").notNull(),
+    payloadSchemaVersion: text("payload_schema_version").notNull(),
+    outcome: text("outcome")
+      .notNull()
+      .$type<"extracted" | "no_result">(),
+    extractionPayload: text("extraction_payload"),
+    sourceNormalizedChecksum: text("source_normalized_checksum").notNull(),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`(datetime('now'))`),
+    freshUntil: text("fresh_until").notNull(),
+  },
+  (table) => [
+    check(
+      "extraction_result_cache_payload_is_json",
+      sql`${table.extractionPayload} IS NULL OR json_valid(${table.extractionPayload})`
+    ),
+    check(
+      "extraction_result_cache_outcome_payload_match",
+      sql`(
+        (${table.outcome} = 'extracted' AND ${table.extractionPayload} IS NOT NULL AND json_valid(${table.extractionPayload}))
+        OR
+        (${table.outcome} = 'no_result' AND ${table.extractionPayload} IS NULL)
+      )`
+    ),
+    index("idx_extraction_result_cache_lookup_newest").on(
+      table.cacheKey,
+      table.createdAt.desc(),
       table.id.desc()
     ),
   ]
