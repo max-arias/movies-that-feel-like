@@ -1,14 +1,17 @@
+import json
 import sqlite3
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from pipeline.load import (
     _apply_migrations,
     _build_merge_index,
     _check_extraction_health,
     _select_post_ids_for_load,
+    main,
 )
 
 
@@ -68,6 +71,51 @@ class LoadMigrationTests(unittest.TestCase):
         self.assertIn("source_url", columns)
         self.assertIn("preview_url", columns)
         self.assertNotIn("url", columns)
+
+
+class LoadArtifactSelectionTests(unittest.TestCase):
+    def test_newer_enrichment_cache_snapshot_is_not_loaded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            working = Path(directory)
+            normalized = working / "normalized.json"
+            extraction = working / "extraction-20260101T000000Z.json"
+            enrichment = working / "enrichment-20260101T000000Z.json"
+            cache_snapshot = working / "enrichment-cache-snapshot.json"
+            output = working / "load.json"
+
+            normalized.write_text('{"posts": []}', encoding="utf-8")
+            extraction.write_text(
+                '{"status": "extracted", "summary": '
+                '{"success_count": 0, "error_count": 0, "pending_count": 0}, '
+                '"results": []}',
+                encoding="utf-8",
+            )
+            enrichment.write_text(
+                '{"status": "enriched", "matches": [], "candidates": []}',
+                encoding="utf-8",
+            )
+            # This is deliberately newer in lexical filename order and has
+            # the raw Wrangler snapshot shape (a list), not an enrichment
+            # artifact shape.
+            cache_snapshot.write_text('[]', encoding="utf-8")
+
+            with patch("pipeline.load.working_dir", return_value=working), patch(
+                "pipeline.load.ensure_pipeline_dirs"
+            ):
+                main(
+                    [
+                        "--dry-run",
+                        "--normalized",
+                        str(normalized),
+                        "--extraction",
+                        str(extraction),
+                        "--out",
+                        str(output),
+                    ]
+                )
+
+            manifest = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["enrichment_artifact"], str(enrichment))
 
     def test_bridge_repairs_a_database_with_old_destructive_0028(self):
         migrations = Path(__file__).parents[3] / "packages" / "db" / "migrations"

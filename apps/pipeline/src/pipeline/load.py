@@ -86,7 +86,11 @@ def _latest_normalized() -> Path:
 
 def _latest_extraction() -> Path:
     candidates = sorted(working_dir().glob("extraction-*.json"))
-    real = [p for p in candidates if "dry-run" not in p.stem]
+    real = [
+        p
+        for p in candidates
+        if "dry-run" not in p.stem and "cache-snapshot" not in p.stem
+    ]
     if not real:
         raise SystemExit("[pipeline:load] No real extraction artifacts found")
     return real[-1]
@@ -94,7 +98,11 @@ def _latest_extraction() -> Path:
 
 def _latest_enrichment() -> Path:
     candidates = sorted(working_dir().glob("enrichment-*.json"))
-    real = [p for p in candidates if "dry-run" not in p.stem]
+    real = [
+        p
+        for p in candidates
+        if "dry-run" not in p.stem and "cache-snapshot" not in p.stem
+    ]
     if not real:
         raise SystemExit("[pipeline:load] No real enrichment artifacts found")
     return real[-1]
