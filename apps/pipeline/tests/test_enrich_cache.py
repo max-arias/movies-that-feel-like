@@ -5,8 +5,10 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from pipeline.enrich_cache import ProviderCache, make_cache_record, read_cache_snapshot
+from pipeline.enrich import _latest_extraction
 from pipeline.load import _write_data_migration
 
 
@@ -106,6 +108,19 @@ class EnrichmentResolutionCacheTests(unittest.TestCase):
         self.assertNotIn('"status"', sql)
         self.assertNotIn('"resolved_media_type"', sql)
         self.assertNotIn('"match_payload"', sql)
+
+
+class EnrichArtifactSelectionTests(unittest.TestCase):
+    def test_cache_snapshot_is_not_selected_as_latest_extraction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            working = Path(directory)
+            extraction = working / "extraction-20260101T000000Z.json"
+            cache_snapshot = working / "extraction-cache-snapshot.json"
+            extraction.write_text("{}", encoding="utf-8")
+            cache_snapshot.write_text("[]", encoding="utf-8")
+
+            with patch("pipeline.enrich.working_dir", return_value=working):
+                self.assertEqual(_latest_extraction(), extraction)
 
 
 if __name__ == "__main__":

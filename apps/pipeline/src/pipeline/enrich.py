@@ -415,7 +415,7 @@ def _latest_extraction() -> Path:
     real = [
         p
         for p in candidates
-        if "dry-run" not in p.stem
+        if "dry-run" not in p.stem and "cache-snapshot" not in p.stem
     ]
     if not real:
         raise SystemExit(
