@@ -1,5 +1,32 @@
 # Production Reddit import operations
 
+## Cloudflare Pages static build
+
+Set the Pages production build command to `npm run cf:build` (from the
+repository root). The build uses the locally pinned Wrangler CLI to read
+publishable D1 rows and atomically generate the static snapshot before running
+Astro. It does **not** apply migrations and therefore only needs a D1 Read
+token.
+
+Apply production migrations separately, with the privileged release credential,
+using `npm run db:migrate:remote`. Do not use that command as the Pages build
+command.
+
+Configure these Pages production values:
+
+- Secret `CLOUDFLARE_API_TOKEN`: an account API token with **Account → D1 →
+  Read** scope (read-only is sufficient for the snapshot).
+- Variable `CLOUDFLARE_ACCOUNT_ID`: the Cloudflare account ID.
+- Optional variable `D1_DATABASE_NAME`: production D1 database name; defaults to
+  `movies-that-feel-like`.
+
+Preview builds have separate Pages environment variables/secrets. Configure
+the account ID and read-only token there too, or preview builds cannot query D1.
+If a preview database is used, set `D1_DATABASE_NAME` to that database; without
+that override, previews read the production database. The generated snapshot
+is ignored by git. Clean checkouts use an empty in-memory fallback until a
+credentialed build generates the snapshot.
+
 The production import is `.github/workflows/import-reddit.yml`. It runs at
 `00:00 UTC` every day (`0 0 * * *`), and can also be started with
 **Run workflow**. The import currently targets the fixed source year `2026`
