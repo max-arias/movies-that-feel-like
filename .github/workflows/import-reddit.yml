@@ -15,11 +15,6 @@ on:
         required: true
         default: '50'
         type: string
-      apply_only:
-        description: 'Apply already-committed pending migrations only'
-        required: true
-        default: false
-        type: boolean
       verify_cache_round_trip:
         description: 'Run a bounded cache-only second pass against this run’s artifacts'
         required: true
@@ -32,7 +27,6 @@ concurrency:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   import:
@@ -44,20 +38,6 @@ jobs:
           fetch-depth: 0
           ref: main
           persist-credentials: false
-
-      - name: Refuse import while an import PR is open
-        if: inputs.apply_only != true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          open_import_prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --state open \
-            --json number,title,headRefName,url \
-            --jq '.[] | select((.title | test("reddit.*import|import.*reddit"; "i")) or (.headRefName | test("reddit-import|import-reddit"; "i")))')
-          if [ -n "$open_import_prs" ]; then
-            echo 'Refusing normal import: an import pull request is already open.' >&2
-            printf '%s\n' "$open_import_prs" >&2
-            exit 1
-          fi
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with: { node-version: 22 }
@@ -81,13 +61,21 @@ jobs:
             --command 'SELECT name FROM d1_migrations ORDER BY name' --json \
             | jq -r '.[0].results[]?.name' | sort -u > /tmp/remote-migrations
           comm -23 /tmp/local-migrations /tmp/remote-migrations > /tmp/pending-migrations
-          if [ "${{ inputs.apply_only }}" != 'true' ] && [ -s /tmp/pending-migrations ]; then
-            echo 'Refusing normal import: production has pre-existing pending migrations.' >&2
+          comm -13 /tmp/local-migrations /tmp/remote-migrations > /tmp/unknown-remote-migrations
+          if [ -s /tmp/pending-migrations ] || [ -s /tmp/unknown-remote-migrations ]; then
+            echo 'Refusing normal import: local and production migration histories diverge.' >&2
+            if [ -s /tmp/pending-migrations ]; then
+              echo 'Missing in production D1:' >&2
+              cat /tmp/pending-migrations >&2
+            fi
+            if [ -s /tmp/unknown-remote-migrations ]; then
+              echo 'Unknown in production D1:' >&2
+              cat /tmp/unknown-remote-migrations >&2
+            fi
             exit 1
           fi
 
       - name: Export IDs already in production D1
-        if: inputs.apply_only != true
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -99,7 +87,6 @@ jobs:
 
       - name: Fetch and normalize new posts
         id: normalize
-        if: inputs.apply_only != true
         env:
           IMPORT_LIMIT: ${{ inputs.limit || '100' }}
           IMPORT_MAX_PAGES: ${{ inputs.max_pages || '50' }}
@@ -119,7 +106,6 @@ jobs:
           printf 'RAW_ARTIFACT=%s\nNORMALIZED_ARTIFACT=%s\n' "$raw" "$normalized" >> "$GITHUB_ENV"
 
       - name: Reject truncated fetch scan
-        if: inputs.apply_only != true
         run: |
           if [ "$(jq -r '.summary.pagination_truncated // false' "$RAW_ARTIFACT")" = true ]; then
             echo 'Fetch scan was truncated by max_pages; refusing to continue.' >&2
@@ -127,7 +113,7 @@ jobs:
           fi
 
       - name: Export canonical extraction cache snapshot
-        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        if: steps.normalize.outputs.post-count != '0'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -140,7 +126,7 @@ jobs:
           jq -r '.[0].results | "extraction snapshot rows=" + (length|tostring) + " eligible=" + ((.[0].eligible_count // 0)|tostring)' data/working/extraction-cache-snapshot.json
 
       - name: Extract recommendations and persist extraction cache
-        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        if: steps.normalize.outputs.post-count != '0'
         env:
           OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
           EXTRACTION_ARTIFACT: ${{ github.workspace }}/data/working/extraction-${{ github.run_id }}.json
@@ -156,7 +142,7 @@ jobs:
           echo "EXTRACTION_ARTIFACT=$EXTRACTION_ARTIFACT" >> "$GITHUB_ENV"
 
       - name: Execute extraction cache DML remotely
-        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        if: steps.normalize.outputs.post-count != '0'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -187,7 +173,7 @@ jobs:
           echo "extraction cache chunks=$(jq '.chunks|length' "$manifest") rows=$(jq '.sources.extraction.record_count' "$manifest")"
 
       - name: Export canonical enrichment cache snapshot
-        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        if: steps.normalize.outputs.post-count != '0'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -199,7 +185,7 @@ jobs:
           jq -r '.[0].results | "enrichment snapshot rows=" + (length|tostring) + " eligible=" + ((.[0].eligible_count // 0)|tostring)' data/working/enrichment-cache-snapshot.json
 
       - name: Enrich recommendations and persist enrichment cache
-        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        if: steps.normalize.outputs.post-count != '0'
         env:
           TMDB_ACCESS_TOKEN: ${{ secrets.TMDB_ACCESS_TOKEN }}
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
@@ -216,7 +202,7 @@ jobs:
           echo "ENRICHMENT_ARTIFACT=$ENRICHMENT_ARTIFACT" >> "$GITHUB_ENV"
 
       - name: Execute enrichment cache DML remotely
-        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        if: steps.normalize.outputs.post-count != '0'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -247,7 +233,7 @@ jobs:
           echo "enrichment cache chunks=$(jq '.chunks|length' "$manifest") rows=$(jq '.sources.enrichment.record_count' "$manifest")"
 
       - name: Re-export persisted canonical cache snapshots
-        if: inputs.verify_cache_round_trip == true && inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        if: inputs.verify_cache_round_trip == true && steps.normalize.outputs.post-count != '0'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -262,7 +248,7 @@ jobs:
           echo "persisted extraction rows=$(jq '.[0].results|length' data/working/extraction-cache-snapshot.json) enrichment rows=$(jq '.[0].results|length' data/working/enrichment-cache-snapshot.json)"
 
       - name: Verify cache round trip (bounded probe; never loads)
-        if: inputs.verify_cache_round_trip == true && inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        if: inputs.verify_cache_round_trip == true && steps.normalize.outputs.post-count != '0'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -283,19 +269,19 @@ jobs:
           echo 'Cache round trip passed: bounded probe was cache-only; probe artifacts were not loaded.'
 
       - name: Reject enrichment errors
-        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        if: steps.normalize.outputs.post-count != '0'
         run: |
           errors=$(jq -r '.summary.error_count // (.errors | length) // 0' "$ENRICHMENT_ARTIFACT")
           [ "$errors" -eq 0 ] || { echo "Enrichment artifact contains $errors error(s)" >&2; exit 1; }
 
       - name: Load and generate migrations
-        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        if: steps.normalize.outputs.post-count != '0'
         run: |
           npm run pipeline:load -- --normalized "$NORMALIZED_ARTIFACT" --extraction "$EXTRACTION_ARTIFACT" \
             --enrichment "$ENRICHMENT_ARTIFACT" --out "$GITHUB_WORKSPACE/data/working/load-${GITHUB_RUN_ID}.json" --allow-partial-extraction
 
       - name: Validate load and prepare exact migration set
-        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        if: steps.normalize.outputs.post-count != '0'
         run: |
           set -euo pipefail
           load="$GITHUB_WORKSPACE/data/working/load-${GITHUB_RUN_ID}.json"
@@ -311,7 +297,7 @@ jobs:
           done
 
       - name: Upload exact run artifacts
-        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        if: steps.normalize.outputs.post-count != '0'
         uses: actions/upload-artifact@v4
         with:
           name: reddit-import-${{ github.run_id }}
@@ -329,44 +315,64 @@ jobs:
             data/working/cache-sql/enrichment/*.sql
             data/working/publishable-migrations/*.sql
 
-      - name: Create import review PR
-        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+      - name: Create local release commit
+        if: steps.normalize.outputs.post-count != '0'
+        run: |
+          set -euo pipefail
+          mapfile -t migrations < <(jq -r '.data_migrations[].path' "$GITHUB_WORKSPACE/data/working/load-${GITHUB_RUN_ID}-repo-relative.json")
+          ((${#migrations[@]} > 0)) || { echo 'Load manifest has no publishable migrations' >&2; exit 1; }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          printf '%s\n' "${migrations[@]}" | sort -u > /tmp/release-migrations
+          git add -- "${migrations[@]}"
+          git diff --cached --name-only | sort | cmp - <(printf '%s\n' "${migrations[@]}" | sort) || { echo 'Staged paths differ from load manifest' >&2; exit 1; }
+          git commit -m "data: reddit import ${GITHUB_RUN_ID}"
+          git diff-tree --no-commit-id --name-only -r HEAD | sort | cmp - /tmp/release-migrations || { echo 'Release commit paths differ from load manifest' >&2; exit 1; }
+
+      - name: Publish non-PR recovery ref
+        if: steps.normalize.outputs.post-count != '0'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          branch="reddit-import-${GITHUB_RUN_ID}"
-          existing_pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state open --json url --jq '.[0].url // empty')
-          if [ -n "$existing_pr" ]; then
-            echo "Import review PR already exists: $existing_pr"
-            exit 0
-          fi
           gh auth setup-git --hostname github.com
-          if git ls-remote --exit-code origin "refs/heads/$branch" >/dev/null 2>&1; then
-            echo "Refusing to reuse orphan import branch $branch; inspect or delete it first." >&2
-            exit 1
-          fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git switch -c "$branch"
-          mapfile -t migrations < <(jq -r '.data_migrations[].path' "$GITHUB_WORKSPACE/data/working/load-${GITHUB_RUN_ID}-repo-relative.json")
-          ((${#migrations[@]} > 0)) || { echo 'Load manifest has no publishable migrations' >&2; exit 1; }
-          git add -- "${migrations[@]}"
-          git diff --cached --name-only | sort | cmp - <(printf '%s\n' "${migrations[@]}" | sort) || { echo 'Staged paths differ from load manifest' >&2; exit 1; }
-          git commit -m "data: reddit import ${GITHUB_RUN_ID}"
-          git push --set-upstream origin "$branch"
-          existing_pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state open --json url --jq '.[0].url // empty')
-          [ -n "$existing_pr" ] && { echo "Import review PR already exists: $existing_pr"; exit 0; }
-          gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" \
-            --title "Reddit import ${GITHUB_RUN_ID}" --body "Generated data migration paths are exactly those listed in the load manifest. Cache DML was applied operationally and is not part of this reviewed migration PR."
+          recovery_ref="import-recovery-${GITHUB_RUN_ID}"
+          echo "RECOVERY_REF=$recovery_ref" >> "$GITHUB_ENV"
+          git push origin "HEAD:refs/heads/$recovery_ref"
 
-      - name: Apply committed pending migrations only
-        if: inputs.apply_only == true
+      - name: Apply release migrations and push main
+        if: steps.normalize.outputs.post-count != '0'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [ ! -s /tmp/pending-migrations ]; then echo 'Apply-only: no tracked migrations pending.'; exit 0; fi
-          while IFS= read -r migration; do git ls-files --error-unmatch "packages/db/migrations/$migration" >/dev/null; done < /tmp/pending-migrations
+          git ls-files 'packages/db/migrations/*.sql' | while IFS= read -r path; do basename "$path"; done | sort -u > /tmp/local-release-migrations
+          npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc \
+            --command 'SELECT name FROM d1_migrations ORDER BY name' --json \
+            | jq -r '.[0].results[]?.name' | sort -u > /tmp/remote-release-migrations
+          comm -13 /tmp/local-release-migrations /tmp/remote-release-migrations > /tmp/remote-only-release-migrations
+          comm -23 /tmp/local-release-migrations /tmp/remote-release-migrations > /tmp/local-only-release-migrations
+          test ! -s /tmp/remote-only-release-migrations || { echo 'Remote D1 has migrations absent from the release commit:' >&2; cat /tmp/remote-only-release-migrations >&2; exit 1; }
+          cmp /tmp/local-only-release-migrations /tmp/release-migrations || { echo 'Local-only migration history is not exactly the load manifest:' >&2; diff -u /tmp/release-migrations /tmp/local-only-release-migrations >&2 || true; exit 1; }
+
+          git fetch origin main --no-tags
+          parent=$(git rev-parse HEAD^)
+          origin_main=$(git rev-parse FETCH_HEAD)
+          if [ "$origin_main" != "$parent" ]; then
+            echo 'Refusing D1 mutation: origin/main moved after the release commit was created.' >&2
+            echo "Release parent: $parent; origin/main: $origin_main" >&2
+            exit 1
+          fi
+
+          release_commit=$(git rev-parse HEAD)
           npx wrangler d1 migrations apply movies-that-feel-like --remote --config apps/astro/wrangler.jsonc
+          if ! git push origin HEAD:main; then
+            echo "D1 migrations were applied, but pushing main failed. Keep recovery ref '$RECOVERY_REF'." >&2
+            echo "Recovery: push release commit $release_commit from '$RECOVERY_REF' to main, then verify d1_migrations before the next import." >&2
+            exit 1
+          fi
+          if ! git push origin --delete "$RECOVERY_REF"; then
+            echo "Warning: main push succeeded, but cleanup of recovery ref '$RECOVERY_REF' failed; delete it manually." >&2
+          fi

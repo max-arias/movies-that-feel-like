@@ -49,13 +49,16 @@ The workflow uses Node 22, Python 3.11, Bun with `bun install --frozen-lockfile`
 variables; do not print them or put them in artifacts.
 
 Manual runs accept `limit` (default `100`), `max_pages` (default `50`), and
-`apply_only`, and `verify_cache_round_trip`. Both numeric inputs must be
-positive integers. The optional round-trip check reruns at most three original
-posts using re-exported cache snapshots; it never feeds probe output to load
-and requires cache hits with no provider calls or cache writes.
-`apply_only` skips the D1 post-ID query, fetch/pipeline, commit, and push
-entirely. Checkout credentials are not persisted, and the GitHub write token
-is exposed only to the commit/push step.
+`verify_cache_round_trip`. Both numeric inputs must be positive integers. The
+optional round-trip check reruns at most three original posts using re-exported
+cache snapshots; it never feeds probe output to load and requires cache hits
+with no provider calls or cache writes.
+
+GitHub Actions uses the production environment's D1 **Edit** token because the
+workflow applies the generated migrations. This is separate from the Pages
+build secret above, which is D1 **Read** only. Checkout credentials are not
+persisted, and the GitHub write token is exposed only to the final apply/push
+step.
 
 ## Run and recovery
 
@@ -86,15 +89,28 @@ fresh row per complete cache identity, compare returned counts with eligible
 counts, and restrict enrichment snapshots to the compatible payload schema.
 
 `load` creates data migrations under `packages/db/migrations`; the workflow
-canonicalizes manifest paths to repository-relative paths and opens a review
-PR containing only those exact paths. Cache SQL, source artifacts, and
-manifests are uploaded as run evidence. The bot identity is configured for the
-commit and `gh auth setup-git` configures the GitHub-supported `GH_TOKEN`
-credential helper for the push; checkout remains credential-free. Existing PRs
-are reused and orphan branches are refused.
-Review and merge that PR, then use `apply_only: true` to apply committed
-migrations. A load or enrichment error stops before the PR is created;
-extraction errors are tolerated per post as described above.
+canonicalizes manifest paths to repository-relative paths and uploads cache SQL,
+source artifacts, manifests, and those migration files as run evidence. The
+final release sequence stages and verifies only the exact paths listed by the
+load manifest, commits them locally on checked-out `main`, and publishes a
+non-PR recovery ref containing that commit. Before any D1 mutation it fetches
+`origin/main` and requires it to equal the release commit's parent. It then
+compares local and remote migration histories: remote-only entries must be
+empty, and local-only entries must equal the manifest exactly. Only after those
+guards does it apply the remote D1 migration set, then push `HEAD:main`. D1
+application happens before the main push so the Pages build triggered by that
+push reads the new data. The bot identity is configured for the commit and
+`gh auth setup-git` uses the GitHub-supported `GH_TOKEN` credential helper; no
+pull request is created.
+
+A load or enrichment error stops before D1 application or the commit. If D1
+application succeeds but the main push fails, the recovery ref is intentionally
+retained. Do not rerun the import or generate another migration; push the
+release commit from that ref to `main`, then verify `d1_migrations` and the
+resulting Pages deployment. If main was pushed but Pages has not rebuilt,
+inspect or retry the Pages deployment. Recovery refs are not pull requests and
+must be deleted manually if automatic cleanup cannot remove them. The Pages
+token remains read-only.
 
 For historical image URLs, first re-fetch and normalize the target posts. The
 normalized artifact embeds one explicit successful refetch outcome per fetched
@@ -107,21 +123,23 @@ npm run pipeline:backfill-images -- --db data/app.db \
   --out data/working/image-backfill.sql
 ```
 
-For migration recovery, dispatch manually with `apply_only: true`. The
-workflow performs a status check, lists the pending migrations that are already
-tracked in the checked-out `main`, verifies each path, and applies that set
-with tracked `d1 migrations apply --remote`. If none are pending it reports a
-safe no-op. Do not use raw `d1 execute --file` or create a second migration
-commit for recovery. If apply fails, inspect `d1_migrations`, confirm the
-original commit is on `main`, and rerun `apply_only`.
+Before every normal import, the workflow compares tracked migration filenames
+on `main` with production `d1_migrations` in both directions and refuses to
+proceed if either side has an entry the other lacks. This protects against
+applying new data against a stale or unexpected schema. The release-time guard
+repeats the comparison after the local commit, allowing only the manifest's
+new migration names to be local-only. For recovery after a failed direct push,
+inspect `d1_migrations` and the recovery ref's commit first; never create a
+second migration for the same import or use raw cache DML as a substitute. The
+privileged operator may use `npm run db:migrate:remote` only for an intentional
+release recovery, with the production D1 Edit credential.
 
 If a run finds no new Reddit posts, later stages are skipped, no migration is
 generated, and no commit or remote D1 write is made. This is an expected
 successful no-op only when the fetch scan was complete. A fetch artifact with
 `summary.pagination_truncated: true` fails before extraction/loading and is
-not treated as a successful no-op. Dispatch a controlled backfill with
-`apply_only: false`, the same or a bounded `limit`, and a higher `max_pages`,
-then review the resulting migration normally.
+not treated as a successful no-op. Dispatch another normal run with the same
+or a bounded `limit` and a higher `max_pages` for a controlled backfill.
 
 ## Failure triage
 
@@ -132,10 +150,9 @@ then review the resulting migration normally.
 3. **Extract/enrich:** verify the OpenCode, TMDB, and Twitch credentials. Any
    enrichment artifact error fails the workflow before load, so fix credentials
    and retry rather than allowing incomplete posts to be excluded or loaded.
-4. **Review PR:** ensure contents and pull-request write permission and branch
-   pushes are available. Only manifest-listed migration SQL is staged; an open
-   import PR intentionally blocks a second normal run.
-5. **Remote apply:** confirm the migration commit is on `main`, inspect the
-   remote `d1_migrations` history, and rerun the manual `apply_only` recovery.
-   Do not apply raw SQL files or create a second migration commit during
-   recovery.
+4. **Direct apply/push:** verify the D1 Edit token, inspect remote
+   `d1_migrations`, and confirm that only manifest-listed migration SQL was
+   staged. If D1 applied but push failed, retry the existing commit rather than
+   generating a second migration.
+5. **Pages rebuild:** confirm the Pages build has the separate D1 Read token and
+   account ID, then inspect or retry the deployment after the main push.
