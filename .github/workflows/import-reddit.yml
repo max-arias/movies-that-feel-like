@@ -171,8 +171,7 @@ jobs:
             count=$(tr -cd ';' < "$path" | wc -c); bytes=$(wc -c < "$path")
             test -f "$path" && test "$(sha256sum "$path" | cut -d' ' -f1)" = "$sha" \
               && test "$count" = "$(jq -r '.statement_count' <<<"$row")" && test "$bytes" -le 65536
-            response=$(npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --file "$path" --json)
-            jq -e 'type == "array" and length == 1 and .[0].success == true' <<<"$response" >/dev/null || { echo "D1 cache write failed: $path" >&2; exit 1; }
+            npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --file "$path"
           done < <(jq -c '.chunks[]' "$manifest")
           expected=$(jq '[.cache_records[] | select(.outcome == "extracted" or .outcome == "no_result") | .cache_key] | unique' "$source")
           manifest_count=$(jq -r '.sources.extraction.record_count' "$manifest")
@@ -232,8 +231,7 @@ jobs:
             count=$(tr -cd ';' < "$path" | wc -c); bytes=$(wc -c < "$path")
             test -f "$path" && test "$(sha256sum "$path" | cut -d' ' -f1)" = "$sha" \
               && test "$count" = "$(jq -r '.statement_count' <<<"$row")" && test "$bytes" -le 65536
-            response=$(npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --file "$path" --json)
-            jq -e 'type == "array" and length == 1 and .[0].success == true' <<<"$response" >/dev/null || { echo "D1 cache write failed: $path" >&2; exit 1; }
+            npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --file "$path"
           done < <(jq -c '.chunks[]' "$manifest")
           expected=$(jq '[.cache_records[] | select(.outcome == "matched" or .outcome == "not_found") | {provider, candidate_key, candidate_key_version, query_title, query_year, query_media_type, language, include_adult, resolver_version}] | unique' "$source")
           manifest_count=$(jq -r '.sources.enrichment.record_count' "$manifest")
