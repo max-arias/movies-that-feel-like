@@ -292,15 +292,15 @@ jobs:
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
         run: |
           npm run pipeline:load -- --normalized "$NORMALIZED_ARTIFACT" --extraction "$EXTRACTION_ARTIFACT" \
-            --enrichment "$ENRICHMENT_ARTIFACT" --out data/working/load-${GITHUB_RUN_ID}.json --allow-partial-extraction
+            --enrichment "$ENRICHMENT_ARTIFACT" --out "$GITHUB_WORKSPACE/data/working/load-${GITHUB_RUN_ID}.json" --allow-partial-extraction
 
       - name: Validate load and prepare exact migration set
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
         run: |
           set -euo pipefail
-          load=data/working/load-${GITHUB_RUN_ID}.json
+          load="$GITHUB_WORKSPACE/data/working/load-${GITHUB_RUN_ID}.json"
           jq -e '.summary.errors == 0 and (.data_migrations | type == "array")' "$load" >/dev/null
-          relative_load=data/working/load-${GITHUB_RUN_ID}-repo-relative.json
+          relative_load="$GITHUB_WORKSPACE/data/working/load-${GITHUB_RUN_ID}-repo-relative.json"
           jq --arg root "$GITHUB_WORKSPACE" '.data_migrations |= map(.path |= if startswith($root + "/") then .[(($root | length) + 1):] else . end)' "$load" > "$relative_load"
           rm -rf data/working/publishable-migrations && mkdir -p data/working/publishable-migrations
           jq -r '.data_migrations[].path' "$relative_load" | while IFS= read -r path; do
@@ -321,8 +321,8 @@ jobs:
             ${{ env.NORMALIZED_ARTIFACT }}
             ${{ env.EXTRACTION_ARTIFACT }}
             ${{ env.ENRICHMENT_ARTIFACT }}
-            data/working/load-${{ github.run_id }}.json
-            data/working/load-${{ github.run_id }}-repo-relative.json
+            ${{ github.workspace }}/data/working/load-${{ github.run_id }}.json
+            ${{ github.workspace }}/data/working/load-${{ github.run_id }}-repo-relative.json
             data/working/*cache-snapshot.json
             data/working/*cache-manifest.json
             data/working/cache-sql/extraction/*.sql
@@ -349,7 +349,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git switch -c "$branch"
-          mapfile -t migrations < <(jq -r '.data_migrations[].path' data/working/load-${GITHUB_RUN_ID}-repo-relative.json)
+          mapfile -t migrations < <(jq -r '.data_migrations[].path' "$GITHUB_WORKSPACE/data/working/load-${GITHUB_RUN_ID}-repo-relative.json")
           ((${#migrations[@]} > 0)) || { echo 'Load manifest has no publishable migrations' >&2; exit 1; }
           git add -- "${migrations[@]}"
           git diff --cached --name-only | sort | cmp - <(printf '%s\n' "${migrations[@]}" | sort) || { echo 'Staged paths differ from load manifest' >&2; exit 1; }
