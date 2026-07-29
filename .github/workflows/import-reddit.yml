@@ -324,6 +324,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           printf '%s\n' "${migrations[@]}" | sort -u > /tmp/release-migrations
+          printf '%s\n' "${migrations[@]}" | while IFS= read -r path; do basename "$path"; done | sort -u > /tmp/release-migration-names
           git add -- "${migrations[@]}"
           git diff --cached --name-only | sort | cmp - <(printf '%s\n' "${migrations[@]}" | sort) || { echo 'Staged paths differ from load manifest' >&2; exit 1; }
           git commit -m "data: reddit import ${GITHUB_RUN_ID}"
@@ -355,7 +356,7 @@ jobs:
           comm -13 /tmp/local-release-migrations /tmp/remote-release-migrations > /tmp/remote-only-release-migrations
           comm -23 /tmp/local-release-migrations /tmp/remote-release-migrations > /tmp/local-only-release-migrations
           test ! -s /tmp/remote-only-release-migrations || { echo 'Remote D1 has migrations absent from the release commit:' >&2; cat /tmp/remote-only-release-migrations >&2; exit 1; }
-          cmp /tmp/local-only-release-migrations /tmp/release-migrations || { echo 'Local-only migration history is not exactly the load manifest:' >&2; diff -u /tmp/release-migrations /tmp/local-only-release-migrations >&2 || true; exit 1; }
+          cmp /tmp/local-only-release-migrations /tmp/release-migration-names || { echo 'Local-only migration history is not exactly the load manifest:' >&2; diff -u /tmp/release-migration-names /tmp/local-only-release-migrations >&2 || true; exit 1; }
 
           git fetch origin main --no-tags
           parent=$(git rev-parse HEAD^)
