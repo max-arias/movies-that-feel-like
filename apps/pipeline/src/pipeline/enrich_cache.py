@@ -73,6 +73,7 @@ class ProviderCache:
         self._entries: dict[str, dict] = {}
         self._fh: Any = None  # file handle, opened lazily on first put
         self._snapshot: dict[tuple, dict[str, Any]] = {}
+        self.metrics = {"hits": 0, "misses": 0, "writes": 0}
 
         if not enabled:
             return
@@ -81,7 +82,7 @@ class ProviderCache:
         if path.exists():
             self._load()
         for row in snapshot or []:
-            if isinstance(row, dict) and row.get("outcome") in ("matched", "not_found"):
+            if self._compatible(row):
                 self._set_snapshot_row(row)
 
     # ── Public API ──────────────────────────────────────────────────────
@@ -96,9 +97,21 @@ class ProviderCache:
         return self._entries.get(key)
 
     @staticmethod
+    def _compatible(row: Any) -> bool:
+        return (isinstance(row, dict) and row.get("outcome") in ("matched", "not_found")
+                and row.get("candidate_key_version") == CANDIDATE_KEY_VERSION
+                and row.get("payload_schema_version") == PAYLOAD_SCHEMA_VERSION
+                and isinstance(row.get("provider"), str)
+                and isinstance(row.get("candidate_key"), str))
+
+    @staticmethod
+    def _canonical_title(value: Any) -> str:
+        return " ".join(str(value or "").strip().lower().split())
+
+    @staticmethod
     def identity(row: dict[str, Any]) -> tuple:
         return (row.get("provider"), row.get("candidate_key"),
-                row.get("candidate_key_version"), row.get("query_title"),
+                row.get("candidate_key_version"), ProviderCache._canonical_title(row.get("query_title")),
                 row.get("query_year"), row.get("query_media_type"),
                 row.get("language", "en-US"), bool(row.get("include_adult", False)),
                 row.get("resolver_version"))
@@ -128,25 +141,34 @@ class ProviderCache:
     async def lookup(self, *, provider: str, candidate: dict[str, Any],
                      language: str, include_adult: bool) -> dict[str, Any] | None:
         """Return a fresh authoritative snapshot row, if its full identity matches."""
-        row = self._snapshot.get((provider, candidate["candidate_key"],
-                                  CANDIDATE_KEY_VERSION, candidate.get("title"),
-                                  candidate.get("year"), candidate.get("media_type"),
-                                  language, include_adult, RESOLVER_VERSION))
+        identity = (provider, candidate["candidate_key"],
+                                   CANDIDATE_KEY_VERSION, candidate.get("title"),
+                                   candidate.get("year"), candidate.get("media_type"),
+                                   language, include_adult, RESOLVER_VERSION)
+        identity = (identity[0], identity[1], identity[2], self._canonical_title(identity[3]), *identity[4:])
+        row = self._snapshot.get(identity)
         if row is None:
+            # A snapshot overlays, rather than disables, the local cache.
+            row = next((value for value in self._entries.values()
+                        if self._compatible(value) and self.identity(value) == identity), None)
+        if row is None:
+            self.metrics["misses"] += 1
             return None
         try:
             fresh = datetime.fromisoformat(str(row["fresh_until"]).replace("Z", "+00:00"))
             if fresh <= datetime.now(timezone.utc):
                 return None
         except (KeyError, TypeError, ValueError):
+            self.metrics["misses"] += 1
             return None
+        self.metrics["hits"] += 1
         return row
 
     def add_record(self, row: dict[str, Any]) -> None:
-        if row.get("outcome") in ("matched", "not_found"):
+        if self._compatible(row):
             self._set_snapshot_row(row)
 
-    async def put(self, key: str, match: dict) -> None:
+    async def put(self, key: str, match: dict, *, record: dict[str, Any] | None = None) -> None:
         """Append *match* for *key* to the cache file and update in-memory index.
 
         The file I/O runs in a thread so it does not block the event loop.
@@ -156,19 +178,29 @@ class ProviderCache:
             return
 
         # Update in-memory index immediately (last write wins)
-        self._entries[key] = match
+        self._entries[key] = record or match
 
         # File I/O via thread to avoid blocking the event loop
-        await asyncio.to_thread(self._put_sync, key, match)
+        await asyncio.to_thread(self._put_sync, key, match, record)
 
-    def _put_sync(self, key: str, match: dict) -> None:
+    def _put_sync(self, key: str, match: dict, record: dict[str, Any] | None = None) -> None:
         """Synchronous file append — runs in a thread via ``asyncio.to_thread``."""
-        record = {
+        envelope = {
             "key": key,
             "match": match,
             "cached_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
-        line = json.dumps(record, ensure_ascii=False) + "\n"
+        if record is not None:
+            # Store the authoritative observation, while retaining the compact
+            # provider payload in the envelope for older readers.
+            observation = dict(record)
+            if observation.get("outcome") == "matched":
+                observation["normalized_payload"] = json.dumps(match, ensure_ascii=False, sort_keys=True)
+            # The cache lookup uses the schema row; the outer match is kept for
+            # humans and compatibility with the original JSONL format.
+            envelope["match"] = observation
+        self.metrics["writes"] += 1
+        line = json.dumps(envelope, ensure_ascii=False) + "\n"
 
         # Open file handle on first write
         if self._fh is None:
@@ -224,7 +256,8 @@ class ProviderCache:
                     )
                     continue
 
-                self._entries[record["key"]] = record["match"]
+                if self._compatible(record["match"]):
+                    self._entries[record.get("key", record["match"]["candidate_key"])] = record["match"]
 
 
 def make_cache(args: argparse.Namespace) -> ProviderCache:
@@ -256,13 +289,16 @@ def read_cache_snapshot(path: str | Path) -> list[dict[str, Any]]:
     Wrangler emits ``[{"results": [...] }]``; accepting only that shape avoids
     accidentally treating a CLI error or a raw object as authoritative cache.
     """
-    value = json.loads(Path(path).read_text(encoding="utf-8"))
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
     if not isinstance(value, list):
-        raise ValueError("cache snapshot must be Wrangler's top-level results array")
+        return []
     rows: list[dict[str, Any]] = []
     for envelope in value:
         if isinstance(envelope, dict) and isinstance(envelope.get("results"), list):
-            rows.extend(r for r in envelope["results"] if isinstance(r, dict))
+            rows.extend(r for r in envelope["results"] if ProviderCache._compatible(r))
     return rows
 
 

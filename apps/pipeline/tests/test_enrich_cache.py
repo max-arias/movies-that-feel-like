@@ -8,8 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pipeline.enrich_cache import ProviderCache, make_cache_record, read_cache_snapshot
-from pipeline.enrich import _latest_extraction
-from pipeline.load import _write_data_migration
+from pipeline.enrich import _artifact_checksum, _latest_extraction
+from pipeline.cache_sql import write_cache_sql
 
 
 class EnrichmentResolutionCacheTests(unittest.TestCase):
@@ -55,6 +55,50 @@ class EnrichmentResolutionCacheTests(unittest.TestCase):
             provider="tmdb", candidate=candidate, language="en-US", include_adult=False
         )))
 
+    def test_snapshot_identity_ignores_query_title_formatting(self):
+        candidate = self.candidate()
+        row = make_cache_record(provider="tmdb", candidate=candidate, language="en-US",
+                                include_adult=False, outcome="matched", payload={"tmdb_id": 1})
+        row["query_title"] = "  THE   THING "
+        cache = ProviderCache(Path("/dev/null"), snapshot=[row])
+        hit = asyncio.run(cache.lookup(
+            provider="tmdb", candidate={**candidate, "title": "the thing"},
+            language="en-US", include_adult=False))
+        self.assertEqual(hit, row)
+
+    def test_snapshot_hit_is_not_a_local_write(self):
+        candidate = self.candidate()
+        row = make_cache_record(provider="tmdb", candidate=candidate, language="en-US",
+                                include_adult=False, outcome="matched", payload={"tmdb_id": 1})
+        with tempfile.TemporaryDirectory() as directory:
+            cache = ProviderCache(Path(directory) / "cache.jsonl", snapshot=[row])
+            self.assertIsNotNone(asyncio.run(cache.lookup(
+                provider="tmdb", candidate=candidate, language="en-US", include_adult=False)))
+            self.assertEqual(cache.metrics["writes"], 0)
+
+    def test_wrong_schema_snapshot_is_counted_as_miss(self):
+        candidate = self.candidate()
+        row = make_cache_record(provider="tmdb", candidate=candidate, language="en-US",
+                                include_adult=False, outcome="matched", payload={"tmdb_id": 1})
+        row["payload_schema_version"] = 999
+        cache = ProviderCache(Path("/dev/null"), snapshot=[row])
+        self.assertIsNone(asyncio.run(cache.lookup(
+            provider="tmdb", candidate=candidate, language="en-US", include_adult=False)))
+        self.assertEqual(cache.metrics["misses"], 1)
+
+    def test_snapshot_does_not_disable_local_fallback(self):
+        candidate = self.candidate()
+        row = make_cache_record(provider="tmdb", candidate=candidate, language="en-US",
+                                include_adult=False, outcome="matched", payload={"tmdb_id": 1})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cache.jsonl"
+            cache = ProviderCache(path)
+            asyncio.run(cache.put(candidate["candidate_key"], {"tmdb_id": 1}, record=row))
+            cache.close()
+            cache = ProviderCache(path, snapshot=[])
+            self.assertIsNotNone(asyncio.run(cache.lookup(
+                provider="tmdb", candidate=candidate, language="en-US", include_adult=False)))
+
     def test_d1_integer_versions_hit_and_newest_snapshot_row_wins(self):
         candidate = self.candidate()
         older = make_cache_record(
@@ -90,18 +134,45 @@ class EnrichmentResolutionCacheTests(unittest.TestCase):
         lifetime = datetime.fromisoformat(row["fresh_until"].replace("Z", "+00:00")) - datetime.fromisoformat(row["fetched_at"].replace("Z", "+00:00"))
         self.assertEqual(lifetime, timedelta(days=7))
 
+    def test_new_observations_carry_stable_extraction_provenance(self):
+        candidate = self.candidate()
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "extraction.json"
+            artifact.write_bytes(b'{"results": []}\n')
+            checksum = _artifact_checksum(artifact)
+
+            matched = make_cache_record(
+                provider="tmdb", candidate=candidate, language="en-US",
+                include_adult=False, outcome="matched",
+                payload={"tmdb_id": 1, "media_type": "movie", "title": "The Thing"},
+                source_artifact_checksum=checksum,
+            )
+            not_found = make_cache_record(
+                provider="tmdb", candidate={**candidate, "candidate_key": "missing|1982|movie"},
+                language="en-US", include_adult=False, outcome="not_found", payload=None,
+                source_artifact_checksum=_artifact_checksum(artifact),
+            )
+
+        self.assertEqual(len(matched["source_artifact_checksum"]), 64)
+        self.assertEqual(matched["source_artifact_checksum"], checksum)
+        self.assertEqual(matched["source_artifact_checksum"], not_found["source_artifact_checksum"])
+
     def test_generated_cache_migration_uses_authoritative_columns(self):
         candidate = self.candidate()
         row = make_cache_record(provider="tmdb", candidate=candidate, language="en-US",
                                 include_adult=False, outcome="matched",
                                 payload={"tmdb_id": 1, "media_type": "movie", "title": "The Thing"})
         with tempfile.TemporaryDirectory() as directory:
-            paths = _write_data_migration(
-                sqlite3.connect(":memory:"), Path(directory), datetime.now(timezone.utc), {},
-                cache_records=[row],
+            extraction = Path(directory) / "extraction.json"
+            enrichment = Path(directory) / "enrichment.json"
+            extraction.write_text("{}", encoding="utf-8")
+            enrichment.write_text("{}", encoding="utf-8")
+            manifest = write_cache_sql(
+                extraction_records=[], enrichment_records=[row],
+                extraction_artifact=extraction, enrichment_artifact=enrichment,
+                output_dir=Path(directory) / "cache",
             )
-            enrichment_path = next(path for path in paths if "06_resolution_cache" in path.name)
-            sql = enrichment_path.read_text(encoding="utf-8")
+            sql = Path(manifest["sources"]["enrichment"]["chunk_paths"][0]["path"]).read_text(encoding="utf-8")
         self.assertIn('"outcome"', sql)
         self.assertIn('"resolved_type"', sql)
         self.assertIn('"normalized_payload"', sql)

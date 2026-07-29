@@ -2,7 +2,6 @@ name: Import Reddit posts
 
 on:
   schedule:
-    # GitHub cron is UTC. Runs daily at midnight UTC.
     - cron: '0 0 * * *'
   workflow_dispatch:
     inputs:
@@ -21,6 +20,11 @@ on:
         required: true
         default: false
         type: boolean
+      verify_cache_round_trip:
+        description: 'Run a bounded cache-only second pass against this run’s artifacts'
+        required: true
+        default: false
+        type: boolean
 
 concurrency:
   group: movies-import-production
@@ -28,7 +32,7 @@ concurrency:
 
 permissions:
   contents: write
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   import:
@@ -36,7 +40,6 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        # Immutable action reference; checkout credentials are never retained.
         with:
           fetch-depth: 0
           ref: main
@@ -47,10 +50,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          open_import_prs=$(gh pr list \
-            --repo "$GITHUB_REPOSITORY" \
-            --base main \
-            --state open \
+          open_import_prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --state open \
             --json number,title,headRefName,url \
             --jq '.[] | select((.title | test("reddit.*import|import.*reddit"; "i")) or (.headRefName | test("reddit-import|import-reddit"; "i")))')
           if [ -n "$open_import_prs" ]; then
@@ -60,15 +60,10 @@ jobs:
           fi
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-
+        with: { node-version: 22 }
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: '3.11'
-
+        with: { python-version: '3.11' }
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-
       - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
 
       - name: Install dependencies
@@ -77,27 +72,15 @@ jobs:
           uv sync --locked --project apps/pipeline
 
       - name: Check tracked migration state
-        id: migration_state
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          git ls-files 'packages/db/migrations/*.sql' \
-            | while IFS= read -r path; do basename "$path"; done \
-            | sort -u > /tmp/local-migrations
-          npx wrangler d1 execute movies-that-feel-like --remote \
-            --config apps/astro/wrangler.jsonc \
-            --command 'SELECT name FROM d1_migrations ORDER BY name' \
-            --json \
-            | jq -r '.[0].results[]?.name' \
-            | sort -u > /tmp/remote-migrations
+          git ls-files 'packages/db/migrations/*.sql' | while IFS= read -r path; do basename "$path"; done | sort -u > /tmp/local-migrations
+          npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc \
+            --command 'SELECT name FROM d1_migrations ORDER BY name' --json \
+            | jq -r '.[0].results[]?.name' | sort -u > /tmp/remote-migrations
           comm -23 /tmp/local-migrations /tmp/remote-migrations > /tmp/pending-migrations
-          echo 'Local tracked migrations:'
-          cat /tmp/local-migrations
-          echo 'Remote applied migrations:'
-          cat /tmp/remote-migrations
-          echo 'Pending tracked migrations:'
-          cat /tmp/pending-migrations
           if [ "${{ inputs.apply_only }}" != 'true' ] && [ -s /tmp/pending-migrations ]; then
             echo 'Refusing normal import: production has pre-existing pending migrations.' >&2
             exit 1
@@ -110,12 +93,9 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           mkdir -p data/working
-          npx wrangler d1 execute movies-that-feel-like --remote \
-            --config apps/astro/wrangler.jsonc \
-            --command 'SELECT reddit_post_id FROM imported_vibe_posts ORDER BY reddit_post_id' \
-            --json \
-            | jq -r '.[0].results[]?.reddit_post_id' \
-            > data/working/excluded-reddit-ids.txt
+          npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc \
+            --command 'SELECT reddit_post_id FROM imported_vibe_posts ORDER BY reddit_post_id' --json \
+            | jq -r '.[0].results[]?.reddit_post_id' > data/working/excluded-reddit-ids.txt
 
       - name: Fetch and normalize new posts
         id: normalize
@@ -124,144 +104,271 @@ jobs:
           IMPORT_LIMIT: ${{ inputs.limit || '100' }}
           IMPORT_MAX_PAGES: ${{ inputs.max_pages || '50' }}
         run: |
-          if ! [[ "$IMPORT_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
-            echo "limit must be a positive integer; got: $IMPORT_LIMIT" >&2
-            exit 1
-          fi
-          if ! [[ "$IMPORT_MAX_PAGES" =~ ^[1-9][0-9]*$ ]]; then
-            echo "max_pages must be a positive integer; got: $IMPORT_MAX_PAGES" >&2
-            exit 1
-          fi
-          npm run pipeline:fetch -- \
-            --subreddit MoviesThatFeelLike --year 2026 \
-            --limit "$IMPORT_LIMIT" --max-pages "$IMPORT_MAX_PAGES" --sort desc \
+          set -euo pipefail
+          [[ "$IMPORT_LIMIT" =~ ^[1-9][0-9]*$ ]] || { echo "limit must be a positive integer" >&2; exit 1; }
+          [[ "$IMPORT_MAX_PAGES" =~ ^[1-9][0-9]*$ ]] || { echo "max_pages must be a positive integer" >&2; exit 1; }
+          raw="$GITHUB_WORKSPACE/data/working/raw-${GITHUB_RUN_ID}.json"
+          normalized="$GITHUB_WORKSPACE/data/working/normalized-${GITHUB_RUN_ID}.json"
+          npm run pipeline:fetch -- --subreddit MoviesThatFeelLike --year 2026 --limit "$IMPORT_LIMIT" \
+            --max-pages "$IMPORT_MAX_PAGES" --sort desc --out "$raw" \
             --exclude-reddit-ids-file "$GITHUB_WORKSPACE/data/working/excluded-reddit-ids.txt"
-          npm run pipeline:normalize -- \
+          npm run pipeline:normalize -- --input "$raw" --out "$normalized" \
             --exclude-reddit-ids-file "$GITHUB_WORKSPACE/data/working/excluded-reddit-ids.txt"
-          normalized=$(find data/working/normalized -maxdepth 1 -type f -name '*.json' -printf '%T@ %p\n' \
-            | sort -nr | cut -d' ' -f2- | head -n1)
           posts=$(jq -r '.posts | length' "$normalized")
           echo "post-count=$posts" >> "$GITHUB_OUTPUT"
-          echo "Normalized $posts new post(s)."
+          printf 'RAW_ARTIFACT=%s\nNORMALIZED_ARTIFACT=%s\n' "$raw" "$normalized" >> "$GITHUB_ENV"
 
       - name: Reject truncated fetch scan
         if: inputs.apply_only != true
         run: |
-          raw=$(find data/raw -maxdepth 1 -type f -name '*.json' -printf '%T@ %p\n' \
-            | sort -nr | cut -d' ' -f2- | head -n1)
-          truncated=$(jq -r '.summary.pagination_truncated // false' "$raw")
-          if [ "$truncated" = 'true' ]; then
+          if [ "$(jq -r '.summary.pagination_truncated // false' "$RAW_ARTIFACT")" = true ]; then
             echo 'Fetch scan was truncated by max_pages; refusing to continue.' >&2
-            echo 'Dispatch a controlled backfill with a higher max_pages value.' >&2
             exit 1
           fi
 
-      - name: Export extraction cache snapshot
+      - name: Export canonical extraction cache snapshot
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          set -o pipefail
           mkdir -p data/working
-          npx wrangler d1 execute movies-that-feel-like --remote \
-            --config apps/astro/wrangler.jsonc \
-            --command "SELECT * FROM extraction_result_cache WHERE fresh_until > datetime('now') ORDER BY cache_key, created_at ASC, id ASC" \
-            --json \
+          npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --json \
+            --command "WITH eligible AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY cache_key ORDER BY created_at DESC, id DESC) AS rn FROM extraction_result_cache WHERE datetime(fresh_until) > datetime('now')), ranked AS (SELECT *, (SELECT COUNT(*) FROM eligible WHERE rn = 1) AS eligible_count FROM eligible) SELECT * FROM ranked WHERE rn = 1 ORDER BY cache_key" \
             | tee data/working/extraction-cache-snapshot.json \
-            | jq -e 'type == "array" and length == 1 and (.[0] | type == "object") and (.[0].results | type == "array")'
+            | jq -e 'type == "array" and length == 1 and .[0].success == true and (.[0].results | type == "array") and ((.[0].results | length) == ((.[0].results[0].eligible_count // 0)))'
+          jq -r '.[0].results | "extraction snapshot rows=" + (length|tostring) + " eligible=" + ((.[0].eligible_count // 0)|tostring)' data/working/extraction-cache-snapshot.json
 
-      - name: Extract recommendations
+      - name: Extract recommendations and persist extraction cache
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
         env:
           OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
-        # --allow-errors lets a single malformed LLM response (e.g. invalid
-        # JSON escape) drop just that post instead of failing the whole run.
-        # The other 99 posts still flow through enrich → load → migration.
-        run: npm run pipeline:extract -- --allow-errors --cache-snapshot "$GITHUB_WORKSPACE/data/working/extraction-cache-snapshot.json"
+          EXTRACTION_ARTIFACT: ${{ github.workspace }}/data/working/extraction-${{ github.run_id }}.json
+        run: |
+          set -euo pipefail
+          npm run pipeline:extract -- --input "$NORMALIZED_ARTIFACT" --out "$EXTRACTION_ARTIFACT" --allow-errors \
+            --cache-snapshot "$GITHUB_WORKSPACE/data/working/extraction-cache-snapshot.json"
+          printf '{"cache_records":[]}' > data/working/empty-cache.json
+          npm run pipeline:cache-sql -- --extraction "$EXTRACTION_ARTIFACT" \
+            --enrichment "$GITHUB_WORKSPACE/data/working/empty-cache.json" \
+            --out-dir "$GITHUB_WORKSPACE/data/working/cache-sql/extraction" \
+            --manifest "$GITHUB_WORKSPACE/data/working/extraction-cache-manifest.json"
+          echo "EXTRACTION_ARTIFACT=$EXTRACTION_ARTIFACT" >> "$GITHUB_ENV"
 
-      - name: Export enrichment cache snapshot
+      - name: Execute extraction cache DML remotely
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          set -o pipefail
-          mkdir -p data/working
-          npx wrangler d1 execute movies-that-feel-like --remote \
-            --config apps/astro/wrangler.jsonc \
-            --command "SELECT * FROM enrichment_resolution_cache WHERE fresh_until > datetime('now') ORDER BY provider, candidate_key, candidate_key_version, fetched_at ASC, id ASC" \
-            --json \
-            | tee data/working/enrichment-cache-snapshot.json \
-            | jq -e 'type == "array" and length == 1 and (.[0] | type == "object") and (.[0].results | type == "array")'
+          set -euo pipefail
+          manifest=data/working/extraction-cache-manifest.json
+          jq -e '.sources.extraction and (.chunks | type == "array")' "$manifest" >/dev/null
+          source=$(jq -r '.sources.extraction.artifact' "$manifest"); source_sha=$(jq -r '.sources.extraction.artifact_sha256' "$manifest")
+          test -f "$source" && test "$(sha256sum "$source" | cut -d' ' -f1)" = "$source_sha"
+          while IFS= read -r row; do
+            path=$(jq -r '.path' <<<"$row"); sha=$(jq -r '.sha256' <<<"$row")
+            count=$(tr -cd ';' < "$path" | wc -c); bytes=$(wc -c < "$path")
+            test -f "$path" && test "$(sha256sum "$path" | cut -d' ' -f1)" = "$sha" \
+              && test "$count" = "$(jq -r '.statement_count' <<<"$row")" && test "$bytes" -le 65536
+            response=$(npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --file "$path" --json)
+            jq -e 'type == "array" and length == 1 and .[0].success == true' <<<"$response" >/dev/null || { echo "D1 cache write failed: $path" >&2; exit 1; }
+          done < <(jq -c '.chunks[]' "$manifest")
+          expected=$(jq '[.cache_records[] | select(.outcome == "extracted" or .outcome == "no_result") | .cache_key] | unique' "$source")
+          manifest_count=$(jq -r '.sources.extraction.record_count' "$manifest")
+          test "$manifest_count" = "$(jq 'length' <<<"$expected")"
+          if [ "$manifest_count" -eq 0 ]; then
+            test "$(jq '.chunks|length' "$manifest")" -eq 0
+            echo 'extraction cache manifest is empty; remote D1 write is an explicit no-op.'
+            exit 0
+          fi
+          keys_json=$(jq -c 'map(.)' <<<"$expected"); keys_sql=${keys_json//\'/\'\'}
+          rows=$(npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --command "SELECT cache_key FROM extraction_result_cache WHERE cache_key IN (SELECT value FROM json_each('$keys_sql')) AND datetime(fresh_until) > datetime('now') GROUP BY cache_key ORDER BY cache_key" --json)
+          jq -e --argjson expected "$expected" '([.[0].results[]?.cache_key] | sort) == ($expected | sort)' <<<"$rows" >/dev/null
+          echo "extraction cache chunks=$(jq '.chunks|length' "$manifest") rows=$(jq '.sources.extraction.record_count' "$manifest")"
 
-      - name: Enrich recommendations
+      - name: Export canonical enrichment cache snapshot
+        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --json \
+            --command "WITH eligible AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY provider, candidate_key, candidate_key_version, query_title, query_year, query_media_type, language, include_adult, resolver_version, payload_schema_version ORDER BY fetched_at DESC, id DESC) AS rn FROM enrichment_resolution_cache WHERE datetime(fresh_until) > datetime('now') AND payload_schema_version = 1), ranked AS (SELECT *, (SELECT COUNT(*) FROM eligible WHERE rn = 1) AS eligible_count FROM eligible) SELECT * FROM ranked WHERE rn = 1 ORDER BY provider, candidate_key" \
+            | tee data/working/enrichment-cache-snapshot.json \
+            | jq -e 'type == "array" and length == 1 and .[0].success == true and (.[0].results | type == "array") and ((.[0].results | length) == ((.[0].results[0].eligible_count // 0)))'
+          jq -r '.[0].results | "enrichment snapshot rows=" + (length|tostring) + " eligible=" + ((.[0].eligible_count // 0)|tostring)' data/working/enrichment-cache-snapshot.json
+
+      - name: Enrich recommendations and persist enrichment cache
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
         env:
           TMDB_ACCESS_TOKEN: ${{ secrets.TMDB_ACCESS_TOKEN }}
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
-        run: npm run pipeline:enrich -- --allow-failed-extraction --cache-snapshot "$GITHUB_WORKSPACE/data/working/enrichment-cache-snapshot.json"
+          ENRICHMENT_ARTIFACT: ${{ github.workspace }}/data/working/enrichment-${{ github.run_id }}.json
+        run: |
+          set -euo pipefail
+          npm run pipeline:enrich -- --input "$EXTRACTION_ARTIFACT" --out "$ENRICHMENT_ARTIFACT" \
+            --allow-failed-extraction --cache-snapshot "$GITHUB_WORKSPACE/data/working/enrichment-cache-snapshot.json"
+          npm run pipeline:cache-sql -- --extraction "$GITHUB_WORKSPACE/data/working/empty-cache.json" \
+            --enrichment "$ENRICHMENT_ARTIFACT" \
+            --out-dir "$GITHUB_WORKSPACE/data/working/cache-sql/enrichment" \
+            --manifest "$GITHUB_WORKSPACE/data/working/enrichment-cache-manifest.json"
+          echo "ENRICHMENT_ARTIFACT=$ENRICHMENT_ARTIFACT" >> "$GITHUB_ENV"
+
+      - name: Execute enrichment cache DML remotely
+        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          manifest=data/working/enrichment-cache-manifest.json
+          jq -e '.sources.enrichment and (.chunks | type == "array")' "$manifest" >/dev/null
+          source=$(jq -r '.sources.enrichment.artifact' "$manifest"); source_sha=$(jq -r '.sources.enrichment.artifact_sha256' "$manifest")
+          test -f "$source" && test "$(sha256sum "$source" | cut -d' ' -f1)" = "$source_sha"
+          while IFS= read -r row; do
+            path=$(jq -r '.path' <<<"$row"); sha=$(jq -r '.sha256' <<<"$row")
+            count=$(tr -cd ';' < "$path" | wc -c); bytes=$(wc -c < "$path")
+            test -f "$path" && test "$(sha256sum "$path" | cut -d' ' -f1)" = "$sha" \
+              && test "$count" = "$(jq -r '.statement_count' <<<"$row")" && test "$bytes" -le 65536
+            response=$(npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --file "$path" --json)
+            jq -e 'type == "array" and length == 1 and .[0].success == true' <<<"$response" >/dev/null || { echo "D1 cache write failed: $path" >&2; exit 1; }
+          done < <(jq -c '.chunks[]' "$manifest")
+          expected=$(jq '[.cache_records[] | select(.outcome == "matched" or .outcome == "not_found") | {provider, candidate_key, candidate_key_version, query_title, query_year, query_media_type, language, include_adult, resolver_version}] | unique' "$source")
+          manifest_count=$(jq -r '.sources.enrichment.record_count' "$manifest")
+          test "$manifest_count" = "$(jq 'length' <<<"$expected")"
+          if [ "$manifest_count" -eq 0 ]; then
+            test "$(jq '.chunks|length' "$manifest")" -eq 0
+            echo 'enrichment cache manifest is empty; remote D1 write is an explicit no-op.'
+            exit 0
+          fi
+          checksum=$(jq -r '[.cache_records[] | .source_artifact_checksum // empty][0]' "$source")
+          remote_count=$(npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --command "SELECT COUNT(DISTINCT provider || char(31) || candidate_key || char(31) || candidate_key_version || char(31) || query_title || char(31) || COALESCE(query_year, '') || char(31) || query_media_type || char(31) || language || char(31) || include_adult || char(31) || resolver_version) AS n FROM enrichment_resolution_cache WHERE source_artifact_checksum = '$checksum' AND payload_schema_version = 1" --json | jq -r '.[0].results[0].n')
+          test "$remote_count" = "$manifest_count"
+          echo "enrichment cache chunks=$(jq '.chunks|length' "$manifest") rows=$(jq '.sources.enrichment.record_count' "$manifest")"
+
+      - name: Re-export persisted canonical cache snapshots
+        if: inputs.verify_cache_round_trip == true && inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --json \
+            --command "WITH eligible AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY cache_key ORDER BY created_at DESC, id DESC) AS rn FROM extraction_result_cache WHERE datetime(fresh_until) > datetime('now')), ranked AS (SELECT *, (SELECT COUNT(*) FROM eligible WHERE rn = 1) AS eligible_count FROM eligible) SELECT * FROM ranked WHERE rn = 1 ORDER BY cache_key" \
+            | tee data/working/extraction-cache-snapshot.json | jq -e '.[0].success == true and (.[0].results | type == "array")'
+          npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --json \
+            --command "WITH eligible AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY provider, candidate_key, candidate_key_version, query_title, query_year, query_media_type, language, include_adult, resolver_version, payload_schema_version ORDER BY fetched_at DESC, id DESC) AS rn FROM enrichment_resolution_cache WHERE datetime(fresh_until) > datetime('now') AND payload_schema_version = 1), ranked AS (SELECT *, (SELECT COUNT(*) FROM eligible WHERE rn = 1) AS eligible_count FROM eligible) SELECT * FROM ranked WHERE rn = 1 ORDER BY provider, candidate_key" \
+            | tee data/working/enrichment-cache-snapshot.json | jq -e '.[0].success == true and (.[0].results | type == "array")'
+          echo "persisted extraction rows=$(jq '.[0].results|length' data/working/extraction-cache-snapshot.json) enrichment rows=$(jq '.[0].results|length' data/working/enrichment-cache-snapshot.json)"
+
+      - name: Verify cache round trip (bounded probe; never loads)
+        if: inputs.verify_cache_round_trip == true && inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
+          TMDB_ACCESS_TOKEN: ${{ secrets.TMDB_ACCESS_TOKEN }}
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
+          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          jq -e '.[0].success == true' data/working/extraction-cache-snapshot.json >/dev/null
+          jq -e '.[0].success == true' data/working/enrichment-cache-snapshot.json >/dev/null
+          npm run pipeline:extract -- --input "$NORMALIZED_ARTIFACT" --out data/working/extraction-probe.json \
+            --limit 3 --cache-snapshot data/working/extraction-cache-snapshot.json
+          npm run pipeline:enrich -- --input data/working/extraction-probe.json --out data/working/enrichment-probe.json \
+            --allow-failed-extraction --cache-snapshot data/working/enrichment-cache-snapshot.json
+          jq -e '(.summary.cache_hits > 0) and (.summary.cache_hits == .summary.success_count) and (.summary.cache_writes == 0)' data/working/extraction-probe.json >/dev/null
+          jq -e '(.summary.cache_hits > 0) and (.summary.cache_misses == 0) and (.summary.provider_calls == 0) and (.cache_records|length == 0)' data/working/enrichment-probe.json >/dev/null
+          echo 'Cache round trip passed: bounded probe was cache-only; probe artifacts were not loaded.'
 
       - name: Reject enrichment errors
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
         run: |
-          enrichment=$(find data/working -maxdepth 1 -type f -name 'enrichment-*.json' -printf '%T@ %p\n' \
-            | sort -nr | cut -d' ' -f2- | head -n1)
-          errors=$(jq -r '.summary.error_count // (.errors | length) // 0' "$enrichment")
-          if [ "$errors" -ne 0 ]; then
-            echo "Enrichment artifact contains $errors error(s); refusing to load or generate migrations." >&2
-            exit 1
-          fi
+          errors=$(jq -r '.summary.error_count // (.errors | length) // 0' "$ENRICHMENT_ARTIFACT")
+          [ "$errors" -eq 0 ] || { echo "Enrichment artifact contains $errors error(s)" >&2; exit 1; }
 
       - name: Load and generate migrations
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
         run: |
-          npm run pipeline:load -- --allow-partial-extraction
+          npm run pipeline:load -- --normalized "$NORMALIZED_ARTIFACT" --extraction "$EXTRACTION_ARTIFACT" \
+            --enrichment "$ENRICHMENT_ARTIFACT" --out data/working/load-${GITHUB_RUN_ID}.json --allow-partial-extraction
 
-      - name: Reject load errors
+      - name: Validate load and prepare exact migration set
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
         run: |
-          load_artifact=$(find data/working -maxdepth 1 -type f -name 'load-*.json' -printf '%T@ %p\n' \
-            | sort -nr | cut -d' ' -f2- | head -n1)
-          errors=$(jq -r '.summary.errors // 0' "$load_artifact")
-          if [ "$errors" -ne 0 ]; then
-            echo "Load artifact contains $errors error(s); refusing to continue." >&2
-            exit 1
-          fi
+          set -euo pipefail
+          load=data/working/load-${GITHUB_RUN_ID}.json
+          jq -e '.summary.errors == 0 and (.data_migrations | type == "array")' "$load" >/dev/null
+          relative_load=data/working/load-${GITHUB_RUN_ID}-repo-relative.json
+          jq --arg root "$GITHUB_WORKSPACE" '.data_migrations |= map(.path |= if startswith($root + "/") then .[(($root | length) + 1):] else . end)' "$load" > "$relative_load"
+          rm -rf data/working/publishable-migrations && mkdir -p data/working/publishable-migrations
+          jq -r '.data_migrations[].path' "$relative_load" | while IFS= read -r path; do
+            case "$path" in packages/db/migrations/*.sql) ;; *) echo "Migration path is not repo-relative/publishable: $path" >&2; exit 1;; esac
+            git ls-files --error-unmatch "$path" >/dev/null 2>&1 && { echo "Generated migration already tracked: $path" >&2; exit 1; }
+            test -f "$path"
+            cp -- "$path" data/working/publishable-migrations/
+          done
 
-      - name: Report generated migrations for review
-        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
-        run: |
-          echo 'Generated migrations remain in the workspace for explicit review; no commit or push is performed.'
-
-      - name: Upload generated migrations for review
+      - name: Upload exact run artifacts
         if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
         uses: actions/upload-artifact@v4
         with:
-          name: reddit-import-migrations-${{ github.run_id }}
-          if-no-files-found: warn
+          name: reddit-import-${{ github.run_id }}
+          if-no-files-found: error
           path: |
-            packages/db/migrations/*.sql
-            data/working/load-*.json
-            data/working/extract-*.json
-            data/working/enrichment-*.json
-            data/working/extraction-cache-snapshot.json
-            data/working/enrichment-cache-snapshot.json
+            ${{ env.RAW_ARTIFACT }}
+            ${{ env.NORMALIZED_ARTIFACT }}
+            ${{ env.EXTRACTION_ARTIFACT }}
+            ${{ env.ENRICHMENT_ARTIFACT }}
+            data/working/load-${{ github.run_id }}.json
+            data/working/load-${{ github.run_id }}-repo-relative.json
+            data/working/*cache-snapshot.json
+            data/working/*cache-manifest.json
+            data/working/cache-sql/extraction/*.sql
+            data/working/cache-sql/enrichment/*.sql
+            data/working/publishable-migrations/*.sql
 
-      - name: Recover committed pending migrations
+      - name: Create import review PR
+        if: inputs.apply_only != true && steps.normalize.outputs.post-count != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          branch="reddit-import-${GITHUB_RUN_ID}"
+          existing_pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state open --json url --jq '.[0].url // empty')
+          if [ -n "$existing_pr" ]; then
+            echo "Import review PR already exists: $existing_pr"
+            exit 0
+          fi
+          gh auth setup-git --hostname github.com
+          if git ls-remote --exit-code origin "refs/heads/$branch" >/dev/null 2>&1; then
+            echo "Refusing to reuse orphan import branch $branch; inspect or delete it first." >&2
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          mapfile -t migrations < <(jq -r '.data_migrations[].path' data/working/load-${GITHUB_RUN_ID}-repo-relative.json)
+          ((${#migrations[@]} > 0)) || { echo 'Load manifest has no publishable migrations' >&2; exit 1; }
+          git add -- "${migrations[@]}"
+          git diff --cached --name-only | sort | cmp - <(printf '%s\n' "${migrations[@]}" | sort) || { echo 'Staged paths differ from load manifest' >&2; exit 1; }
+          git commit -m "data: reddit import ${GITHUB_RUN_ID}"
+          git push --set-upstream origin "$branch"
+          existing_pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state open --json url --jq '.[0].url // empty')
+          [ -n "$existing_pr" ] && { echo "Import review PR already exists: $existing_pr"; exit 0; }
+          gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" \
+            --title "Reddit import ${GITHUB_RUN_ID}" --body "Generated data migration paths are exactly those listed in the load manifest. Cache DML was applied operationally and is not part of this reviewed migration PR."
+
+      - name: Apply committed pending migrations only
         if: inputs.apply_only == true
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          if [ ! -s /tmp/pending-migrations ]; then
-            echo 'Apply-only status check: no tracked migrations are pending.'
-            exit 0
-          fi
-          echo 'Apply-only status check: applying these committed pending migrations:'
-          cat /tmp/pending-migrations
-          while IFS= read -r migration; do
-            git ls-files --error-unmatch "packages/db/migrations/$migration" >/dev/null
-          done < /tmp/pending-migrations
+          set -euo pipefail
+          if [ ! -s /tmp/pending-migrations ]; then echo 'Apply-only: no tracked migrations pending.'; exit 0; fi
+          while IFS= read -r migration; do git ls-files --error-unmatch "packages/db/migrations/$migration" >/dev/null; done < /tmp/pending-migrations
           npx wrangler d1 migrations apply movies-that-feel-like --remote --config apps/astro/wrangler.jsonc

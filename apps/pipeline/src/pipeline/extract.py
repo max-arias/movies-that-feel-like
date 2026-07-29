@@ -351,13 +351,14 @@ def _run_extraction(
     concurrency: int = 3,
     rate_limit_rpm: float = 6.0,
     on_complete: Any = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
     """Call Instructor for each prompt with per-post retry/backoff.
 
     *client* is the pre-built Instructor client, *actual_model* the
     provider-specific model id, and *provider* ``'google'`` or ``'openai'``.
 
-    Returns ``(results, errors)`` where each element is a list of dicts.
+    Returns ``(results_by_request_number, errors)``. Results retain their
+    request number so failures cannot compress the result stream.
     """
     limiter = _RequestLimiter(rate_limit_rpm)
 
@@ -394,8 +395,13 @@ def _run_extraction(
                 extraction: PostExtraction = client.create(**create_kwargs)
                 # Success — record result and break retry loop
                 result = extraction.model_dump()
-                # The model is not allowed to choose the identity of its result.
-                result["reddit_post_id"] = post_id
+                # A provider response for another post is invalid; never
+                # overwrite its identity because that would poison the cache.
+                if result.get("reddit_post_id") != post_id:
+                    raise ValueError(
+                        f"response post id {result.get('reddit_post_id')!r} "
+                        f"does not match prompt post id {post_id!r}"
+                    )
                 result["attempt_count"] = attempt
                 rec_count = len(extraction.recommendations)
                 print(f"  [{i}/{total}] {post_id} OK ({rec_count} recommendations)", flush=True)
@@ -446,7 +452,7 @@ def _run_extraction(
             for future in futures:
                 future.cancel()
             raise
-    return ([x for i in sorted(by_index) if (x := by_index[i][0]) is not None],
+    return ({i: x for i in sorted(by_index) if (x := by_index[i][0]) is not None},
             [x for i in sorted(by_index) if (x := by_index[i][1]) is not None])
 
 
@@ -628,10 +634,12 @@ def main(argv: list[str] | None = None) -> None:
             prompt_input=prompt["prompt_input"], system_prompt=prompt["system_prompt"],
             user_prompt=prompt["user_prompt"], schema=PostExtraction.model_json_schema(),
             provider=provider, model=actual_model, api_base=resolved_api_base,
-            instructor_mode=instructor_mode)
-        hit = lookup_cache(snapshot_rows, prompt["_cache_key"])
+            instructor_mode=instructor_mode, prompt_version=EXTRACTION_PROMPT_VERSION,
+            schema_version=EXTRACTION_SCHEMA_VERSION,
+            settings={"temperature": 0.1, "max_comments": args.max_comments})
+        hit = lookup_cache(snapshot_rows, prompt["_cache_key"],
+                           expected_post_id=prompt["reddit_post_id"])
         if hit is not None:
-            hit["reddit_post_id"] = prompt["reddit_post_id"]
             hit_results[ordinal] = hit
             continue
         if ordinal not in checkpoint_records:
@@ -670,11 +678,15 @@ def main(argv: list[str] | None = None) -> None:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
         lock_handle.close()
     all_results: dict[int, dict[str, Any]] = dict(hit_results)
-    all_results.update({ordinal: record["result"] for ordinal, record in checkpoint_records.items() if record.get("result") is not None})
-    # _run_extraction returns pending order; use the prompt ordinal rather than
-    # relying on completion order.
-    for prompt, result in zip(pending, results):
-        all_results[prompt["ordinal"]] = result
+    for ordinal, record in checkpoint_records.items():
+        checkpoint_result = record.get("result")
+        if (checkpoint_result is not None and
+                checkpoint_result.get("reddit_post_id") == prompts[ordinal]["reddit_post_id"]):
+            all_results[ordinal] = checkpoint_result
+    # Results are keyed by prompt ordinal, so a failed middle request can never
+    # shift a later response onto the wrong post.
+    for ordinal, result in results.items():
+        all_results[pending[ordinal - 1]["ordinal"]] = result
     all_errors = [r["error"] for r in checkpoint_records.values() if r.get("error") is not None] + errors
     results = [all_results[i] for i in range(len(prompts)) if i in all_results]
     errors = all_errors
@@ -684,7 +696,7 @@ def main(argv: list[str] | None = None) -> None:
         if ordinal in hit_results:
             continue
         valid = PostExtraction.model_validate(result).model_dump()
-        outcome = "extracted" if valid.get("recommendations") else "no_result"
+        outcome = "extracted"
         prompt_record = prompts[ordinal]
         content_hash = hashlib.sha256(canonical_json(prompt_record["prompt_input"]).encode()).hexdigest()
         rendered_hash = hashlib.sha256(canonical_json({"system": prompt_record["system_prompt"], "user": prompt_record["user_prompt"]}).encode()).hexdigest()
@@ -739,10 +751,12 @@ def main(argv: list[str] | None = None) -> None:
             "provider": provider_audit,
             "prompt_version": EXTRACTION_PROMPT_VERSION,
             "schema_version": EXTRACTION_SCHEMA_VERSION,
-            "cache_records": cache_records,
         },
         "results": results,
         "errors": errors,
+        # Top-level contract for the persistence lane: observations are
+        # complete records, while summary contains only aggregate counters.
+        "cache_records": cache_records,
         "summary": {
             "post_count": len(prompts),
             "success_count": success_count,

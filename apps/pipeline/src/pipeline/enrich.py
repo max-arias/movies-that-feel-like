@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -425,6 +426,11 @@ def _latest_extraction() -> Path:
     return real[-1]
 
 
+def _artifact_checksum(path: Path) -> str:
+    """Return the stable SHA-256 checksum of the extraction input artifact."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def _ensure_tmdb_key() -> None:
     """Ensure at least one TMDB credential is available."""
     if os.environ.get("TMDB_ACCESS_TOKEN") or os.environ.get("TMDB_API_KEY"):
@@ -461,6 +467,7 @@ async def _process_one_candidate(
     errors: list[dict[str, Any]],
     progress: dict[str, int],
     cache_records: list[dict[str, Any]],
+    source_artifact_checksum: str,
 ) -> None:
     """Resolve a single candidate, populating *matches*, *unmatched*, or *errors*."""
     title = cand["title"]
@@ -473,31 +480,27 @@ async def _process_one_candidate(
         row = await cache.lookup(provider=provider, candidate=cand,
                                  language=args.language, include_adult=args.include_adult)
         raw_payload = row.get("normalized_payload") if row else None
-        cached = (json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload) if raw_payload else None
+        try:
+            cached = (json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload) if raw_payload else None
+        except (TypeError, json.JSONDecodeError):
+            cached = None
         if cached is None and row and row.get("outcome") == "not_found":
             unmatched.append({"candidate_key": cand["candidate_key"], "title": title,
                               "year": cand.get("year"), "media_type": media_type,
                               "reason": "no compatible provider result found"})
             progress["cache_hit"] += 1
             assert row is not None
-            cache_records.append(row)
             return
         elif cached is not None:
             matches.append(cached)
             progress["cache_hit"] += 1
             assert row is not None
-            cache_records.append(row)
             print(f"  {title} → cached hit")
             return
-        elif getattr(args, "cache_snapshot", None) is None:
-            cached = await cache.get(cand["candidate_key"])
-            if cached is not None:
-                matches.append(cached)
-                progress["cache_hit"] += 1
-                cache_records.append(make_cache_record(
-                    provider=provider, candidate=cand, language=args.language,
-                    include_adult=args.include_adult, outcome="matched", payload=cached))
-                return
+        progress["cache_miss"] += 1
+
+    if provider is not None:
+        progress["provider_calls"] += 1
 
     # ── Dispatch by media_type ───────────────────────────────────────
 
@@ -506,12 +509,14 @@ async def _process_one_candidate(
             cand, tmdb_client, tmdb_limiter, args, cache,
             matches, unmatched, errors,
             cache_records,
+            source_artifact_checksum,
         )
     elif media_type == "game":
         await _process_igdb_candidate(
             cand, igdb_client, igdb_limiter, args, cache,
             matches, unmatched, errors,
             cache_records,
+            source_artifact_checksum,
         )
     elif media_type == "unknown":
         unmatched.append(
@@ -547,6 +552,7 @@ async def _process_tmdb_candidate(
     unmatched: list[dict[str, Any]],
     errors: list[dict[str, Any]],
     cache_records: list[dict[str, Any]],
+    source_artifact_checksum: str,
 ) -> None:
     """TMDB path — search multi, external IDs, build match record."""
     title = cand["title"]
@@ -591,8 +597,12 @@ async def _process_tmdb_candidate(
                 "reason": "no compatible movie/tv result found",
             }
         )
-        cache_records.append(make_cache_record(provider="tmdb", candidate=cand,
-            language=args.language, include_adult=args.include_adult, outcome="not_found", payload=None))
+        observation = make_cache_record(provider="tmdb", candidate=cand,
+            language=args.language, include_adult=args.include_adult, outcome="not_found", payload=None,
+            source_artifact_checksum=source_artifact_checksum)
+        cache_records.append(observation)
+        if cache is not None:
+            await cache.put(cand["candidate_key"], {}, record=observation)
         print(f"  {title} → no match")
         return
 
@@ -646,8 +656,10 @@ async def _process_tmdb_candidate(
         "raw_result": best,
     }
     matches.append(match_record)
-    cache_records.append(make_cache_record(provider="tmdb", candidate=cand,
-        language=args.language, include_adult=args.include_adult, outcome="matched", payload=match_record))
+    observation = make_cache_record(provider="tmdb", candidate=cand,
+        language=args.language, include_adult=args.include_adult, outcome="matched", payload=match_record,
+        source_artifact_checksum=source_artifact_checksum)
+    cache_records.append(observation)
     print(
         f"  {title} → {b_media_type} #{tmdb_id} "
         f"({match_record['title']})"
@@ -655,7 +667,7 @@ async def _process_tmdb_candidate(
 
     # ── Cache the result ─────────────────────────────────────────────
     if cache is not None:
-        await cache.put(cand["candidate_key"], match_record)
+        await cache.put(cand["candidate_key"], match_record, record=observation)
 
 
 async def _process_igdb_candidate(
@@ -668,6 +680,7 @@ async def _process_igdb_candidate(
     unmatched: list[dict[str, Any]],
     errors: list[dict[str, Any]],
     cache_records: list[dict[str, Any]],
+    source_artifact_checksum: str,
 ) -> None:
     """IGDB path — search games, build match record."""
     title = cand["title"]
@@ -713,15 +726,21 @@ async def _process_igdb_candidate(
                 "reason": "no compatible game result found",
             }
         )
-        cache_records.append(make_cache_record(provider="igdb", candidate=cand,
-            language=args.language, include_adult=args.include_adult, outcome="not_found", payload=None))
+        observation = make_cache_record(provider="igdb", candidate=cand,
+            language=args.language, include_adult=args.include_adult, outcome="not_found", payload=None,
+            source_artifact_checksum=source_artifact_checksum)
+        cache_records.append(observation)
+        if cache is not None:
+            await cache.put(cand["candidate_key"], {}, record=observation)
         print(f"  {title} → no game match")
         return
 
     match_record = enrich_games.build_match(cand, best)
     matches.append(match_record)
-    cache_records.append(make_cache_record(provider="igdb", candidate=cand,
-        language=args.language, include_adult=args.include_adult, outcome="matched", payload=match_record))
+    observation = make_cache_record(provider="igdb", candidate=cand,
+        language=args.language, include_adult=args.include_adult, outcome="matched", payload=match_record,
+        source_artifact_checksum=source_artifact_checksum)
+    cache_records.append(observation)
     print(
         f"  {title} → game #{match_record['igdb_id']} "
         f"({match_record['title']})"
@@ -729,7 +748,7 @@ async def _process_igdb_candidate(
 
     # ── Cache the result ─────────────────────────────────────────────
     if cache is not None:
-        await cache.put(cand["candidate_key"], match_record)
+        await cache.put(cand["candidate_key"], match_record, record=observation)
 
 
 # ── Async main ─────────────────────────────────────────────────────────
@@ -738,10 +757,11 @@ async def _process_igdb_candidate(
 async def _async_main(
     args: argparse.Namespace,
     candidates: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    source_artifact_checksum: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
     """Async enrichment loop.
 
-    Returns (*matches*, *unmatched*, *errors*, *cache_records*).
+    Returns (*matches*, *unmatched*, *errors*, *cache_records*, *metrics*).
     """
     t0 = time_module.monotonic()
 
@@ -780,7 +800,7 @@ async def _async_main(
     cache_records: list[dict[str, Any]] = []
 
     sem = asyncio.Semaphore(_CONCURRENCY)
-    progress: dict[str, int] = {"completed": 0, "cache_hit": 0}
+    progress: dict[str, int] = {"completed": 0, "cache_hit": 0, "cache_miss": 0, "provider_calls": 0}
     total = len(candidates)
 
     async def _process(cand: dict[str, Any]) -> None:
@@ -798,6 +818,7 @@ async def _async_main(
                 errors,
                 progress,
                 cache_records,
+                source_artifact_checksum,
             )
             progress["completed"] += 1
             completed = progress["completed"]
@@ -824,7 +845,13 @@ async def _async_main(
         f"({len(candidates)} candidate(s))"
     )
 
-    return matches, unmatched, errors, cache_records
+    metrics = {
+        "cache_hits": progress["cache_hit"],
+        "cache_misses": progress["cache_miss"],
+        "provider_calls": progress["provider_calls"],
+        "cache_writes": cache.metrics["writes"] if cache is not None else 0,
+    }
+    return matches, unmatched, errors, cache_records, metrics
 
 
 # ── Entry point ────────────────────────────────────────────────────────
@@ -851,6 +878,7 @@ def main(argv: list[str] | None = None) -> None:
     except ValueError as exc:
         raise SystemExit(f"[pipeline:enrich] {exc}") from exc
     results = artifact.get("results", [])
+    source_artifact_checksum = _artifact_checksum(input_path)
 
     print(
         f"[pipeline:enrich] Processing candidates from {input_path.name} "
@@ -924,8 +952,8 @@ def main(argv: list[str] | None = None) -> None:
     # ── Real enrichment ─────────────────────────────────────────────────
     print(f"[pipeline:enrich] Enriching {len(candidates)} candidate(s) …")
 
-    matches, unmatched, errors, cache_records = asyncio.run(
-        _async_main(args, candidates)
+    matches, unmatched, errors, cache_records, cache_metrics = asyncio.run(
+        _async_main(args, candidates, source_artifact_checksum)
     )
 
     # ── Build output artifact ───────────────────────────────────────────
@@ -960,6 +988,9 @@ def main(argv: list[str] | None = None) -> None:
             "match_count": len(matches),
             "unmatched_count": len(unmatched),
             "error_count": len(errors),
+            **cache_metrics,
+            "cache_snapshot": str(args.cache_snapshot) if args.cache_snapshot else None,
+            "cache_path": str(args.cache_path) if args.cache_path else None,
         },
     }
 

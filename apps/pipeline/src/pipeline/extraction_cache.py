@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from pipeline.models import PostExtraction
@@ -18,16 +18,22 @@ def canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-def extraction_cache_key(*, prompt_input: dict[str, Any], system_prompt: str,
-                         user_prompt: str, schema: dict[str, Any], provider: str,
-                         model: str, api_base: str | None, instructor_mode: str,
+def extraction_cache_key(*, prompt_input: dict[str, Any] | None = None,
+                         system_prompt: str, user_prompt: str,
+                         schema: dict[str, Any], provider: str, model: str,
+                         api_base: str | None, instructor_mode: str,
                          extractor_version: str = EXTRACTOR_VERSION,
-                         payload_version: int = PAYLOAD_VERSION) -> str:
-    value = {"prompt_input": prompt_input, "system_prompt": system_prompt,
-             "user_prompt": user_prompt, "response_schema": schema,
-             "provider": provider, "model": model, "api_base": api_base,
-             "instructor_mode": instructor_mode, "extractor_version": extractor_version,
-             "payload_version": payload_version}
+                         payload_version: int = PAYLOAD_VERSION,
+                         prompt_version: str = "extraction-prompt-v3",
+                         schema_version: str = "post-extraction-v3",
+                         settings: dict[str, Any] | None = None) -> str:
+    """Hash output-affecting request identity, not volatile source metadata."""
+    value = {"system_prompt": system_prompt, "user_prompt": user_prompt,
+             "response_schema": schema, "provider": provider, "model": model,
+             "api_base": api_base, "instructor_mode": instructor_mode,
+             "extractor_version": extractor_version, "payload_version": payload_version,
+             "prompt_version": prompt_version, "schema_version": schema_version,
+             "settings": settings or {}}
     return hashlib.sha256(canonical_json(value).encode()).hexdigest()
 
 
@@ -50,21 +56,29 @@ def _fresh(row: dict[str, Any], now: datetime) -> bool:
         return False
 
 
-def lookup(rows: list[dict[str, Any]], key: str, *, now: datetime | None = None) -> dict[str, Any] | None:
+def lookup(rows: list[dict[str, Any]], key: str, *, expected_post_id: str | None = None,
+           now: datetime | None = None) -> dict[str, Any] | None:
     now = now or datetime.now(timezone.utc)
     candidates = [r for r in rows if r.get("cache_key") == key and _fresh(r, now)]
-    # Migration 0035 defines newest by created_at (there is no fetched_at).
     candidates.sort(key=lambda r: (str(r.get("created_at", "")), int(r.get("id", 0) or 0)), reverse=True)
     for row in candidates:
+        row_post_id = str(row.get("reddit_post_id", ""))
         payload = row.get("extraction_payload") or row.get("payload")
         if row.get("outcome") == "no_result" and payload is None:
-            return PostExtraction(reddit_post_id=str(row.get("reddit_post_id", ""))).model_dump()
+            if expected_post_id is None or row_post_id == expected_post_id:
+                return PostExtraction(reddit_post_id=row_post_id).model_dump()
+            continue
         if row.get("outcome") not in ("extracted", "no_result") or not isinstance(payload, (dict, str)):
             continue
         try:
             parsed = json.loads(payload) if isinstance(payload, str) else payload
             validated = PostExtraction.model_validate(parsed).model_dump()
         except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        # Never repair identity from the lookup prompt: a corrupt row is a miss.
+        if validated["reddit_post_id"] != row_post_id:
+            continue
+        if expected_post_id is not None and validated["reddit_post_id"] != expected_post_id:
             continue
         return validated
     return None
@@ -85,11 +99,8 @@ def make_cache_record(*, key: str, post_id: str, payload: dict[str, Any] | None,
             "instructor_mode": instructor_mode, "extractor_version": extractor_version,
             "payload_schema_version": str(PAYLOAD_VERSION), "outcome": outcome,
             "extraction_payload": payload if outcome == "extracted" else None,
-            "source_normalized_checksum": source_normalized_checksum,
-            "created_at": stamp,
+            "source_normalized_checksum": source_normalized_checksum, "created_at": stamp,
             "fresh_until": datetime.fromtimestamp(now.timestamp() + days * 86400, timezone.utc).isoformat().replace("+00:00", "Z")}
 
 
-# Small public aliases keep the cache contract convenient for focused tests and
-# callers without duplicating the identity implementation.
 make_cache_key = extraction_cache_key

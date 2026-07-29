@@ -10,12 +10,12 @@ import json
 import os
 import re
 import sqlite3
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from pipeline.artifacts import read_json_artifact, timestamp_slug, validate_complete_extraction, write_json_artifact
-from pipeline.enrich_cache import CACHE_COLUMNS
 from pipeline.paths import ensure_pipeline_dirs, normalized_dir, project_root, working_dir
 
 # ── Constants ──────────────────────────────────────────────────────────
@@ -50,12 +50,6 @@ _DATA_MIGRATION_CHUNKS: tuple[tuple[str, frozenset[str]], ...] = (
     ("05_tags", frozenset({"vibe_tags"})),
 )
 
-EXTRACTION_CACHE_COLUMNS = (
-    "cache_key", "reddit_post_id", "content_hash", "prompt_hash",
-    "prompt_version", "provider", "model", "api_base", "instructor_mode",
-    "extractor_version", "payload_schema_version", "outcome", "extraction_payload",
-    "source_normalized_checksum", "created_at", "fresh_until",
-)
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -673,8 +667,6 @@ def _write_data_migration(
     run_started_at: datetime,
     id_floors: dict[str, int],
     touched_recommendation_ids: set[int] | None = None,
-    cache_records: list[dict[str, Any]] | None = None,
-    extraction_cache_records: list[dict[str, Any]] | None = None,
 ) -> list[Path]:
     """Emit a sequence of versioned data migrations to *migrations_dir*.
 
@@ -739,61 +731,6 @@ def _write_data_migration(
         path.write_text(header + "\n" + body, encoding="utf-8")
         written.append(path)
         print(f"[pipeline:load] Data migration written to {path}")
-
-    # Cache rows are deliberately a final, independent chunk.  They are
-    # append-only provider observations and never participate in canonical
-    # recommendation upserts or foreign-key ordering.
-    sequence = base_sequence + len(_DATA_MIGRATION_CHUNKS)
-    filename = _migration_filename(sequence, run_started_at, "06_resolution_cache")
-    path = migrations_dir / filename
-    if path.exists():
-        raise SystemExit(f"[pipeline:load] Refusing to overwrite existing migration {path}.")
-    inserts: list[str] = []
-    for record in cache_records or []:
-        if record.get("outcome") not in ("matched", "not_found"):
-            continue
-        values = ", ".join(_sql_literal(record.get(column)) for column in CACHE_COLUMNS)
-        columns = ", ".join(_quote_sql_identifier(c) for c in CACHE_COLUMNS)
-        inserts.append(
-            f'INSERT OR IGNORE INTO "enrichment_resolution_cache" ({columns}) VALUES ({values});'
-        )
-    header = (
-        f"-- {filename}: append-only provider resolution cache observations.\n"
-        f"-- Cache rows are emitted only for matched and explicit not_found outcomes.\n"
-    )
-    path.write_text(header + "\n".join(inserts) + ("\n" if inserts else ""), encoding="utf-8")
-    written.append(path)
-    print(f"[pipeline:load] Cache migration written to {path}")
-
-    # Extraction cache is intentionally the final append-only chunk. It is
-    # independent of the user-facing data and is consumed by a later extract
-    # invocation through a raw Wrangler snapshot.
-    sequence = base_sequence + len(_DATA_MIGRATION_CHUNKS) + 1
-    filename = _migration_filename(sequence, run_started_at, "07_extraction_cache")
-    path = migrations_dir / filename
-    if path.exists():
-        raise SystemExit(f"[pipeline:load] Refusing to overwrite existing migration {path}.")
-    columns = ", ".join(_quote_sql_identifier(c) for c in EXTRACTION_CACHE_COLUMNS)
-    extraction_inserts = []
-    for record in extraction_cache_records or []:
-        if record.get("outcome") not in ("extracted", "no_result"):
-            continue
-        values = ", ".join(
-            _sql_literal(json.dumps(record.get(c), ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-            if c == "extraction_payload" and isinstance(record.get(c), (dict, list))
-            else _sql_literal(record.get(c))
-            for c in EXTRACTION_CACHE_COLUMNS
-        )
-        extraction_inserts.append(
-            f'INSERT OR IGNORE INTO "extraction_result_cache" ({columns}) VALUES ({values});'
-        )
-    header = (
-        f"-- {filename}: append-only extraction cache observations.\n"
-        "-- Only validated extracted and no_result payloads are retained.\n"
-    )
-    path.write_text(header + "\n".join(extraction_inserts) + ("\n" if extraction_inserts else ""), encoding="utf-8")
-    written.append(path)
-    print(f"[pipeline:load] Extraction cache migration written to {path}")
 
     return written
 
@@ -1298,8 +1235,6 @@ def main(argv: list[str] | None = None) -> None:
             "errors": errors,
         }
 
-        write_json_artifact(out, manifest)
-
         # ── Emit data migration ────────────────────────────────────
         # Every successful load writes a versioned, idempotent data
         # migration to packages/db/migrations/ so ``wrangler d1
@@ -1308,15 +1243,18 @@ def main(argv: list[str] | None = None) -> None:
         migrations_dir = Path(args.migrations_dir)
         if not migrations_dir.is_absolute():
             migrations_dir = root / migrations_dir
-        _write_data_migration(
+        data_migrations = _write_data_migration(
             db,
             migrations_dir,
             run_started_at,
             data_table_id_floors,
             touched_recommendation_ids,
-            enrichment.get("cache_records", []),
-            extraction.get("cache_records", []),
         )
+        manifest["data_migrations"] = [
+            {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            for path in data_migrations
+        ]
+        write_json_artifact(out, manifest)
 
         print(
             f"[pipeline:load] Done: {posts_publishable} publishable, "

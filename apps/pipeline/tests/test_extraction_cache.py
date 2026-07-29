@@ -13,10 +13,10 @@ from pipeline.extraction_cache import (
 
 
 class ExtractionResultCacheTests(unittest.TestCase):
-    def key(self, *, content="post", prompt="prompt", model="model"):
+    def key(self, *, content="post", prompt="prompt", model="model", user="user"):
         return extraction_cache_key(
             prompt_input={"content": content}, system_prompt=prompt,
-            user_prompt="user", schema={"type": "object"}, provider="openai",
+            user_prompt=user, schema={"type": "object"}, provider="openai",
             model=model, api_base=None, instructor_mode="json",
         )
 
@@ -31,9 +31,17 @@ class ExtractionResultCacheTests(unittest.TestCase):
 
     def test_identity_changes_for_content_prompt_and_model(self):
         base = self.key()
-        self.assertNotEqual(base, self.key(content="changed"))
+        self.assertEqual(base, self.key(content="volatile metadata changed"))
         self.assertNotEqual(base, self.key(prompt="changed"))
+        self.assertNotEqual(base, self.key(user="changed"))
         self.assertNotEqual(base, self.key(model="changed"))
+
+    def test_mismatched_payload_identity_is_a_miss(self):
+        row = self.record(self.key(), payload={
+            "reddit_post_id": "other", "reddit_title": "Title",
+            "recommendations": [], "vibe": {"summary": "quiet dread", "tags": []},
+        })
+        self.assertIsNone(lookup([row], self.key(), expected_post_id="p1"))
 
     def test_raw_wrangler_snapshot_positive_hit(self):
         row = self.record(self.key())
@@ -53,6 +61,17 @@ class ExtractionResultCacheTests(unittest.TestCase):
         assert result is not None
         self.assertEqual(result["reddit_post_id"], "p1")
         self.assertEqual(result["recommendations"], [])
+
+    def test_zero_recommendation_payload_is_retained_as_extracted(self):
+        payload = {"reddit_post_id": "p1", "reddit_title": "Title",
+                   "recommendations": [],
+                   "vibe": {"summary": "specific mood", "tags": ["quiet"]}}
+        row = self.record(self.key(), payload=payload)
+        self.assertEqual(row["outcome"], "extracted")
+        result = lookup([row], self.key())
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result["vibe"]["summary"], "specific mood")
 
     def test_expired_snapshot_row_is_miss(self):
         row = self.record(self.key())

@@ -19,6 +19,7 @@
     "pipeline:enrich": "npm run enrich -w apps/pipeline --",
     "pipeline:ingest": "npm run pipeline:normalize && npm run pipeline:extract && npm run pipeline:enrich && npm run seed",
     "pipeline:load": "npm run load -w apps/pipeline --",
+    "pipeline:cache-sql": "npm run cache-sql -w apps/pipeline --",
     "pipeline:inspect": "npm run inspect -w apps/pipeline --",
     "db:migrate": "wrangler d1 migrations apply movies-that-feel-like --local --config apps/astro/wrangler.jsonc"
   },

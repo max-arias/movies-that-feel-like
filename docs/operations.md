@@ -22,9 +22,10 @@ The workflow uses Node 22, Python 3.11, Bun with `bun install --frozen-lockfile`
 variables; do not print them or put them in artifacts.
 
 Manual runs accept `limit` (default `100`), `max_pages` (default `50`), and
-`apply_only`. Both numeric inputs must be positive integers; a small `limit`
-is useful for a controlled smoke run. The default 50 pages is a bounded scan;
-use a higher `max_pages` for a controlled backfill when needed.
+`apply_only`, and `verify_cache_round_trip`. Both numeric inputs must be
+positive integers. The optional round-trip check reruns at most three original
+posts using re-exported cache snapshots; it never feeds probe output to load
+and requires cache hits with no provider calls or cache writes.
 `apply_only` skips the D1 post-ID query, fetch/pipeline, commit, and push
 entirely. Checkout credentials are not persisted, and the GitHub write token
 is exposed only to the commit/push step.
@@ -35,7 +36,9 @@ Each normal import first queries production D1 for every
 `imported_vibe_posts.reddit_post_id`. It writes those IDs to a temporary
 newline-delimited file and passes that file to both fetch (`--exclude-reddit-ids-file`)
 and normalize. New data then runs through fetch, normalize, extract, enrich,
-and load.
+and load. Each stage receives an explicit artifact path from this run; no
+stage selects a newest artifact implicitly. Fetch and normalize both receive
+the production exclusion file.
 
 Extraction runs with `--allow-errors`, so an individual extraction failure is
 tolerated and that post is deferred while successful posts continue through the
@@ -45,10 +48,26 @@ results. Failed posts are not marked imported or skipped and remain eligible
 for a later refresh. If every extraction fails, load stops; errors from
 enrichment or loading still fail the workflow before commit and apply.
 
-`load` creates data migrations under `packages/db/migrations`; pipeline commands
-do not commit or push them. Apply generated SQL through the repository's normal
-reviewed migration process. A load or enrichment error stops before migration
-generation; extraction errors are tolerated per post as described above.
+After extraction and again after enrichment, the workflow renders cache
+observations with the repository's `npm run pipeline:cache-sql` script (which
+supplies `PYTHONPATH`), validates every manifest/chunk checksum and record
+count, and verifies remote D1 rows/identities after executing each listed chunk
+with `wrangler d1 execute --file`. Empty manifests are explicit no-ops. Cache
+DML is operational append-only state: it is never applied with `d1 migrations
+apply` and never enters a reviewed migration. Snapshots select the newest
+fresh row per complete cache identity, compare returned counts with eligible
+counts, and restrict enrichment snapshots to the compatible payload schema.
+
+`load` creates data migrations under `packages/db/migrations`; the workflow
+canonicalizes manifest paths to repository-relative paths and opens a review
+PR containing only those exact paths. Cache SQL, source artifacts, and
+manifests are uploaded as run evidence. The bot identity is configured for the
+commit and `gh auth setup-git` configures the GitHub-supported `GH_TOKEN`
+credential helper for the push; checkout remains credential-free. Existing PRs
+are reused and orphan branches are refused.
+Review and merge that PR, then use `apply_only: true` to apply committed
+migrations. A load or enrichment error stops before the PR is created;
+extraction errors are tolerated per post as described above.
 
 For historical image URLs, first re-fetch and normalize the target posts. The
 normalized artifact embeds one explicit successful refetch outcome per fetched
@@ -86,8 +105,9 @@ then review the resulting migration normally.
 3. **Extract/enrich:** verify the OpenCode, TMDB, and Twitch credentials. Any
    enrichment artifact error fails the workflow before load, so fix credentials
    and retry rather than allowing incomplete posts to be excluded or loaded.
-4. **Commit/push:** ensure the workflow has contents write permission and that
-   the repository branch accepts pushes. Only migration SQL may be staged.
+4. **Review PR:** ensure contents and pull-request write permission and branch
+   pushes are available. Only manifest-listed migration SQL is staged; an open
+   import PR intentionally blocks a second normal run.
 5. **Remote apply:** confirm the migration commit is on `main`, inspect the
    remote `d1_migrations` history, and rerun the manual `apply_only` recovery.
    Do not apply raw SQL files or create a second migration commit during
