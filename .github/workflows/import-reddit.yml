@@ -272,14 +272,14 @@ jobs:
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
         run: |
           set -euo pipefail
-          jq -e '.[0].success == true' data/working/extraction-cache-snapshot.json >/dev/null
-          jq -e '.[0].success == true' data/working/enrichment-cache-snapshot.json >/dev/null
-          npm run pipeline:extract -- --input "$NORMALIZED_ARTIFACT" --out data/working/extraction-probe.json \
-            --limit 3 --cache-snapshot data/working/extraction-cache-snapshot.json
-          npm run pipeline:enrich -- --input data/working/extraction-probe.json --out data/working/enrichment-probe.json \
-            --allow-failed-extraction --cache-snapshot data/working/enrichment-cache-snapshot.json
-          jq -e '(.summary.cache_hits > 0) and (.summary.cache_hits == .summary.success_count) and (.summary.cache_writes == 0)' data/working/extraction-probe.json >/dev/null
-          jq -e '(.summary.cache_hits > 0) and (.summary.cache_misses == 0) and (.summary.provider_calls == 0) and (.cache_records|length == 0)' data/working/enrichment-probe.json >/dev/null
+          jq -e '.[0].success == true' "$GITHUB_WORKSPACE/data/working/extraction-cache-snapshot.json" >/dev/null
+          jq -e '.[0].success == true' "$GITHUB_WORKSPACE/data/working/enrichment-cache-snapshot.json" >/dev/null
+          npm run pipeline:extract -- --input "$NORMALIZED_ARTIFACT" --out "$GITHUB_WORKSPACE/data/working/extraction-probe.json" \
+            --limit 3 --cache-snapshot "$GITHUB_WORKSPACE/data/working/extraction-cache-snapshot.json"
+          npm run pipeline:enrich -- --input "$GITHUB_WORKSPACE/data/working/extraction-probe.json" --out "$GITHUB_WORKSPACE/data/working/enrichment-probe.json" \
+            --allow-failed-extraction --cache-snapshot "$GITHUB_WORKSPACE/data/working/enrichment-cache-snapshot.json"
+          jq -e '(.summary.cache_hits > 0) and (.summary.cache_hits == .summary.success_count) and (.summary.cache_writes == 0)' "$GITHUB_WORKSPACE/data/working/extraction-probe.json" >/dev/null
+          jq -e '(.summary.cache_hits > 0) and (.summary.cache_misses == 0) and (.summary.provider_calls == 0) and (.cache_records|length == 0)' "$GITHUB_WORKSPACE/data/working/enrichment-probe.json" >/dev/null
           echo 'Cache round trip passed: bounded probe was cache-only; probe artifacts were not loaded.'
 
       - name: Reject enrichment errors
