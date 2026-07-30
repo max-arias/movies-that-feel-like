@@ -146,19 +146,25 @@ const maxTagCount = Math.max(1, ...tags.map(([, count]) => count));
   applyTagFilter();
   document.addEventListener("astro:page-load", applyTagFilter);
 
-  document.querySelectorAll<HTMLElement>("[data-gallery]").forEach((gallery) => {
-    const track = gallery.querySelector<HTMLElement>(".gallery-track");
-    const slides = Array.from(gallery.querySelectorAll<HTMLImageElement>("img"));
-    const status = gallery.querySelector<HTMLElement>("[data-gallery-status]");
-    let current = 0;
-    const move = (direction: number) => {
-      current = (current + direction + slides.length) % slides.length;
-      track?.scrollTo({ left: current * (track.clientWidth || 1), behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
-      if (status) status.textContent = `${String(current + 1).padStart(2, "0")} / ${String(slides.length).padStart(2, "0")}`;
-    };
-    gallery.querySelector("[data-gallery-previous]")?.addEventListener("click", () => move(-1));
-    gallery.querySelector("[data-gallery-next]")?.addEventListener("click", () => move(1));
+  const setupGalleries = () => {
+    document.querySelectorAll<HTMLElement>("[data-gallery]").forEach((gallery) => {
+      if (gallery.dataset.galleryBound) return;
+      gallery.dataset.galleryBound = "true";
+      const track = gallery.querySelector<HTMLElement>(".gallery-track");
+      const slides = Array.from(gallery.querySelectorAll<HTMLImageElement>("img"));
+      const status = gallery.querySelector<HTMLElement>("[data-gallery-status]");
+      let current = 0;
+      const move = (direction: number) => {
+        current = (current + direction + slides.length) % slides.length;
+        track?.scrollTo({ left: current * (track.clientWidth || 1), behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+        if (status) status.textContent = `${String(current + 1).padStart(2, "0")} / ${String(slides.length).padStart(2, "0")}`;
+      };
+      gallery.querySelector("[data-gallery-previous]")?.addEventListener("click", () => move(-1));
+      gallery.querySelector("[data-gallery-next]")?.addEventListener("click", () => move(1));
+    });
+  };
 
-  });
+  setupGalleries();
+  document.addEventListener("astro:page-load", setupGalleries);
 
 </script>
