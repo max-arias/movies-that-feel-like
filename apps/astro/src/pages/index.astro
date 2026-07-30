@@ -66,10 +66,9 @@ const maxTagCount = Math.max(1, ...tags.map(([, count]) => count));
                           <div class="gallery-track scrollbar-hidden flex h-full w-full snap-x snap-mandatory overflow-x-auto overflow-y-clip motion-reduce:scroll-auto">
                             {post.images.map((image, imageIndex) => {
                               const primaryUrl = image.previewUrl ?? image.sourceUrl;
-                              const alternateUrl = (image as { alternateUrl?: string | null }).alternateUrl;
-                              const fallbackUrls = [image.sourceUrl, alternateUrl]
+                              const fallbackUrls = [image.sourceUrl]
                                 .filter((url): url is string => typeof url === "string" && url.trim().length > 0)
-                                .filter((url, index, urls) => url !== primaryUrl && urls.indexOf(url) === index);
+                                .filter((url) => url !== primaryUrl);
                               return (
                                 <div class="relative block h-full min-h-0 w-full basis-full shrink-0 snap-start">
                                   <img class="block h-full min-h-0 w-full object-cover transition duration-450 ease-gallery motion-reduce:transition-none group-hover:scale-105 group-hover:brightness-75 group-focus-visible:scale-105 group-focus-visible:brightness-75" src={primaryUrl} data-fallback-urls={JSON.stringify(fallbackUrls)} alt={`${post.title} — image ${imageIndex + 1}`} loading={imageIndex === 0 && galleryIndex === 0 ? "eager" : "lazy"} decoding="async" fetchpriority={imageIndex === 0 && galleryIndex === 0 ? "high" : undefined} data-fallback-image />
@@ -111,7 +110,7 @@ const maxTagCount = Math.max(1, ...tags.map(([, count]) => count));
       image.dataset.fallbackBound = "true";
       image.dataset.fallbackIndex ??= "0";
       image.addEventListener("error", () => {
-        const fallbackUrls = JSON.parse(image.dataset.fallbackUrls ?? "[]") as unknown;
+        const fallbackUrls = JSON.parse(image.dataset.fallbackUrls ?? "[]");
         const fallbackIndex = Number.parseInt(image.dataset.fallbackIndex ?? "0", 10);
         const fallbackCandidate = Array.isArray(fallbackUrls) && Number.isInteger(fallbackIndex) && fallbackIndex >= 0
           ? fallbackUrls[fallbackIndex]

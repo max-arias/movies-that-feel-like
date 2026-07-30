@@ -8,7 +8,6 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from pipeline.artifacts import read_json_artifact, timestamp_slug, write_json_artifact
 from pipeline.paths import ensure_pipeline_dirs, normalized_dir, raw_dir
@@ -37,22 +36,6 @@ def _smallest_qualifying_preview(image: dict[str, Any]) -> dict[str, Any] | None
 
 def _provider_url(value: Any) -> str | None:
     return html.unescape(value) if isinstance(value, str) and value else None
-
-
-def _is_preview_url(url: str | None) -> bool:
-    host = urlparse(url).hostname if url else None
-    return bool(host and host.lower() in {"preview.redd.it", "external-preview.redd.it"})
-
-
-def _is_stable_reddit_original(url: str | None) -> bool:
-    host = urlparse(url).hostname if url else None
-    return bool(host and host.lower() == "i.redd.it")
-
-
-def _alternate_original(primary: str | None, candidates: list[str]) -> str | None:
-    if not _is_preview_url(primary):
-        return None
-    return next((url for url in candidates if _is_stable_reddit_original(url) and url != primary), None)
 
 
 def _provider_dimensions(value: dict[str, Any]) -> tuple[int | None, int | None]:
@@ -169,15 +152,6 @@ def _collect_images(post: dict[str, Any]) -> list[dict[str, Any]]:
         else:
             for record in records:
                 record.setdefault("preview_url", None)
-
-        candidates = [
-            url for url in [*(r.get("source_url") for r in previews), *post_urls]
-            if isinstance(url, str)
-        ]
-        for record in records:
-            alternate = _alternate_original(record.get("source_url"), candidates)
-            if alternate:
-                record["alternate_image_url"] = alternate
 
     gallery_urls = _extract_gallery_images(post)
     post_urls = _extract_post_url(post)

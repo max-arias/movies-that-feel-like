@@ -98,10 +98,9 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
             >
               {post.images.map((img, i) => {
                 const primaryUrl = img.previewUrl ?? img.sourceUrl;
-                const alternateUrl = (img as { alternateUrl?: string | null }).alternateUrl;
-                const fallbackUrls = [img.sourceUrl, alternateUrl]
+                const fallbackUrls = [img.sourceUrl]
                   .filter((url): url is string => typeof url === "string" && url.trim().length > 0)
-                  .filter((url, index, urls) => url !== primaryUrl && urls.indexOf(url) === index);
+                  .filter((url) => url !== primaryUrl);
                 return (
                 <div id={slideId(i)} class="carousel-item relative w-full">
                   <button
@@ -338,10 +337,9 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
             >
               {post.images.map((img, i) => {
                 const primaryUrl = img.previewUrl ?? img.sourceUrl;
-                const alternateUrl = (img as { alternateUrl?: string | null }).alternateUrl;
-                const fallbackUrls = [img.sourceUrl, alternateUrl]
+                const fallbackUrls = [img.sourceUrl]
                   .filter((url): url is string => typeof url === "string" && url.trim().length > 0)
-                  .filter((url, index, urls) => url !== primaryUrl && urls.indexOf(url) === index);
+                  .filter((url) => url !== primaryUrl);
                 return (
                 <div id={modalSlideId(i)} class="carousel-item relative h-full w-full">
                   <div class="relative h-full w-full">
@@ -399,7 +397,7 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
       image.dataset.fallbackBound = "true";
       image.dataset.fallbackIndex ??= "0";
       image.addEventListener("error", () => {
-        const fallbackUrls = JSON.parse(image.dataset.fallbackUrls ?? "[]") as unknown;
+        const fallbackUrls = JSON.parse(image.dataset.fallbackUrls ?? "[]");
         const fallbackIndex = Number.parseInt(image.dataset.fallbackIndex ?? "0", 10);
         const fallbackCandidate = Array.isArray(fallbackUrls) && Number.isInteger(fallbackIndex) && fallbackIndex >= 0
           ? fallbackUrls[fallbackIndex]

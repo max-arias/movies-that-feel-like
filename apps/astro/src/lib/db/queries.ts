@@ -51,7 +51,6 @@ async function loadBuildData(db: DrizzleD1Database) {
           id: importedPostImages.id,
           importedVibePostId: importedPostImages.importedVibePostId,
           sourceUrl: importedPostImages.sourceUrl,
-          alternateUrl: importedPostImages.alternateImageUrl,
           previewUrl: importedPostImages.previewUrl,
           width: importedPostImages.width,
           height: importedPostImages.height,
