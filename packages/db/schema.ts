@@ -59,6 +59,7 @@ export const importedPostImages = sqliteTable(
       .notNull()
       .references(() => importedVibePosts.id, { onDelete: "cascade" }),
     sourceUrl: text("source_url").notNull(),
+    alternateImageUrl: text("alternate_image_url"),
     previewUrl: text("preview_url"),
     width: integer("width"),
     height: integer("height"),

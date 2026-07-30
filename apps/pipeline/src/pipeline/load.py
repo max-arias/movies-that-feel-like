@@ -309,11 +309,12 @@ def _upsert_images(
             raise ValueError(f"normalized image for {reddit_post_id} has a blank source_url")
         db.execute(
             """INSERT INTO imported_post_images
-               (imported_vibe_post_id, source_url, preview_url, width, height, sort_order)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               (imported_vibe_post_id, source_url, alternate_image_url, preview_url, width, height, sort_order)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
                 post_id,
                 source_url,
+                img.get("alternate_image_url"),
                 img.get("preview_url"),
                 img.get("preview_width"),
                 img.get("preview_height"),
@@ -1018,7 +1019,7 @@ def main(argv: list[str] | None = None) -> None:
             if "igdb_id" not in rec_cols:
                 missing.append("recommendations.igdb_id")
             image_cols = {r[1] for r in db.execute("PRAGMA table_info(imported_post_images)").fetchall()}
-            for column in ("source_url", "preview_url"):
+            for column in ("source_url", "alternate_image_url", "preview_url"):
                 if column not in image_cols:
                     missing.append(f"imported_post_images.{column}")
             if missing:

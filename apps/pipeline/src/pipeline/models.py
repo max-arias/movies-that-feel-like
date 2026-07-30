@@ -9,6 +9,7 @@ class NormalizedImage(BaseModel):
     """An image reference emitted by normalize; no local/cache byte fields."""
 
     source_url: str
+    alternate_image_url: str | None = None
     preview_url: str | None = None
     preview_width: int | None = None
     preview_height: int | None = None

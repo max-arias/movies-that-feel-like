@@ -1,5 +1,9 @@
 ## Agent skills
 
+## Testing
+
+- Do not create or update automated tests, test fixtures, or test-only tooling unless the user explicitly requests them.
+
 ### Issue tracker
 
 Issues for `max-arias/movies-that-feel-like` live in GitHub Issues; external PRs are not a triage surface. See `docs/agents/issue-tracker.md`.

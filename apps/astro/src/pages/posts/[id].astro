@@ -96,7 +96,13 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
               data-hero-carousel
               aria-label={`Image gallery. ${totalImages} image${totalImages === 1 ? "" : "s"}.`}
             >
-              {post.images.map((img, i) => (
+              {post.images.map((img, i) => {
+                const primaryUrl = img.previewUrl ?? img.sourceUrl;
+                const alternateUrl = (img as { alternateUrl?: string | null }).alternateUrl;
+                const fallbackUrls = [img.sourceUrl, alternateUrl]
+                  .filter((url): url is string => typeof url === "string" && url.trim().length > 0)
+                  .filter((url, index, urls) => url !== primaryUrl && urls.indexOf(url) === index);
+                return (
                 <div id={slideId(i)} class="carousel-item relative w-full">
                   <button
                     type="button"
@@ -104,14 +110,19 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
                     data-open-lightbox={i}
                     aria-label={`Open image ${i + 1} of ${totalImages} at full size`}
                   >
-                    <img
-                      src={img.previewUrl ?? img.sourceUrl}
-                      alt={`Post image ${i + 1} of ${totalImages}`}
-                      class="h-full w-full object-cover"
-                      loading={i === 0 ? "eager" : "lazy"}
-                      decoding="async"
-                      fetchpriority={i === 0 ? "high" : undefined}
-                    />
+                    <div class="relative h-full w-full">
+                      <img
+                        src={primaryUrl}
+                        data-fallback-urls={JSON.stringify(fallbackUrls)}
+                        alt={`Post image ${i + 1} of ${totalImages}`}
+                        class="h-full w-full object-cover"
+                        loading={i === 0 ? "eager" : "lazy"}
+                        decoding="async"
+                        fetchpriority={i === 0 ? "high" : undefined}
+                        data-fallback-image
+                      />
+                      <span class="absolute inset-0 hidden items-center justify-center bg-gallery-empty text-no-image text-gallery-empty-text" data-image-fallback aria-hidden="true">No image loaded.</span>
+                    </div>
                   </button>
                   {totalImages > 1 && (
                     <>
@@ -136,7 +147,8 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
                     </>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
             {totalImages > 1 && (
               <div class="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end p-3">
@@ -324,15 +336,26 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
               data-modal-carousel
               aria-label={`Image gallery lightbox. ${totalImages} image${totalImages === 1 ? "" : "s"}.`}
             >
-              {post.images.map((img, i) => (
+              {post.images.map((img, i) => {
+                const primaryUrl = img.previewUrl ?? img.sourceUrl;
+                const alternateUrl = (img as { alternateUrl?: string | null }).alternateUrl;
+                const fallbackUrls = [img.sourceUrl, alternateUrl]
+                  .filter((url): url is string => typeof url === "string" && url.trim().length > 0)
+                  .filter((url, index, urls) => url !== primaryUrl && urls.indexOf(url) === index);
+                return (
                 <div id={modalSlideId(i)} class="carousel-item relative h-full w-full">
-                  <img
-                    src={img.previewUrl ?? img.sourceUrl}
-                    alt={`Post image ${i + 1} of ${totalImages}`}
-                    class="h-full w-full object-contain"
-                    loading={i === 0 ? "eager" : "lazy"}
-                    decoding="async"
-                  />
+                  <div class="relative h-full w-full">
+                    <img
+                      src={primaryUrl}
+                      data-fallback-urls={JSON.stringify(fallbackUrls)}
+                      alt={`Post image ${i + 1} of ${totalImages}`}
+                      class="h-full w-full object-contain"
+                      loading={i === 0 ? "eager" : "lazy"}
+                      decoding="async"
+                      data-fallback-image
+                    />
+                    <span class="absolute inset-0 hidden items-center justify-center bg-gallery-empty text-no-image text-gallery-empty-text" data-image-fallback aria-hidden="true">No image loaded.</span>
+                  </div>
                   {totalImages > 1 && (
                     <>
                       <a
@@ -356,7 +379,8 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
                     </>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
           <form method="dialog" class="modal-backdrop">
@@ -369,6 +393,34 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
 </Layout>
 
 <script>
+  const setupImageFallbacks = () => {
+    document.querySelectorAll<HTMLImageElement>("[data-fallback-image]").forEach((image) => {
+      if (image.dataset.fallbackBound) return;
+      image.dataset.fallbackBound = "true";
+      image.dataset.fallbackIndex ??= "0";
+      image.addEventListener("error", () => {
+        const fallbackUrls = JSON.parse(image.dataset.fallbackUrls ?? "[]") as unknown;
+        const fallbackIndex = Number.parseInt(image.dataset.fallbackIndex ?? "0", 10);
+        const fallbackCandidate = Array.isArray(fallbackUrls) && Number.isInteger(fallbackIndex) && fallbackIndex >= 0
+          ? fallbackUrls[fallbackIndex]
+          : undefined;
+        const fallbackUrl = typeof fallbackCandidate === "string" && fallbackCandidate.length > 0 ? fallbackCandidate : undefined;
+        if (fallbackUrl) {
+          image.dataset.fallbackIndex = String(fallbackIndex + 1);
+          image.src = fallbackUrl;
+          return;
+        }
+
+        image.classList.add("invisible");
+        image.nextElementSibling?.removeAttribute("class");
+        image.nextElementSibling?.setAttribute("class", "absolute inset-0 flex items-center justify-center bg-gallery-empty text-no-image text-gallery-empty-text");
+      }, { once: false });
+    });
+  };
+
+  setupImageFallbacks();
+  document.addEventListener("astro:page-load", setupImageFallbacks);
+
   const pad = (n: number) => String(n).padStart(2, "0");
 
   const heroCarousel = document.querySelector<HTMLElement>("[data-hero-carousel]");

@@ -160,19 +160,101 @@ def render_chunks(
     max_statements: int = 100,
     max_bytes: int = 64 * 1024,
 ) -> list[str]:
-    """Return UTF-8 SQL chunks bounded by both statement count and bytes."""
+    """Return UTF-8 SQL chunks bounded by both statement count and bytes.
+
+    D1 limits the size of each submitted statement/file, not just the number
+    of rows.  An extraction payload can therefore be larger than a whole
+    otherwise-valid INSERT.  Those payloads are staged in small pieces and
+    assembled by SQLite before the cache row is inserted.  The staging table
+    is run-specific and is dropped only after the final row has been written,
+    so a failed sequential D1 run can be retried without exposing a partial
+    cache row.
+    """
     if kind not in SPECS or max_statements < 1 or max_bytes < 1:
         raise ValueError("invalid cache kind or chunk limits")
     # Validate the complete artifact before rendering any output.  In
     # particular, unsupported outcomes must never disappear silently.
     for row in records:
         validate_record(kind, row)
-    statements = [render_statement(kind, row) for row in records]
+    statements: list[str] = []
+    staged = False
+    stage_name = ""
+    if kind == "extraction":
+        stage_name = "__pipeline_cache_stage_" + hashlib.sha256(
+            json.dumps(records, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:20]
+
+    def statement_bytes(statement: str) -> int:
+        return len((statement + "\n").encode("utf-8"))
+
+    for row in records:
+        statement = render_statement(kind, row)
+        if statement_bytes(statement) <= max_bytes:
+            statements.append(statement)
+            continue
+        if kind != "extraction" or not isinstance(row.get("extraction_payload"), (str, dict, list)):
+            raise ValueError(
+                f"{kind} cache statement is {statement_bytes(statement)} bytes, over max_bytes={max_bytes}"
+            )
+        payload = _value(row, "extraction_payload")
+        assert isinstance(payload, str)
+        stage_key = hashlib.sha256(
+            json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        if not staged:
+            statements.append(
+                f'CREATE TABLE IF NOT EXISTS "{stage_name}" '
+                "(stage_key TEXT NOT NULL, part_no INTEGER NOT NULL, payload TEXT NOT NULL, "
+                "PRIMARY KEY (stage_key, part_no));"
+            )
+            staged = True
+        prefix = f'INSERT OR REPLACE INTO "{stage_name}" (stage_key, part_no, payload) VALUES ({sql_literal(stage_key)}, '
+        chunks: list[str] = []
+        position = 0
+        while position < len(payload):
+            low, high = position + 1, len(payload)
+            best = low
+            while low <= high:
+                middle = (low + high) // 2
+                candidate = prefix + f"{len(chunks)}, {sql_literal(payload[position:middle])});"
+                if statement_bytes(candidate) <= max_bytes:
+                    best = middle
+                    low = middle + 1
+                else:
+                    high = middle - 1
+            if best <= position:
+                raise ValueError(f"{kind} cache payload chunk cannot fit max_bytes={max_bytes}")
+            chunks.append(payload[position:best])
+            position = best
+        statements.extend(
+            prefix + f"{index}, {sql_literal(part)});" for index, part in enumerate(chunks)
+        )
+        table, columns, _ = SPECS[kind]
+        names = ", ".join(f'"{column}"' for column in columns)
+        values = [_value(row, column) for column in columns]
+        rendered_values = ", ".join(
+            f'(SELECT group_concat(payload, \'\') FROM (SELECT payload FROM "{stage_name}" '
+            f"WHERE stage_key = {sql_literal(stage_key)} ORDER BY part_no))" if column == "extraction_payload"
+            else sql_literal(value)
+            for column, value in zip(columns, values)
+        )
+        checks = " AND ".join(
+            f'("{column}" IS {sql_literal(value)})'
+            for column, value in zip(columns, values)
+            if column != "extraction_payload"
+        )
+        statements.append(
+            f'INSERT INTO "{table}" ({names}) SELECT {rendered_values} '
+            f'WHERE NOT EXISTS (SELECT 1 FROM "{table}" WHERE {checks});'
+        )
+    if staged:
+        statements.append(f'DROP TABLE "{stage_name}";')
+
     chunks: list[str] = []
     current: list[str] = []
     size = 0
     for statement in statements:
-        statement_size = len((statement + "\n").encode("utf-8"))
+        statement_size = statement_bytes(statement)
         if statement_size > max_bytes:
             raise ValueError(
                 f"{kind} cache statement is {statement_size} bytes, over max_bytes={max_bytes}"

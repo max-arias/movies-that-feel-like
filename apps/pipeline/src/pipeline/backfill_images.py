@@ -18,7 +18,7 @@ def _sql(value: Any) -> str:
 def _fallback(row: sqlite3.Row, reason: str) -> dict[str, Any]:
     return {
         "id": row["id"], "reddit_post_id": row["reddit_post_id"],
-        "source_url": row["source_url"], "preview_url": None,
+        "source_url": row["source_url"], "alternate_image_url": row["alternate_image_url"], "preview_url": None,
         "width": None, "height": None, "outcome": "fallback", "reason": reason,
     }
 
@@ -32,7 +32,7 @@ def _matching(existing: list[sqlite3.Row], refreshed: list[dict[str, Any]]) -> l
         old_url = row["source_url"]
         edges[old_index] = [
             new_index for new_index, image in enumerate(refreshed)
-            if old_url and old_url in {image.get("source_url"), image.get("preview_url")}
+            if old_url and old_url in {image.get("source_url"), image.get("alternate_image_url"), image.get("preview_url")}
         ]
         if not edges[old_index]:
             return None
@@ -68,7 +68,7 @@ def build_backfill(db_path: Path, normalized_path: Path, outcomes_path: Path | N
     db.row_factory = sqlite3.Row
     try:
         rows = db.execute(
-            """SELECT i.id, p.reddit_post_id, i.sort_order, i.source_url
+            """SELECT i.id, p.reddit_post_id, i.sort_order, i.source_url, i.alternate_image_url
                FROM imported_post_images i JOIN imported_vibe_posts p
                ON p.id = i.imported_vibe_post_id ORDER BY i.id"""
         ).fetchall()
@@ -106,7 +106,7 @@ def build_backfill(db_path: Path, normalized_path: Path, outcomes_path: Path | N
                     break
         if pairs:
             result.extend({"id": row["id"], "reddit_post_id": post_id, "source_url": image["source_url"],
-                           "preview_url": image.get("preview_url"), "width": image.get("preview_width"),
+                           "alternate_image_url": image.get("alternate_image_url"), "preview_url": image.get("preview_url"), "width": image.get("preview_width"),
                            "height": image.get("preview_height"), "outcome": "selected", "reason": reason}
                           for row, image in pairs)
         else:
@@ -122,6 +122,7 @@ def write_outputs(out_path: Path, manifest_path: Path, outcomes: list[dict[str, 
               "-- Deterministic, row-safe UPDATE statements only.",
               f"-- attempted={counts['attempted']} unattempted={counts['unattempted']} succeeded={counts['succeeded']} fallback={counts['fallback']}", ""]
     statements = ["UPDATE imported_post_images SET source_url=" + _sql(o["source_url"])
+                  + ", alternate_image_url=" + _sql(o["alternate_image_url"])
                   + ", preview_url=" + _sql(o["preview_url"])
                   + ", width=" + _sql(o["width"]) + ", height=" + _sql(o["height"])
                   + " WHERE id=" + str(o["id"]) + ";" for o in outcomes]
