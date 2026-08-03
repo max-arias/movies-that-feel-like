@@ -5,7 +5,7 @@ from normalized posts and their comment trees.
 Dry-run mode (``--dry-run``) builds prompts without calling any LLM.
 Real mode supports two providers:
 
-* **OpenCode Go** (default) — model ``deepseek-v4-flash``, ``OPENCODE_GO_API_KEY``
+* **OpenCode Go** (default) — model ``deepseek-v4-pro``, ``OPENCODE_GO_API_KEY``
   env var, and the OpenCode Go OpenAI-compatible endpoint.
 
 * **OpenAI-compatible** — model ``openai/…`` or bare model id,
@@ -63,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  OPENCODE_GO_API_KEY=... pipeline:extract --limit 5 --max-attempts 5\n"
             "\n"
             "  # OpenAI-compatible (e.g. opencode-go)\n"
-            "  OPENCODE_GO_API_KEY=... pipeline:extract --model deepseek-v4-flash\n"
+            "  OPENCODE_GO_API_KEY=... pipeline:extract --model deepseek-v4-pro\n"
         ),
     )
     parser.add_argument(
@@ -99,7 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model",
-        default="deepseek-v4-flash",
+        default="deepseek-v4-pro",
         help=(
             "Model identifier.  Prefix with ``google/`` for Gemini, "
             "``openai/`` or bare name for OpenAI-compatible "
@@ -189,7 +189,7 @@ def _resolve_openai_config(
     # The default model is intentionally tied to OpenCode Go. Other model
     # selections retain the existing OPENAI_API_KEY-compatible path.
     opencode_key = os.environ.get("OPENCODE_GO_API_KEY")
-    if model == "deepseek-v4-flash" and not opencode_key:
+    if model == "deepseek-v4-pro" and not opencode_key:
         raise SystemExit(
             "[pipeline:extract] OPENCODE_GO_API_KEY must be set for the "
             "default OpenCode Go model. Use --dry-run to preview prompts without a key."

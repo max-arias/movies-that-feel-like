@@ -222,11 +222,7 @@ async def _async_main(argv: list[str] | None = None) -> None:
         if exclusion_enabled and page_count >= args.max_pages:
             stopped_for_bound = True
             break
-        page_limit = (
-            min(_MAX_SEARCH_PAGE_SIZE, requested_limit - len(posts))
-            if exclusion_enabled
-            else requested_limit
-        )
+        page_limit = _MAX_SEARCH_PAGE_SIZE if exclusion_enabled else requested_limit
         response = await asyncio.to_thread(
             client.search_posts,
             subreddit=args.subreddit,
