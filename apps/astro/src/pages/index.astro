@@ -16,10 +16,35 @@ const selectedTag = requestedTag && tags.some(([tag]) => tag === requestedTag) ?
 const visiblePosts = selectedTag === "all"
   ? posts
   : posts.filter((post) => post.tags.some(({ tag }) => tag === selectedTag));
-const tagHref = (tag: string) => tag === "all"
-  ? Astro.url.pathname
-  : `${Astro.url.pathname}?tag=${encodeURIComponent(tag)}`;
+const pageSize = 25;
+const requestedPage = Astro.url.searchParams.get("page");
+const parsedPage = requestedPage && /^\d+$/.test(requestedPage) ? Number(requestedPage) : 1;
+const requestedPageNumber = Number.isSafeInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+const pageCount = Math.max(1, Math.ceil(visiblePosts.length / pageSize));
+const currentPage = Math.min(requestedPageNumber, pageCount);
+const paginatedPosts = visiblePosts.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+const postsForTag = (tag: string) => tag === "all"
+  ? posts
+  : posts.filter((post) => post.tags.some(({ tag: postTag }) => postTag === tag));
+const hrefFor = (tag: string, page: number) => {
+  const params = new URLSearchParams();
+  if (tag !== "all") params.set("tag", tag);
+  if (page > 1) params.set("page", String(page));
+  const query = params.toString();
+  return query ? `${Astro.url.pathname}?${query}` : Astro.url.pathname;
+};
+const tagHref = (tag: string) => hrefFor(tag, Math.min(currentPage, Math.max(1, Math.ceil(postsForTag(tag).length / pageSize))));
 const maxTagCount = Math.max(1, ...tags.map(([, count]) => count));
+
+const pageItems: (number | "ellipsis")[] = pageCount <= 4
+  ? Array.from({ length: pageCount }, (_, index) => index + 1)
+  : currentPage <= 2
+    ? [1, 2, 3, "ellipsis", pageCount]
+    : currentPage >= pageCount - 1
+      ? [1, "ellipsis", pageCount - 2, pageCount - 1, pageCount]
+      : [1, "ellipsis", currentPage, "ellipsis", pageCount];
+const pageHref = (page: number) => hrefFor(selectedTag, page);
 ---
 
 <Layout
@@ -57,8 +82,8 @@ const maxTagCount = Math.max(1, ...tags.map(([, count]) => count));
             </div>
           </div>
           <ul class="grid grid-cols-1 gap-mobile-rail-gap md:grid-cols-2 md:gap-rail-gap">
-            {visiblePosts.map((post, galleryIndex) => (
-              <li class="min-w-0 md:[&:nth-child(even)]:translate-y-rail-offset" data-post-tags={post.tags.map(({ tag }) => tag).join("|")}>
+            {paginatedPosts.map((post, galleryIndex) => (
+              <li class="min-w-0 md:[&:nth-child(even)]:translate-y-rail-offset">
                 <article class="pt-post-top">
                     {post.images.length > 0 ? (
                       <div class="relative aspect-square overflow-hidden bg-gallery" data-gallery data-gallery-index={galleryIndex} aria-label={`Image gallery for ${post.title}`}>
@@ -91,6 +116,17 @@ const maxTagCount = Math.max(1, ...tags.map(([, count]) => count));
               </li>
             ))}
           </ul>
+          {pageCount > 1 && (
+            <nav class="mt-10 flex flex-wrap items-center gap-x-3 gap-y-2 text-label uppercase tracking-theme text-quiet theme-dark:text-quiet-dark" aria-label="Pagination">
+              {currentPage > 1 && <a class="transition-colors duration-200 ease-theme hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:hover:text-red-dark theme-dark:outline-red-dark" href={pageHref(currentPage - 1)} aria-label="Previous page">&lt;</a>}
+              {pageItems.map((item) => item === "ellipsis"
+                ? <span aria-hidden="true">…</span>
+                : item === currentPage
+                  ? <span class="underline decoration-1 underline-offset-4" aria-current="page">{item}</span>
+                  : <a class="transition-colors duration-200 ease-theme hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:hover:text-red-dark theme-dark:outline-red-dark" href={pageHref(item)}>{item}</a>)}
+              {currentPage < pageCount && <a class="transition-colors duration-200 ease-theme hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:hover:text-red-dark theme-dark:outline-red-dark" href={pageHref(currentPage + 1)} aria-label="Next page">&gt;</a>}
+            </nav>
+          )}
         </section>
         <aside class="@container static w-full min-w-0 md:sticky md:top-6" aria-label="Filter by feeling">
           <div class="tag-list tag-mask scrollbar-hidden max-h-sidebar-height hidden flex-col gap-1.5 overflow-y-auto overscroll-contain pt-sidebar-top pb-sidebar-bottom md:flex" data-max-count={maxTagCount} role="group" aria-label="Filter posts by tag">
@@ -131,20 +167,6 @@ const maxTagCount = Math.max(1, ...tags.map(([, count]) => count));
 
   setupImageFallbacks();
   document.addEventListener("astro:page-load", setupImageFallbacks);
-
-  const applyTagFilter = () => {
-    const requestedTag = new URLSearchParams(window.location.search).get("tag");
-    const posts = Array.from(document.querySelectorAll<HTMLElement>("[data-post-tags]"));
-    const knownTags = new Set(posts.flatMap((post) => (post.dataset.postTags ?? "").split("|").filter(Boolean)));
-    const selectedTag = requestedTag && knownTags.has(requestedTag) ? requestedTag : "all";
-
-    posts.forEach((post) => {
-      post.hidden = selectedTag !== "all" && !(post.dataset.postTags ?? "").split("|").includes(selectedTag);
-    });
-  };
-
-  applyTagFilter();
-  document.addEventListener("astro:page-load", applyTagFilter);
 
   const setupGalleries = () => {
     document.querySelectorAll<HTMLElement>("[data-gallery]").forEach((gallery) => {
