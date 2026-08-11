@@ -7,12 +7,13 @@ const execFileAsync = promisify(execFile);
 const databaseName = process.env.D1_DATABASE_NAME || "movies-that-feel-like";
 const outputPath = resolve(new URL("../src/lib/build-data.snapshot.json", import.meta.url).pathname);
 const wranglerConfig = resolve(new URL("../wrangler.jsonc", import.meta.url).pathname);
+const pageSize = 250;
 
 const queries = {
   posts: `SELECT id, reddit_post_id, title, cleaned_title, selftext, author, created_utc, permalink, url, subreddit, vibe_summary, status, error_info, processing_run_id, created_at, updated_at FROM imported_vibe_posts WHERE status = 'publishable' ORDER BY created_utc DESC, id DESC`,
   images: `SELECT i.id, i.imported_vibe_post_id, i.source_url, i.preview_url, i.width, i.height, i.sort_order, i.created_at FROM imported_post_images i INNER JOIN imported_vibe_posts p ON p.id = i.imported_vibe_post_id WHERE p.status = 'publishable' ORDER BY i.imported_vibe_post_id ASC, i.sort_order ASC, i.id ASC`,
   tags: `SELECT t.id, t.imported_vibe_post_id, t.tag, t.source, t.created_at FROM vibe_tags t INNER JOIN imported_vibe_posts p ON p.id = t.imported_vibe_post_id WHERE p.status = 'publishable' ORDER BY t.imported_vibe_post_id ASC, t.id ASC`,
-  recommendations: `SELECT r.id, r.title, r.tmdb_id, r.imdb_id, r.igdb_id, r.media_type, r.release_year, r.poster_url, r.backdrop_url, r.overview, r.external_url, r.platforms, r.popularity, r.vote_average, r.evidence_score, e.imported_vibe_post_id, e.evidence_comment_id FROM recommendations r INNER JOIN recommendation_evidence e ON e.recommendation_id = r.id INNER JOIN imported_vibe_posts p ON p.id = e.imported_vibe_post_id WHERE p.status = 'publishable' ORDER BY e.imported_vibe_post_id ASC, r.evidence_score DESC, r.popularity DESC, r.id ASC`,
+  recommendations: `SELECT r.id, r.title, r.tmdb_id, r.imdb_id, r.igdb_id, r.media_type, r.release_year, r.poster_url, r.backdrop_url, r.overview, r.external_url, r.platforms, r.popularity, r.vote_average, r.evidence_score, e.imported_vibe_post_id, e.evidence_comment_id FROM recommendations r INNER JOIN recommendation_evidence e ON e.recommendation_id = r.id INNER JOIN imported_vibe_posts p ON p.id = e.imported_vibe_post_id WHERE p.status = 'publishable' ORDER BY e.imported_vibe_post_id ASC, r.evidence_score DESC, r.popularity DESC, r.id ASC, e.id ASC`,
 };
 
 function assertObject(value, label) {
@@ -42,19 +43,24 @@ function rowsFromResponse(stdout, label) {
 }
 
 async function execute(name, sql) {
-  try {
-    const { stdout } = await execFileAsync("npm", [
-      "exec", "--offline", "--", "wrangler", "d1", "execute", databaseName,
-      "--remote", "--config", wranglerConfig, "--command", sql, "--json",
-    ], { cwd: resolve(new URL("../../..", import.meta.url).pathname), maxBuffer: 20 * 1024 * 1024 });
-    return rowsFromResponse(stdout, name);
-  } catch (error) {
-    const detail = error.stdout || error.stderr || error.message;
-    throw new Error(
-      `Remote D1 snapshot query '${name}' failed: ${detail}\n` +
-        "Local Wrangler OAuth is supported. For Cloudflare Pages, configure " +
-        "CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN (Account → D1 → Read)."
-    );
+  const rows = [];
+  for (let offset = 0; ; offset += pageSize) {
+    try {
+      const { stdout } = await execFileAsync("npm", [
+        "exec", "--offline", "--", "wrangler", "d1", "execute", databaseName,
+        "--remote", "--config", wranglerConfig, "--command", `${sql} LIMIT ${pageSize} OFFSET ${offset}`, "--json",
+      ], { cwd: resolve(new URL("../../..", import.meta.url).pathname), maxBuffer: 20 * 1024 * 1024 });
+      const page = rowsFromResponse(stdout, name);
+      rows.push(...page);
+      if (page.length < pageSize) return rows;
+    } catch (error) {
+      const detail = error.stdout || error.stderr || error.message;
+      throw new Error(
+        `Remote D1 snapshot query '${name}' failed: ${detail}\n` +
+          "Local Wrangler OAuth is supported. For Cloudflare Pages, configure " +
+          "CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN (Account → D1 → Read)."
+      );
+    }
   }
 }
 
