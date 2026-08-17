@@ -5,7 +5,7 @@ from normalized posts and their comment trees.
 Dry-run mode (``--dry-run``) builds prompts without calling any LLM.
 Real mode supports two providers:
 
-* **OpenCode Go** (default) — model ``deepseek-v4-pro``, ``OPENCODE_GO_API_KEY``
+* **OpenCode Go** (default) — model ``mimo-v2.5``, ``OPENCODE_GO_API_KEY``
   env var, and the OpenCode Go OpenAI-compatible endpoint.
 
 * **OpenAI-compatible** — model ``openai/…`` or bare model id,
@@ -40,6 +40,7 @@ from pipeline.models import PostExtraction
 from pipeline.paths import checkpoints_dir, ensure_pipeline_dirs, normalized_dir, working_dir
 
 EXTRACTION_SCHEMA_VERSION = "post-extraction-v3"
+DEFAULT_OPENCODE_GO_MODEL = "mimo-v2.5"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  OPENCODE_GO_API_KEY=... pipeline:extract --limit 5 --max-attempts 5\n"
             "\n"
             "  # OpenAI-compatible (e.g. opencode-go)\n"
-            "  OPENCODE_GO_API_KEY=... pipeline:extract --model deepseek-v4-pro\n"
+            "  OPENCODE_GO_API_KEY=... pipeline:extract --model mimo-v2.5\n"
         ),
     )
     parser.add_argument(
@@ -99,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model",
-        default="deepseek-v4-pro",
+        default=DEFAULT_OPENCODE_GO_MODEL,
         help=(
             "Model identifier.  Prefix with ``google/`` for Gemini, "
             "``openai/`` or bare name for OpenAI-compatible "
@@ -111,9 +112,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         choices=["json", "md_json", "tools"],
         help=(
-            "Instructor extraction mode.  For OpenAI-compatible providers "
-            "defaults to ``json``; for Gemini defaults to auto-detected. "
-            "Use ``md_json`` as fallback for models that don't support native JSON mode."
+            "Instructor extraction mode.  The default OpenCode Go model "
+            "uses ``md_json``; other OpenAI-compatible models default to "
+            "``json`` and Gemini defaults to auto-detected. "
+            "Use ``md_json`` for models that don't support native JSON mode."
         ),
     )
     parser.add_argument(
@@ -176,6 +178,17 @@ def _detect_provider(model: str) -> str:
     return "openai"
 
 
+def _resolve_instructor_mode(provider: str, model: str, mode: str | None) -> str:
+    """Return the effective Instructor mode for a provider/model selection."""
+    if mode is not None:
+        return mode
+    if provider == "google":
+        return "auto"
+    if model == DEFAULT_OPENCODE_GO_MODEL:
+        return "md_json"
+    return "json"
+
+
 def _resolve_openai_config(
     model: str, api_base: str | None
 ) -> tuple[str, str, str | None]:
@@ -189,7 +202,7 @@ def _resolve_openai_config(
     # The default model is intentionally tied to OpenCode Go. Other model
     # selections retain the existing OPENAI_API_KEY-compatible path.
     opencode_key = os.environ.get("OPENCODE_GO_API_KEY")
-    if model == "deepseek-v4-pro" and not opencode_key:
+    if model == DEFAULT_OPENCODE_GO_MODEL and not opencode_key:
         raise SystemExit(
             "[pipeline:extract] OPENCODE_GO_API_KEY must be set for the "
             "default OpenCode Go model. Use --dry-run to preview prompts without a key."
@@ -226,6 +239,7 @@ def _build_extraction_client(
     serialisable dict of provider metadata (no secrets).
     """
     audit: dict[str, Any] = {}
+    effective_mode = _resolve_instructor_mode(provider, model, mode)
 
     if provider == "google":
         from instructor import from_provider
@@ -241,7 +255,7 @@ def _build_extraction_client(
 
         client = from_provider(model)
         audit["provider"] = "google"
-        audit["mode"] = mode or "auto"
+        audit["mode"] = effective_mode
         return client, model, audit
 
     # ── OpenAI-compatible ─────────────────────────────────────────────
@@ -258,17 +272,16 @@ def _build_extraction_client(
         timeout=httpx.Timeout(180.0, connect=10.0), max_retries=0,
     )
 
-    # Mode selection: default to JSON for OpenAI-compatible.
-    instr_mode = instructor.Mode.JSON
-    if mode == "md_json":
-        instr_mode = instructor.Mode.MD_JSON
-    elif mode == "tools":
-        instr_mode = instructor.Mode.TOOLS
+    instr_mode = {
+        "json": instructor.Mode.JSON,
+        "md_json": instructor.Mode.MD_JSON,
+        "tools": instructor.Mode.TOOLS,
+    }[effective_mode]
 
     client = instructor.from_openai(openai_client, mode=instr_mode)
 
     audit["provider"] = "openai"
-    audit["mode"] = mode or "json"
+    audit["mode"] = effective_mode
     audit["api_base_set"] = resolved_base is not None
     audit["api_base"] = resolved_base
     return client, actual_model, audit
@@ -536,7 +549,7 @@ def main(argv: list[str] | None = None) -> None:
                 "api_base": args.api_base,
                 "provider": {
                     "provider": _detect_provider(args.model),
-                    "mode": args.mode or ("json" if _detect_provider(args.model) == "openai" else "auto"),
+                    "mode": _resolve_instructor_mode(_detect_provider(args.model), args.model, args.mode),
                     "api_base_set": args.api_base is not None,
                 },
             },
@@ -573,15 +586,14 @@ def main(argv: list[str] | None = None) -> None:
     provider = _detect_provider(args.model)
     print(f"[pipeline:extract] Provider: {provider}")
     print(f"[pipeline:extract] Model:    {args.model}")
-    if args.mode:
-        print(f"[pipeline:extract] Mode:     {args.mode}")
+    instructor_mode = _resolve_instructor_mode(provider, args.model, args.mode)
+    print(f"[pipeline:extract] Mode:     {instructor_mode}")
     if args.api_base:
         print(f"[pipeline:extract] API base: {args.api_base}")
 
     # Resolve output-affecting identity without constructing a client. This is
     # important for an all-hit snapshot run: it must not require an API key.
     actual_model = args.model.removeprefix("openai/")
-    instructor_mode = args.mode or ("json" if provider == "openai" else "auto")
     resolved_api_base = args.api_base or os.environ.get("OPENAI_BASE_URL")
     if provider == "openai" and not resolved_api_base and os.environ.get("OPENCODE_GO_API_KEY"):
         resolved_api_base = "https://opencode.ai/zen/go/v1"

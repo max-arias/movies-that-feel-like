@@ -10,7 +10,7 @@ The first version is intentionally read-only: users browse imported Reddit data 
 
 - Imports posts, images, and comments from `r/MoviesThatFeelLike`.
 - Keeps raw/intermediate artifacts locally so pipeline stages can be retried without refetching.
-- Extracts concrete movie/series recommendations from Reddit comments using OpenCode Go with `deepseek-v4-flash`.
+- Extracts concrete movie/series recommendations from Reddit comments using OpenCode Go with `mimo-v2.5`.
 - Generates a short text-only vibe summary and tags from the post title/text/comments.
 - Resolves recommendations to canonical TMDB movie/TV records.
 - Links posts together through shared canonical recommendations.
@@ -49,7 +49,7 @@ See `CONTEXT.md` for the glossary.
 - Tailwind CSS 4 + daisyUI 5
 - Python pipeline managed with `uv`
 - Arctic Shift / `arcshiftwrap` for Reddit archive data
-- Instructor + Pydantic + OpenCode Go (`deepseek-v4-flash`) for structured extraction
+- Instructor + Pydantic + OpenCode Go (`mimo-v2.5`) for structured extraction
 - TMDB API for media enrichment
 
 ## Required local environment
@@ -112,7 +112,7 @@ npm run seed
 npm run dev
 ```
 
-Extraction uses OpenCode Go with the default model `deepseek-v4-flash`; set
+Extraction uses OpenCode Go with the default model `mimo-v2.5`; set
 `OPENCODE_GO_API_KEY` before running `pipeline:extract`.
 Extraction is resumable: completed posts are fsynced to an append-only JSONL
 checkpoint in `data/working/checkpoints/`. The default bounded concurrency is 3

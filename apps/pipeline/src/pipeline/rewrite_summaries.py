@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 from pipeline.extraction_input import SYSTEM_INSTRUCTION
+from pipeline.extract import DEFAULT_OPENCODE_GO_MODEL
 
 
 def sql_quote(value: str) -> str:
@@ -201,7 +202,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Create a migration for concise vibe-summary rewrites")
     parser.add_argument("--db", default="data/app.db")
     parser.add_argument("--migrations-dir", default="packages/db/migrations")
-    parser.add_argument("--model", default="deepseek-v4-flash")
+    parser.add_argument("--model", default=DEFAULT_OPENCODE_GO_MODEL)
     parser.add_argument("--api-base", default=None)
     parser.add_argument("--max-attempts", type=int, default=3)
     parser.add_argument("--backoff-seconds", type=float, default=5.0)
