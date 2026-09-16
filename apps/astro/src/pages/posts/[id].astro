@@ -5,14 +5,15 @@
 // a full-screen DaisyUI carousel of the same images. See issue #4 for the spec.
 
 import Layout from "../../layouts/Layout.astro";
-import { getBuildData } from "../../lib/build-data";
+import { getDb } from "../../lib/db";
+import { loadPost, type Recommendation } from "../../lib/db/queries";
 
-export async function getStaticPaths() {
-  const { posts } = await getBuildData();
-  return posts.map((post) => ({ params: { id: post.redditPostId }, props: { post } }));
-}
+const postId = Astro.params.id;
+const post = postId ? await loadPost(getDb(), postId) : null;
 
-const post = Astro.props.post as Awaited<ReturnType<typeof getBuildData>>["posts"][number] | undefined;
+// A post whose images Reddit has deleted is no longer a page: it is treated as
+// not found rather than served as a hero-less shell.
+if (!post) Astro.response.status = 404;
 
 const slideId = (i: number) => `slide${i + 1}`;
 const modalSlideId = (i: number) => `modal-slide${i + 1}`;
@@ -21,11 +22,9 @@ const heroNext = (i: number, total: number) => (i === total - 1 ? `#${slideId(0)
 const modalPrev = (i: number, total: number) => (i === 0 ? `#${modalSlideId(total - 1)}` : `#${modalSlideId(i - 1)}`);
 const modalNext = (i: number, total: number) => (i === total - 1 ? `#${modalSlideId(0)}` : `#${modalSlideId(i + 1)}`);
 const totalImages = post?.images.length ?? 0;
-const hasHero = !!post && totalImages > 0;
 const tagHref = (tag: string) => `/?tag=${encodeURIComponent(tag)}`;
 const redditHref = (permalink: string) => `https://reddit.com${permalink}`;
 
-type Recommendation = NonNullable<typeof post>["recommendations"][number];
 const externalHref = (rec: Recommendation): string | null => {
   if (rec.imdbId) return `https://www.imdb.com/title/${rec.imdbId}/`;
   if (rec.tmdbId) {
@@ -76,116 +75,103 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
     </div>
   ) : (
     <div class="pb-24">
-      {!hasHero ? (
-        <div class="hero mb-12 min-h-64 rounded-box border border-line bg-paper transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:border-line-dark theme-dark:bg-paper-dark">
-          <div class="hero-content text-center">
-            <div class="max-w-md">
-              <h2 class="text-xl font-bold">No images</h2>
-              <p class="py-4 text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">
-                This post has no images to display.
-              </p>
-            </div>
-          </div>
-        </div>
-      ) : (
-        <section class="pt-4 mb-1.5 grid grid-cols-1 items-center gap-8 lg:grid-cols-[7fr_3fr]" aria-label="Post hero">
-          <div class="relative">
-            <div
-              class="carousel aspect-video w-full overflow-hidden bg-gallery"
-              transition:name={`post-image-${post.redditPostId}`}
-              data-hero-carousel
-              aria-label={`Image gallery. ${totalImages} image${totalImages === 1 ? "" : "s"}.`}
-            >
-              {post.images.map((img, i) => {
-                const primaryUrl = img.previewUrl ?? img.sourceUrl;
-                const fallbackUrls = [img.sourceUrl]
-                  .filter((url): url is string => typeof url === "string" && url.trim().length > 0)
-                  .filter((url) => url !== primaryUrl);
-                return (
-                <div id={slideId(i)} class="carousel-item relative w-full">
-                  <button
-                    type="button"
-                    class="block h-full w-full focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark"
-                    data-open-lightbox={i}
-                    aria-label={`Open image ${i + 1} of ${totalImages} at full size`}
-                  >
-                    <div class="relative h-full w-full">
-                      <img
-                        src={primaryUrl}
-                        data-fallback-urls={JSON.stringify(fallbackUrls)}
-                        alt={`Post image ${i + 1} of ${totalImages}`}
-                        class="h-full w-full object-cover"
-                        loading={i === 0 ? "eager" : "lazy"}
-                        decoding="async"
-                        fetchpriority={i === 0 ? "high" : undefined}
-                        data-fallback-image
-                      />
-                      <span class="absolute inset-0 hidden items-center justify-center bg-gallery-empty text-no-image text-gallery-empty-text" data-image-fallback aria-hidden="true">No image loaded.</span>
-                    </div>
-                  </button>
-                  {totalImages > 1 && (
-                    <>
-                      <a
-                        href={heroPrev(i, totalImages)}
-                        class="btn btn-circle btn-sm absolute left-4 top-1/2 -translate-y-1/2 border border-ink/20 bg-paper/90 text-ink shadow-md hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:btn-md theme-dark:border-ink-dark/20 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
-                        aria-label="Show previous image"
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" aria-hidden="true">
-                          <path d="m15 18-6-6 6-6" />
-                        </svg>
-                      </a>
-                      <a
-                        href={heroNext(i, totalImages)}
-                        class="btn btn-circle btn-sm absolute right-4 top-1/2 -translate-y-1/2 border border-ink/20 bg-paper/90 text-ink shadow-md hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:btn-md theme-dark:border-ink-dark/20 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
-                        aria-label="Show next image"
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" aria-hidden="true">
-                          <path d="m9 18 6-6-6-6" />
-                        </svg>
-                      </a>
-                    </>
-                  )}
-                </div>
-                );
-              })}
-            </div>
-            {totalImages > 1 && (
-              <div class="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end p-3">
-                <p
-                  class="rounded-full bg-ink px-3 py-1 text-label uppercase tabular-nums tracking-theme text-paper shadow-md motion-reduce:transition-none theme-dark:bg-paper-dark theme-dark:text-ink-dark"
-                  data-hero-status
-                  aria-live="polite"
+      <section class="pt-4 mb-1.5 grid grid-cols-1 items-center gap-8 lg:grid-cols-[7fr_3fr]" aria-label="Post hero">
+        <div class="relative">
+          <div
+            class="carousel aspect-video w-full overflow-hidden bg-gallery"
+            transition:name={`post-image-${post.redditPostId}`}
+            data-hero-carousel
+            aria-label={`Image gallery. ${totalImages} image${totalImages === 1 ? "" : "s"}.`}
+          >
+            {post.images.map((img, i) => {
+              const primaryUrl = img.previewUrl ?? img.sourceUrl;
+              const fallbackUrls = [img.sourceUrl]
+                .filter((url): url is string => typeof url === "string" && url.trim().length > 0)
+                .filter((url) => url !== primaryUrl);
+              return (
+              <div id={slideId(i)} class="carousel-item relative w-full">
+                <button
+                  type="button"
+                  class="block h-full w-full focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark"
+                  data-open-lightbox={i}
+                  aria-label={`Open image ${i + 1} of ${totalImages} at full size`}
                 >
-                  01 / {String(totalImages).padStart(2, "0")}
-                </p>
+                  <div class="relative h-full w-full">
+                    <img
+                      src={primaryUrl}
+                      data-fallback-urls={JSON.stringify(fallbackUrls)}
+                      alt={`Post image ${i + 1} of ${totalImages}`}
+                      class="h-full w-full object-cover"
+                      loading={i === 0 ? "eager" : "lazy"}
+                      decoding="async"
+                      fetchpriority={i === 0 ? "high" : undefined}
+                      data-fallback-image
+                    />
+                    <span class="absolute inset-0 hidden items-center justify-center bg-gallery-empty text-no-image text-gallery-empty-text" data-image-fallback aria-hidden="true">No image loaded.</span>
+                  </div>
+                </button>
+                {totalImages > 1 && (
+                  <>
+                    <a
+                      href={heroPrev(i, totalImages)}
+                      class="btn btn-circle btn-sm absolute left-4 top-1/2 -translate-y-1/2 border border-ink/20 bg-paper/90 text-ink shadow-md hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:btn-md theme-dark:border-ink-dark/20 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
+                      aria-label="Show previous image"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" aria-hidden="true">
+                        <path d="m15 18-6-6 6-6" />
+                      </svg>
+                    </a>
+                    <a
+                      href={heroNext(i, totalImages)}
+                      class="btn btn-circle btn-sm absolute right-4 top-1/2 -translate-y-1/2 border border-ink/20 bg-paper/90 text-ink shadow-md hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:btn-md theme-dark:border-ink-dark/20 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
+                      aria-label="Show next image"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" aria-hidden="true">
+                        <path d="m9 18 6-6-6-6" />
+                      </svg>
+                    </a>
+                  </>
+                )}
               </div>
-            )}
+              );
+            })}
           </div>
-
-          <aside class="flex flex-col gap-4" aria-label="Post mood and source">
-            {post.vibeSummary && (
-              <p transition:name={`post-vibe-${post.redditPostId}`} class="font-body text-vibe-summary lg:text-vibe-summary-desktop font-normal text-quiet text-pretty transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">
-                {post.vibeSummary}
-              </p>
-            )}
-            {post.permalink && (
-              <a
-                href={redditHref(post.permalink)}
-                class="btn btn-outline btn-sm self-start border border-ink bg-paper text-ink normal-case transition-colors duration-240 ease-theme motion-reduce:transition-none hover:border-ink hover:bg-ink hover:text-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:border-ink-dark theme-dark:bg-paper-dark theme-dark:text-ink-dark theme-dark:hover:border-ink-dark theme-dark:hover:bg-ink-dark theme-dark:hover:text-paper-dark theme-dark:outline-red-dark"
-                target="_blank"
-                rel="noopener noreferrer"
+          {totalImages > 1 && (
+            <div class="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end p-3">
+              <p
+                class="rounded-full bg-ink px-3 py-1 text-label uppercase tabular-nums tracking-theme text-paper shadow-md motion-reduce:transition-none theme-dark:bg-paper-dark theme-dark:text-ink-dark"
+                data-hero-status
+                aria-live="polite"
               >
-                View on Reddit ↗
-              </a>
-            )}
-          </aside>
-        </section>
-      )}
+                01 / {String(totalImages).padStart(2, "0")}
+              </p>
+            </div>
+          )}
+        </div>
+
+        <aside class="flex flex-col gap-4" aria-label="Post mood and source">
+          {post.vibeSummary && (
+            <p transition:name={`post-vibe-${post.redditPostId}`} class="font-body text-vibe-summary lg:text-vibe-summary-desktop font-normal text-quiet text-pretty transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">
+              {post.vibeSummary}
+            </p>
+          )}
+          {post.permalink && (
+            <a
+              href={redditHref(post.permalink)}
+              class="btn btn-outline btn-sm self-start border border-ink bg-paper text-ink normal-case transition-colors duration-240 ease-theme motion-reduce:transition-none hover:border-ink hover:bg-ink hover:text-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:border-ink-dark theme-dark:bg-paper-dark theme-dark:text-ink-dark theme-dark:hover:border-ink-dark theme-dark:hover:bg-ink-dark theme-dark:hover:text-paper-dark theme-dark:outline-red-dark"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              View on Reddit ↗
+            </a>
+          )}
+        </aside>
+      </section>
 
       {post.tags.length > 0 && (
         <nav class="mb-6" aria-label="Post tags">
           <ul class="scrollbar-hidden flex flex-row flex-nowrap gap-2 overflow-x-auto">
-            {post.tags.map(({ tag }) => (
+            {post.tags.map((tag) => (
               <li class="shrink-0">
                 <a
                   href={tagHref(tag)}
@@ -320,72 +306,70 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
         </section>
       )}
 
-      {hasHero && (
-        <dialog id="hero-lightbox" class="modal" aria-label="Image lightbox">
-          <div class="modal-box max-w-[min(95vw,1600px)] h-[90vh] w-full bg-paper/0 p-0 shadow-none motion-reduce:transition-none theme-dark:bg-paper-dark/0">
-            <form method="dialog" class="absolute right-2 top-2 z-10">
-              <button
-                type="submit"
-                class="btn btn-circle btn-sm border border-ink/20 bg-paper/90 text-ink hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none theme-dark:border-ink-dark/20 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
-                aria-label="Close lightbox"
-              >✕</button>
-            </form>
-            <div
-              class="carousel h-full w-full overflow-hidden bg-ink/95 motion-reduce:transition-none theme-dark:bg-ink-dark/95"
-              data-modal-carousel
-              aria-label={`Image gallery lightbox. ${totalImages} image${totalImages === 1 ? "" : "s"}.`}
-            >
-              {post.images.map((img, i) => {
-                const primaryUrl = img.previewUrl ?? img.sourceUrl;
-                const fallbackUrls = [img.sourceUrl]
-                  .filter((url): url is string => typeof url === "string" && url.trim().length > 0)
-                  .filter((url) => url !== primaryUrl);
-                return (
-                <div id={modalSlideId(i)} class="carousel-item relative h-full w-full">
-                  <div class="relative h-full w-full">
-                    <img
-                      src={primaryUrl}
-                      data-fallback-urls={JSON.stringify(fallbackUrls)}
-                      alt={`Post image ${i + 1} of ${totalImages}`}
-                      class="h-full w-full object-contain"
-                      loading={i === 0 ? "eager" : "lazy"}
-                      decoding="async"
-                      data-fallback-image
-                    />
-                    <span class="absolute inset-0 hidden items-center justify-center bg-gallery-empty text-no-image text-gallery-empty-text" data-image-fallback aria-hidden="true">No image loaded.</span>
-                  </div>
-                  {totalImages > 1 && (
-                    <>
-                      <a
-                        href={modalPrev(i, totalImages)}
-                        class="btn btn-circle absolute left-3 top-1/2 -translate-y-1/2 border border-paper/30 bg-paper/90 text-ink hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:left-5 theme-dark:border-paper-dark/30 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
-                        aria-label="Show previous image"
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5" aria-hidden="true">
-                          <path d="m15 18-6-6 6-6" />
-                        </svg>
-                      </a>
-                      <a
-                        href={modalNext(i, totalImages)}
-                        class="btn btn-circle absolute right-3 top-1/2 -translate-y-1/2 border border-paper/30 bg-paper/90 text-ink hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:right-5 theme-dark:border-paper-dark/30 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
-                        aria-label="Show next image"
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5" aria-hidden="true">
-                          <path d="m9 18 6-6-6-6" />
-                        </svg>
-                      </a>
-                    </>
-                  )}
-                </div>
-                );
-              })}
-            </div>
-          </div>
-          <form method="dialog" class="modal-backdrop">
-            <button aria-label="Close lightbox">close</button>
+      <dialog id="hero-lightbox" class="modal" aria-label="Image lightbox">
+        <div class="modal-box max-w-[min(95vw,1600px)] h-[90vh] w-full bg-paper/0 p-0 shadow-none motion-reduce:transition-none theme-dark:bg-paper-dark/0">
+          <form method="dialog" class="absolute right-2 top-2 z-10">
+            <button
+              type="submit"
+              class="btn btn-circle btn-sm border border-ink/20 bg-paper/90 text-ink hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none theme-dark:border-ink-dark/20 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
+              aria-label="Close lightbox"
+            >✕</button>
           </form>
-        </dialog>
-      )}
+          <div
+            class="carousel h-full w-full overflow-hidden bg-ink/95 motion-reduce:transition-none theme-dark:bg-ink-dark/95"
+            data-modal-carousel
+            aria-label={`Image gallery lightbox. ${totalImages} image${totalImages === 1 ? "" : "s"}.`}
+          >
+            {post.images.map((img, i) => {
+              const primaryUrl = img.previewUrl ?? img.sourceUrl;
+              const fallbackUrls = [img.sourceUrl]
+                .filter((url): url is string => typeof url === "string" && url.trim().length > 0)
+                .filter((url) => url !== primaryUrl);
+              return (
+              <div id={modalSlideId(i)} class="carousel-item relative h-full w-full">
+                <div class="relative h-full w-full">
+                  <img
+                    src={primaryUrl}
+                    data-fallback-urls={JSON.stringify(fallbackUrls)}
+                    alt={`Post image ${i + 1} of ${totalImages}`}
+                    class="h-full w-full object-contain"
+                    loading={i === 0 ? "eager" : "lazy"}
+                    decoding="async"
+                    data-fallback-image
+                  />
+                  <span class="absolute inset-0 hidden items-center justify-center bg-gallery-empty text-no-image text-gallery-empty-text" data-image-fallback aria-hidden="true">No image loaded.</span>
+                </div>
+                {totalImages > 1 && (
+                  <>
+                    <a
+                      href={modalPrev(i, totalImages)}
+                      class="btn btn-circle absolute left-3 top-1/2 -translate-y-1/2 border border-paper/30 bg-paper/90 text-ink hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:left-5 theme-dark:border-paper-dark/30 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
+                      aria-label="Show previous image"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5" aria-hidden="true">
+                        <path d="m15 18-6-6 6-6" />
+                      </svg>
+                    </a>
+                    <a
+                      href={modalNext(i, totalImages)}
+                      class="btn btn-circle absolute right-3 top-1/2 -translate-y-1/2 border border-paper/30 bg-paper/90 text-ink hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:right-5 theme-dark:border-paper-dark/30 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
+                      aria-label="Show next image"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5" aria-hidden="true">
+                        <path d="m9 18 6-6-6-6" />
+                      </svg>
+                    </a>
+                  </>
+                )}
+              </div>
+              );
+            })}
+          </div>
+        </div>
+        <form method="dialog" class="modal-backdrop">
+          <button aria-label="Close lightbox">close</button>
+        </form>
+      </dialog>
     </div>
   )}
 </Layout>

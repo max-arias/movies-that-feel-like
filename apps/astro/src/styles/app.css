@@ -121,7 +121,7 @@ body {
   --ease-gallery: ease;
 }
 
-@custom-variant theme-dark (&:where(:root:has(.theme-controller[value="dark"]:checked), :root:has(.theme-controller[value="dark"]:checked) *));
+@custom-variant theme-dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 @utility scrollbar-hidden {
   scrollbar-width: none;
   &::-webkit-scrollbar { display: none; }

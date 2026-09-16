@@ -1,17 +1,16 @@
 /**
- * Internal D1 database adapter used by the build-only data loader.
+ * D1 access for on-demand rendered pages.
  *
- * Usage:
- *   import { getDb } from "../lib/db";
- *   const db = getDb(env);
- *
- * The `getDb()` factory returns a lightweight Drizzle wrapper around the D1
- * binding. Runtime page modules must use `../build-data` instead of importing
- * this adapter or the Cloudflare binding directly.
+ * The site renders from the live database, so every page reads through the
+ * `DB` binding declared in `wrangler.jsonc` rather than a build-time snapshot.
  */
 
-import { drizzle } from "drizzle-orm/d1";
+import { drizzle, type DrizzleD1Database } from "drizzle-orm/d1";
+import { env } from "cloudflare:workers";
 
-export function getDb(env: { DB: D1Database }) {
+export type Db = DrizzleD1Database;
+
+/** A Drizzle client over the production `DB` binding. */
+export function getDb(): Db {
   return drizzle(env.DB);
 }

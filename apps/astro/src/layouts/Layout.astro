@@ -10,6 +10,23 @@ const { title, description } = Astro.props;
 <!doctype html>
 <html transition:name="root" transition:animate="none" lang="en" class="bg-paper font-body text-ink scroll-smooth motion-reduce:scroll-auto transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark theme-dark:text-ink-dark">
   <head>
+    <script is:inline>
+      (() => {
+        let stored = null;
+        try {
+          stored = localStorage.getItem("theme");
+        } catch {
+          stored = null;
+        }
+        const theme =
+          stored === "dark" || stored === "light"
+            ? stored
+            : window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light";
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title ?? "Movies That Feel Like"}</title>
@@ -25,11 +42,11 @@ const { title, description } = Astro.props;
         <span class="transition-colors duration-240 ease-theme motion-reduce:transition-none">Movies<br />That Feel Like</span>
       </a>
       <label class="flex cursor-pointer items-center justify-self-end gap-2 bg-transparent py-2 pl-2.5 text-label uppercase tracking-theme text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-ink-dark">
-        <input class="theme-controller peer absolute h-px w-px opacity-0 focus-visible:outline-none" type="checkbox" value="dark" aria-label="Switch to dark theme" />
-        <span class="text-icon text-red transition-colors duration-240 ease-theme motion-reduce:transition-none peer-checked:hidden theme-dark:text-red-dark" aria-hidden="true">☼</span>
-        <span class="hidden text-icon text-red transition-colors duration-240 ease-theme motion-reduce:transition-none peer-checked:inline theme-dark:text-red-dark" aria-hidden="true">◐</span>
-        <span class="transition-colors duration-240 ease-theme motion-reduce:transition-none peer-checked:hidden" aria-hidden="true">Light</span>
-        <span class="hidden transition-colors duration-240 ease-theme motion-reduce:transition-none peer-checked:inline" aria-hidden="true">Dark</span>
+        <input class="absolute h-px w-px opacity-0 focus-visible:outline-none" type="checkbox" value="dark" data-theme-toggle aria-label="Switch to dark theme" />
+        <span class="text-icon text-red transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:hidden theme-dark:text-red-dark" aria-hidden="true">☼</span>
+        <span class="hidden text-icon text-red transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:inline theme-dark:text-red-dark" aria-hidden="true">◐</span>
+        <span class="transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:hidden" aria-hidden="true">Light</span>
+        <span class="hidden transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:inline" aria-hidden="true">Dark</span>
       </label>
     </header>
     <main class="relative mx-auto w-full max-w-content px-gutter motion-reduce:scroll-auto md:static">
@@ -61,4 +78,57 @@ const { title, description } = Astro.props;
     }
     if (vibeSummary) vibeSummary.style.viewTransitionName = `post-vibe-${postId}`;
   });
+</script>
+
+<script>
+  const THEME_KEY = "theme";
+
+  // The stored preference is the only source of truth. Never read the theme
+  // back out of the document: Astro's ClientRouter swaps <html>'s attributes
+  // and re-executes scripts, so the attribute is absent exactly when a sync
+  // runs, and treating that absence as "light" would overwrite the choice.
+  const storedTheme = (): "light" | "dark" => {
+    try {
+      const stored = localStorage.getItem(THEME_KEY);
+      if (stored === "dark" || stored === "light") return stored;
+    } catch {
+      /* storage unavailable: fall through to the system preference */
+    }
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  };
+
+  const applyTheme = () => {
+    const theme = storedTheme();
+    document.documentElement.dataset.theme = theme;
+    const toggle = document.querySelector<HTMLInputElement>("[data-theme-toggle]");
+    if (toggle) toggle.checked = theme === "dark";
+  };
+
+  const bindToggle = () => {
+    const toggle = document.querySelector<HTMLInputElement>("[data-theme-toggle]");
+    if (!toggle || toggle.dataset.themeBound === "true") return;
+    toggle.dataset.themeBound = "true";
+    toggle.addEventListener("change", () => {
+      try {
+        localStorage.setItem(THEME_KEY, toggle.checked ? "dark" : "light");
+      } catch {
+        /* storage unavailable: the attribute still carries the theme */
+      }
+      applyTheme();
+    });
+  };
+
+  const syncTheme = () => {
+    applyTheme();
+    bindToggle();
+  };
+
+  const bound = window as unknown as { __themeSyncBound?: boolean };
+  if (!bound.__themeSyncBound) {
+    bound.__themeSyncBound = true;
+    document.addEventListener("astro:page-load", syncTheme);
+    document.addEventListener("astro:after-swap", syncTheme);
+  }
+
+  syncTheme();
 </script>

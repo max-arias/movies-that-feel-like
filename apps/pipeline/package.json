@@ -8,6 +8,8 @@
     "extract": "PYTHONPATH=src uv run python -m pipeline.extract",
     "enrich": "PYTHONPATH=src uv run python -m pipeline.enrich",
     "load": "PYTHONPATH=src uv run python -m pipeline.load",
+    "check-images": "PYTHONPATH=src uv run python -m pipeline.check_images",
+    "refetch-images": "PYTHONPATH=src uv run python -m pipeline.refetch_images",
     "cache-sql": "PYTHONPATH=src uv run python -m pipeline.cache_sql",
     "inspect": "PYTHONPATH=src uv run python -m pipeline.inspect"
   }

@@ -4,10 +4,9 @@
   "type": "module",
   "scripts": {
     "dev": "astro dev",
-    "build": "node scripts/snapshot-build-data.mjs && astro build",
+    "build": "astro build",
     "preview": "astro preview",
-    "check": "astro check",
-    "cf:build": "npm run build && node scripts/generate-deploy-config.mjs && node scripts/verify-static-artifact.mjs"
+    "check": "astro check"
   },
   "dependencies": {
     "@astrojs/check": "^0.9.9",

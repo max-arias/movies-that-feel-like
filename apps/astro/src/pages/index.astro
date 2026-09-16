@@ -2,31 +2,21 @@
 // Movies That Feel Like — discovery feed of imported Reddit vibe posts.
 
 import Layout from "../layouts/Layout.astro";
-import { getBuildData } from "../lib/build-data";
+import { getDb } from "../lib/db";
+import { PAGE_SIZE, loadFeed } from "../lib/db/queries";
 
-const { posts } = await getBuildData();
-
-const tagCounts = new Map<string, number>();
-for (const post of posts) {
-  for (const { tag } of post.tags) tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
-}
-const tags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 const requestedTag = Astro.url.searchParams.get("tag");
-const selectedTag = requestedTag && tags.some(([tag]) => tag === requestedTag) ? requestedTag : "all";
-const visiblePosts = selectedTag === "all"
-  ? posts
-  : posts.filter((post) => post.tags.some(({ tag }) => tag === selectedTag));
-const pageSize = 25;
 const requestedPage = Astro.url.searchParams.get("page");
 const parsedPage = requestedPage && /^\d+$/.test(requestedPage) ? Number(requestedPage) : 1;
 const requestedPageNumber = Number.isSafeInteger(parsedPage) && parsedPage > 0 ? parsedPage : 1;
-const pageCount = Math.max(1, Math.ceil(visiblePosts.length / pageSize));
-const currentPage = Math.min(requestedPageNumber, pageCount);
-const paginatedPosts = visiblePosts.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
-const postsForTag = (tag: string) => tag === "all"
-  ? posts
-  : posts.filter((post) => post.tags.some(({ tag: postTag }) => postTag === tag));
+const { posts: paginatedPosts, tagCounts, selectedTag, currentPage, pageCount } = await loadFeed(
+  getDb(),
+  requestedTag,
+  requestedPageNumber,
+);
+
+const pageCountFor = (tag: string) => Math.max(1, Math.ceil((tagCounts.find((entry) => entry.tag === tag)?.count ?? 0) / PAGE_SIZE));
 const hrefFor = (tag: string, page: number) => {
   const params = new URLSearchParams();
   if (tag !== "all") params.set("tag", tag);
@@ -34,8 +24,10 @@ const hrefFor = (tag: string, page: number) => {
   const query = params.toString();
   return query ? `${Astro.url.pathname}?${query}` : Astro.url.pathname;
 };
-const tagHref = (tag: string) => hrefFor(tag, Math.min(currentPage, Math.max(1, Math.ceil(postsForTag(tag).length / pageSize))));
-const maxTagCount = Math.max(1, ...tags.map(([, count]) => count));
+// Switching tag keeps the reader on the same page number when the new tag has
+// one, and lands on its last page when it does not.
+const tagHref = (tag: string) => hrefFor(tag, tag === "all" ? currentPage : Math.min(currentPage, pageCountFor(tag)));
+const maxTagCount = Math.max(1, ...tagCounts.map(({ count }) => count));
 
 const pageItems: (number | "ellipsis")[] = pageCount <= 4
   ? Array.from({ length: pageCount }, (_, index) => index + 1)
@@ -52,7 +44,7 @@ const pageHref = (page: number) => hrefFor(selectedTag, page);
   description="Discover movies that match the feeling of the stories, places, and moments you love."
 >
   {
-    posts.length === 0 ? (
+    paginatedPosts.length === 0 ? (
       <div class="mb-20 border border-line p-empty transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:border-line-dark">
           <h2 class="mb-2.5 font-display text-5xl uppercase">No posts loaded yet</h2>
           <p class="text-error text-quiet theme-dark:text-quiet-dark">
@@ -76,7 +68,7 @@ const pageHref = (page: number) => hrefFor(selectedTag, page);
                 <div class="mb-4 flex items-center justify-between border-b border-line pb-drawer-heading-pad text-filter uppercase transition-colors duration-240 ease-theme theme-dark:border-line-dark motion-reduce:transition-none"><span>Filter by feeling</span><label for="mobile-filter-drawer" class="cursor-pointer p-close text-close font-light text-red transition-colors duration-240 ease-theme focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-red-dark motion-reduce:transition-none" aria-label="Close filters">×</label></div>
                 <div class="tag-list flex flex-col gap-1.5" data-max-count={maxTagCount} role="group" aria-label="Filter posts by tag">
                   <a class:list={["text-tag-all-mobile flex w-full cursor-pointer items-baseline justify-end gap-tag bg-transparent py-tag-mobile text-right font-display font-extrabold uppercase leading-tag tracking-tag text-quiet transition duration-200 ease-theme motion-reduce:transition-none hover:-translate-x-tag-hover hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-quiet-dark theme-dark:hover:text-red-dark", { "text-red theme-dark:text-red-dark -translate-x-tag-hover": selectedTag === "all" }]} href={tagHref("all")} aria-current={selectedTag === "all" ? "page" : undefined}><span class="order-2 min-w-0 wrap-normal">All</span></a>
-                  {tags.map(([tag, count]) => <a class:list={["tag-size flex w-full cursor-pointer items-baseline justify-end gap-tag bg-transparent py-tag-mobile text-right font-display font-extrabold uppercase leading-tag tracking-tag text-quiet transition duration-200 ease-theme motion-reduce:transition-none hover:-translate-x-tag-hover hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-quiet-dark theme-dark:hover:text-red-dark", { "text-red theme-dark:text-red-dark -translate-x-tag-hover": selectedTag === tag }]} data-count={count} href={tagHref(tag)} aria-current={selectedTag === tag ? "page" : undefined}><b class="order-1 min-w-5 text-right font-body text-count font-medium text-quiet theme-dark:text-quiet-dark">{count}</b><span class="order-2 min-w-0 wrap-normal">{tag}</span></a>)}
+                  {tagCounts.map(({ tag, count }) => <a class:list={["tag-size flex w-full cursor-pointer items-baseline justify-end gap-tag bg-transparent py-tag-mobile text-right font-display font-extrabold uppercase leading-tag tracking-tag text-quiet transition duration-200 ease-theme motion-reduce:transition-none hover:-translate-x-tag-hover hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-quiet-dark theme-dark:hover:text-red-dark", { "text-red theme-dark:text-red-dark -translate-x-tag-hover": selectedTag === tag }]} data-count={count} href={tagHref(tag)} aria-current={selectedTag === tag ? "page" : undefined}><b class="order-1 min-w-5 text-right font-body text-count font-medium text-quiet theme-dark:text-quiet-dark">{count}</b><span class="order-2 min-w-0 wrap-normal">{tag}</span></a>)}
                 </div>
               </div>
             </div>
@@ -85,28 +77,26 @@ const pageHref = (page: number) => hrefFor(selectedTag, page);
             {paginatedPosts.map((post, galleryIndex) => (
               <li class="min-w-0 md:[&:nth-child(even)]:translate-y-rail-offset">
                 <article class="pt-post-top">
-                    {post.images.length > 0 ? (
-                      <div class="relative aspect-square overflow-hidden bg-gallery" data-gallery data-gallery-index={galleryIndex} aria-label={`Image gallery for ${post.title}`}>
-                        <a class="group block h-full w-full overflow-hidden focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark" href={`/posts/${post.redditPostId}/`} aria-label={`View details for ${post.title}`}>
-                          <div class="gallery-track scrollbar-hidden flex h-full w-full snap-x snap-mandatory overflow-x-auto overflow-y-clip motion-reduce:scroll-auto">
-                            {post.images.map((image, imageIndex) => {
-                              const primaryUrl = image.previewUrl ?? image.sourceUrl;
-                              const fallbackUrls = [image.sourceUrl]
-                                .filter((url): url is string => typeof url === "string" && url.trim().length > 0)
-                                .filter((url) => url !== primaryUrl);
-                              return (
-                                <div class="relative block h-full min-h-0 w-full basis-full shrink-0 snap-start">
-                                  <img class="block h-full min-h-0 w-full object-cover transition duration-450 ease-gallery motion-reduce:transition-none group-hover:scale-105 group-hover:brightness-75 group-focus-visible:scale-105 group-focus-visible:brightness-75" src={primaryUrl} data-fallback-urls={JSON.stringify(fallbackUrls)} alt={`${post.title} — image ${imageIndex + 1}`} loading={imageIndex === 0 && galleryIndex === 0 ? "eager" : "lazy"} decoding="async" fetchpriority={imageIndex === 0 && galleryIndex === 0 ? "high" : undefined} data-fallback-image />
+                    <div class="relative aspect-square overflow-hidden bg-gallery" data-gallery data-gallery-index={galleryIndex} aria-label={`Image gallery for ${post.title}`}>
+                      <a class="group block h-full w-full overflow-hidden focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark" href={`/posts/${post.redditPostId}/`} aria-label={`View details for ${post.title}`}>
+                        <div class="gallery-track scrollbar-hidden flex h-full w-full snap-x snap-mandatory overflow-x-auto overflow-y-clip motion-reduce:scroll-auto">
+                          {post.images.map((image, imageIndex) => {
+                            const primaryUrl = image.previewUrl ?? image.sourceUrl;
+                            const fallbackUrls = [image.sourceUrl]
+                              .filter((url): url is string => typeof url === "string" && url.trim().length > 0)
+                              .filter((url) => url !== primaryUrl);
+                            return (
+                              <div class="relative block h-full min-h-0 w-full basis-full shrink-0 snap-start">
+                                <img class="block h-full min-h-0 w-full object-cover transition duration-450 ease-gallery motion-reduce:transition-none group-hover:scale-105 group-hover:brightness-75 group-focus-visible:scale-105 group-focus-visible:brightness-75" src={primaryUrl} data-fallback-urls={JSON.stringify(fallbackUrls)} alt={`${post.title} — image ${imageIndex + 1}`} loading={imageIndex === 0 && galleryIndex === 0 ? "eager" : "lazy"} decoding="async" fetchpriority={imageIndex === 0 && galleryIndex === 0 ? "high" : undefined} data-fallback-image />
                                 <span class="absolute inset-0 hidden items-center justify-center bg-gallery-empty text-no-image text-gallery-empty-text" data-image-fallback aria-hidden="true">No image loaded.</span>
                               </div>
-                              );
-                            })}
-                          </div>
-                        </a>
-                        <div class="pointer-events-none absolute inset-x-0 bottom-0 h-gallery-overlay bg-gradient-to-b from-transparent to-gallery-overlay"></div>
-                        {post.images.length > 1 && <div class="absolute bottom-0 right-0 z-10 flex items-center gap-control bg-paper px-control-x py-control-y text-label transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark"><button class="cursor-pointer border-0 bg-transparent p-0 text-control text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-ink-dark" type="button" data-gallery-previous aria-label="Previous image">←</button><span class="tabular-nums text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark" data-gallery-status>01 / {String(post.images.length).padStart(2, "0")}</span><button class="cursor-pointer border-0 bg-transparent p-0 text-control text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-ink-dark" type="button" data-gallery-next aria-label="Next image">→</button></div>}
-                      </div>
-                    ) : <div class="flex aspect-square items-center justify-center bg-gallery-empty text-no-image text-gallery-empty-text">No image loaded.</div>}
+                            );
+                          })}
+                        </div>
+                      </a>
+                      <div class="pointer-events-none absolute inset-x-0 bottom-0 h-gallery-overlay bg-gradient-to-b from-transparent to-gallery-overlay"></div>
+                      {post.images.length > 1 && <div class="absolute bottom-0 right-0 z-10 flex items-center gap-control bg-paper px-control-x py-control-y text-label transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark"><button class="cursor-pointer border-0 bg-transparent p-0 text-control text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-ink-dark" type="button" data-gallery-previous aria-label="Previous image">←</button><span class="tabular-nums text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark" data-gallery-status>01 / {String(post.images.length).padStart(2, "0")}</span><button class="cursor-pointer border-0 bg-transparent p-0 text-control text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-ink-dark" type="button" data-gallery-next aria-label="Next image">→</button></div>}
+                    </div>
                     {post.vibeSummary && (
                       <p class="mt-3 text-body text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">
                         {post.vibeSummary}
@@ -131,7 +121,7 @@ const pageHref = (page: number) => hrefFor(selectedTag, page);
         <aside class="@container static w-full min-w-0 md:sticky md:top-6" aria-label="Filter by feeling">
           <div class="tag-list tag-mask scrollbar-hidden max-h-sidebar-height hidden flex-col gap-1.5 overflow-y-auto overscroll-contain pt-sidebar-top pb-sidebar-bottom md:flex" data-max-count={maxTagCount} role="group" aria-label="Filter posts by tag">
             <a class:list={["text-tag-all-desktop @2xs:text-tag-all-2xs @xs:text-tag-all-xs flex w-full cursor-pointer items-baseline justify-end gap-tag bg-transparent py-tag text-right font-display font-extrabold uppercase leading-tag tracking-tag text-quiet transition duration-200 ease-theme motion-reduce:transition-none hover:-translate-x-tag-hover hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-quiet-dark theme-dark:hover:text-red-dark", { "text-red theme-dark:text-red-dark -translate-x-tag-hover": selectedTag === "all" }]} href={tagHref("all")} aria-current={selectedTag === "all" ? "page" : undefined}><span class="order-2 min-w-0 wrap-normal">All</span></a>
-            {tags.map(([tag, count]) => <a class:list={["tag-size flex w-full cursor-pointer items-baseline justify-end gap-tag bg-transparent py-tag text-right font-display font-extrabold uppercase leading-tag tracking-tag text-quiet transition duration-200 ease-theme motion-reduce:transition-none hover:-translate-x-tag-hover hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-quiet-dark theme-dark:hover:text-red-dark", { "text-red theme-dark:text-red-dark -translate-x-tag-hover": selectedTag === tag }]} data-count={count} href={tagHref(tag)} aria-current={selectedTag === tag ? "page" : undefined}><b class="order-1 min-w-5 text-right font-body text-count font-medium text-quiet theme-dark:text-quiet-dark">{count}</b><span class="order-2 min-w-0 wrap-normal">{tag}</span></a>)}
+            {tagCounts.map(({ tag, count }) => <a class:list={["tag-size flex w-full cursor-pointer items-baseline justify-end gap-tag bg-transparent py-tag text-right font-display font-extrabold uppercase leading-tag tracking-tag text-quiet transition duration-200 ease-theme motion-reduce:transition-none hover:-translate-x-tag-hover hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-quiet-dark theme-dark:hover:text-red-dark", { "text-red theme-dark:text-red-dark -translate-x-tag-hover": selectedTag === tag }]} data-count={count} href={tagHref(tag)} aria-current={selectedTag === tag ? "page" : undefined}><b class="order-1 min-w-5 text-right font-body text-count font-medium text-quiet theme-dark:text-quiet-dark">{count}</b><span class="order-2 min-w-0 wrap-normal">{tag}</span></a>)}
           </div>
         </aside>
       </div>

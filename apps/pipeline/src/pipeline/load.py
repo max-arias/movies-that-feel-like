@@ -13,7 +13,7 @@ import sqlite3
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from pipeline.artifacts import read_json_artifact, timestamp_slug, validate_complete_extraction, write_json_artifact
 from pipeline.paths import ensure_pipeline_dirs, normalized_dir, project_root, working_dir
@@ -534,17 +534,374 @@ def _insert_vibe_tags(
     return count
 
 
+# A seed never copies the run-local row ids into D1: the destination
+# allocates them.  Every emitted row is an upsert keyed by its table's
+# natural unique constraint, and every child resolves its parents through
+# that same key, so a destination whose id sequence has drifted still lands
+# the row on the post or recommendation it belongs to.  A key that cannot be
+# resolved aborts the run — the failure this replaces was ``INSERT OR
+# IGNORE`` discarding a row whose id D1 already owned, without a word.
+
+# Natural keys: the columns that identify a row the destination already owns,
+# in index order.  ``recommendations`` is absent because it picks between two
+# partial indexes per row (see ``_recommendation_key``).
+_SEED_CONFLICT_COLUMNS: dict[str, tuple[str, ...]] = {
+    "imported_vibe_posts": ("reddit_post_id",),
+    "recommendation_evidence": (
+        "recommendation_id",
+        "imported_vibe_post_id",
+        "evidence_comment_id",
+    ),
+    "imported_post_images": ("imported_vibe_post_id", "source_url"),
+    "vibe_tags": ("imported_vibe_post_id", "tag"),
+}
+
+# Tables whose conflict refresh is an explicit allow-list rather than
+# "everything but the key": their remaining columns are operational state
+# owned by another stage (image liveness owns ``deleted_at``/``checked_at``,
+# which probe runs write), and a re-applied seed must never clobber it.
+_SEED_REFRESH_ONLY: dict[str, frozenset[str]] = {
+    "imported_post_images": frozenset({"preview_url", "width", "height", "sort_order"}),
+    "vibe_tags": frozenset({"source"}),
+}
+
+# D1's row id and the moment the row first landed are never refreshed: the id
+# is the destination's allocation and ``created_at`` records its own history.
+_SEED_NEVER_REFRESHED: frozenset[str] = frozenset({"id", "created_at"})
+
+
+def _identifier_list(columns: Sequence[str]) -> str:
+    return ", ".join(_quote_sql_identifier(column) for column in columns)
+
+
+def _rendered_values(columns: Sequence[str], qualifier: str = "") -> str:
+    """Render *columns* as the ``quote(...)`` expressions the source selects."""
+    return ", ".join(
+        f"quote({qualifier}{_quote_sql_identifier(column)})" for column in columns
+    )
+
+
+def _select_items(*fragments: str) -> str:
+    """Join the non-empty fragments of a SELECT list."""
+    return ", ".join(fragment for fragment in fragments if fragment)
+
+
+def _refreshed_columns(table: str, columns: Sequence[str]) -> list[str]:
+    """Columns a re-applied seed refreshes on a row the destination owns.
+
+    The natural key that matched the row is left out — rewriting the key only
+    churns the index — as is the destination's own bookkeeping.
+    """
+    allow_list = _SEED_REFRESH_ONLY.get(table)
+    if allow_list is not None:
+        return [column for column in columns if column in allow_list]
+    blocked = _SEED_NEVER_REFRESHED | set(_SEED_CONFLICT_COLUMNS.get(table, ()))
+    return [column for column in columns if column not in blocked]
+
+
+def _conflict_clause(table: str, columns: Sequence[str]) -> str:
+    """Render the ``ON CONFLICT`` target for *columns*.
+
+    The recommendations targets are partial indexes, and SQLite only matches
+    one when the upsert repeats the index's ``WHERE`` clause verbatim.
+    """
+    if table == "recommendations":
+        return f"ON CONFLICT({', '.join(columns)}) WHERE {columns[-1]} IS NOT NULL"
+    return f"ON CONFLICT({', '.join(columns)})"
+
+
+def _recommendation_key(
+    media_type: Any, tmdb_id: Any, igdb_id: Any, row_id: Any
+) -> list[tuple[str, Any]]:
+    """Return one recommendation's natural key as (column, value) pairs.
+
+    Movies and TV shows key on ``tmdb_id``, games on ``igdb_id``; either way
+    the target is a partial index guarded by ``IS NOT NULL``, so a row missing
+    its id has no conflict target at all.  Emitting one would insert a
+    duplicate the destination can never merge, so the run stops instead.
+    """
+    if media_type == "game":
+        if igdb_id is not None:
+            return [("media_type", media_type), ("igdb_id", igdb_id)]
+        why = "a game with a NULL igdb_id"
+    elif media_type in ("movie", "tv"):
+        if tmdb_id is not None:
+            return [("media_type", media_type), ("tmdb_id", tmdb_id)]
+        why = f"a {media_type} with a NULL tmdb_id"
+    else:
+        why = f"media_type {media_type!r}, which is outside ('movie', 'tv', 'game')"
+    raise SystemExit(
+        f"[pipeline:load] recommendations row {row_id} is {why}: the seed cannot "
+        f"resolve it by natural key, so emitting it would insert a duplicate the "
+        f"destination can never merge. Fix the row and re-run."
+    )
+
+
+def _upsert_statement(
+    table_name: str,
+    insert_columns: Sequence[str],
+    source_lines: Sequence[str],
+    conflict_clause: str,
+    refreshed: Sequence[str],
+) -> str:
+    """Assemble one id-free upsert.
+
+    *source_lines* is either the ``VALUES (...)`` row of a parent or the
+    ``SELECT ...`` that resolves a child's parents by natural key.
+    """
+    action = (
+        "DO UPDATE SET "
+        + ", ".join(
+            f"{_quote_sql_identifier(column)}=excluded.{_quote_sql_identifier(column)}"
+            for column in refreshed
+        )
+        if refreshed
+        else "DO NOTHING"
+    )
+    head = "\n".join(
+        [
+            f"INSERT INTO {table_name} ({_identifier_list(insert_columns)})",
+            *source_lines,
+        ]
+    )
+    return f"{head}\n{conflict_clause} {action};"
+
+
+def _seed_values_rows(
+    db: sqlite3.Connection,
+    table: str,
+    value_columns: list[str],
+    refreshed: list[str],
+    predicate: str,
+    params: tuple[Any, ...],
+) -> list[str]:
+    """Render rows of a parent table as ``INSERT ... VALUES ... ON CONFLICT``."""
+    table_name = _quote_sql_identifier(table)
+    row_id = _quote_sql_identifier("id")
+    key_columns = (
+        ("media_type", "tmdb_id", "igdb_id") if table == "recommendations" else ()
+    )
+    select_list = _select_items(
+        _rendered_values(value_columns, "t."),
+        *(f"t.{_quote_sql_identifier(column)}" for column in key_columns),
+    )
+    statements: list[str] = []
+    for row in db.execute(
+        f"SELECT t.{row_id}, {select_list} FROM {table_name} t "
+        f"WHERE {predicate} ORDER BY t.{row_id}",
+        params,
+    ):
+        rendered = list(row[1 : 1 + len(value_columns)])
+        if key_columns:
+            key = _recommendation_key(*row[1 + len(value_columns) :], row[0])
+            conflict_clause = _conflict_clause(table, [column for column, _ in key])
+        else:
+            conflict_clause = _conflict_clause(table, _SEED_CONFLICT_COLUMNS[table])
+        statements.append(
+            _upsert_statement(
+                table_name,
+                value_columns,
+                [f"VALUES ({', '.join(rendered)})"],
+                conflict_clause,
+                refreshed,
+            )
+        )
+    return statements
+
+
+def _seed_post_child_rows(
+    db: sqlite3.Connection,
+    table: str,
+    value_columns: list[str],
+    refreshed: list[str],
+    floor: int,
+) -> list[str]:
+    """Render a child of ``imported_vibe_posts`` as an ``INSERT ... SELECT``.
+
+    The destination allocates the post id and the row is attached by
+    ``reddit_post_id``, so run-local and D1 ids may differ freely.
+    """
+    table_name = _quote_sql_identifier(table)
+    row_id = _quote_sql_identifier("id")
+    post_key = f"p.{_quote_sql_identifier('reddit_post_id')}"
+    post_fk = f"t.{_quote_sql_identifier('imported_vibe_post_id')}"
+    mapped = value_columns[1:]  # value_columns[0] is the post foreign key
+    select_list = _select_items(_rendered_values(mapped, "t."), post_key, post_fk)
+    query = (
+        f"SELECT t.{row_id}, {select_list} "
+        f"FROM {table_name} t "
+        f"LEFT JOIN imported_vibe_posts p ON p.{row_id} = {post_fk} "
+        f"WHERE t.{row_id} > ? ORDER BY t.{row_id}"
+    )
+    statements: list[str] = []
+    for row in db.execute(query, (floor,)):
+        rendered = list(row[1 : 1 + len(mapped)])
+        post_reddit_id, post_id = row[1 + len(mapped) :]
+        if post_reddit_id is None:
+            raise SystemExit(
+                f"[pipeline:load] {table} row {row[0]} references imported_vibe_posts "
+                f"id {post_id}, which does not exist: the seed cannot resolve it by "
+                f"natural key, so emitting it would drop the row silently."
+            )
+        statements.append(
+            _upsert_statement(
+                table_name,
+                value_columns,
+                [
+                    f"SELECT p.id, {', '.join(rendered)}",
+                    f"FROM imported_vibe_posts p WHERE {post_key} = "
+                    f"{_sql_literal(post_reddit_id)}",
+                ],
+                _conflict_clause(table, _SEED_CONFLICT_COLUMNS[table]),
+                refreshed,
+            )
+        )
+    return statements
+
+
+def _seed_evidence_rows(
+    db: sqlite3.Connection,
+    table: str,
+    value_columns: list[str],
+    refreshed: list[str],
+    floor: int,
+) -> list[str]:
+    """Render ``recommendation_evidence`` as an ``INSERT ... SELECT``.
+
+    Both parents are resolved by natural key — the recommendation through
+    ``media_type`` plus ``tmdb_id``/``igdb_id``, the post through
+    ``reddit_post_id`` — so the destination allocates both ids.
+    """
+    table_name = _quote_sql_identifier(table)
+    row_id = _quote_sql_identifier("id")
+    post_key = f"p.{_quote_sql_identifier('reddit_post_id')}"
+    post_fk = f"t.{_quote_sql_identifier('imported_vibe_post_id')}"
+    recommendation_fk = f"t.{_quote_sql_identifier('recommendation_id')}"
+    recommendation_key = [
+        f"r.{_quote_sql_identifier(column)}"
+        for column in ("media_type", "tmdb_id", "igdb_id")
+    ]
+    mapped = value_columns[2:]  # [0], [1] are the recommendation and post keys
+    select_list = _select_items(
+        _rendered_values(mapped, "t."),
+        post_key,
+        post_fk,
+        recommendation_fk,
+        *recommendation_key,
+    )
+    query = (
+        f"SELECT t.{row_id}, {select_list} "
+        f"FROM {table_name} t "
+        f"LEFT JOIN imported_vibe_posts p ON p.{row_id} = {post_fk} "
+        f"LEFT JOIN recommendations r ON r.{row_id} = {recommendation_fk} "
+        f"WHERE t.{row_id} > ? ORDER BY t.{row_id}"
+    )
+    statements: list[str] = []
+    for row in db.execute(query, (floor,)):
+        rendered = list(row[1 : 1 + len(mapped)])
+        (
+            post_reddit_id,
+            post_id,
+            recommendation_id,
+            media_type,
+            tmdb_id,
+            igdb_id,
+        ) = row[1 + len(mapped) :]
+        if post_reddit_id is None:
+            raise SystemExit(
+                f"[pipeline:load] {table} row {row[0]} references imported_vibe_posts "
+                f"id {post_id}, which does not exist: the seed cannot resolve it by "
+                f"natural key, so emitting it would drop the row silently."
+            )
+        if media_type is None:
+            raise SystemExit(
+                f"[pipeline:load] {table} row {row[0]} references recommendations id "
+                f"{recommendation_id}, which does not exist: the seed cannot resolve "
+                f"it by natural key, so emitting it would drop the row silently."
+            )
+        key = _recommendation_key(media_type, tmdb_id, igdb_id, recommendation_id)
+        predicate = " AND ".join(
+            f"r.{column} = {_sql_literal(value)}" for column, value in key
+        )
+        statements.append(
+            _upsert_statement(
+                table_name,
+                value_columns,
+                [
+                    f"SELECT r.id, p.id, {', '.join(rendered)}",
+                    "FROM recommendations r, imported_vibe_posts p",
+                    f"WHERE {predicate} AND {post_key} = {_sql_literal(post_reddit_id)}",
+                ],
+                _conflict_clause(table, _SEED_CONFLICT_COLUMNS[table]),
+                refreshed,
+            )
+        )
+    return statements
+
+
+def _seed_inserts(
+    db: sqlite3.Connection,
+    table: str,
+    columns: list[str],
+    floor: int,
+    touched_recommendation_ids: set[int] | None = None,
+) -> list[str]:
+    """Render one data table's delta rows (``id`` > *floor*) as id-free upserts."""
+    value_columns = [column for column in columns if column != "id"]
+    refreshed = _refreshed_columns(table, value_columns)
+    if table in ("imported_post_images", "vibe_tags"):
+        return _seed_post_child_rows(db, table, value_columns, refreshed, floor)
+    if table == "recommendation_evidence":
+        return _seed_evidence_rows(db, table, value_columns, refreshed, floor)
+
+    statements = _seed_values_rows(
+        db,
+        table,
+        value_columns,
+        refreshed,
+        f"t.{_quote_sql_identifier('id')} > ?",
+        (floor,),
+    )
+
+    # A recommendation can be updated in place by the loader (metadata and,
+    # later, evidence_score), so its id is not a sufficient delta marker.
+    # Re-emit every touched row that predates this load through the same
+    # id-free upsert; the rows this load inserted are already above the floor.
+    if table == "recommendations" and touched_recommendation_ids:
+        for recommendation_id in sorted(touched_recommendation_ids):
+            if recommendation_id <= floor:
+                statements.extend(
+                    _seed_values_rows(
+                        db,
+                        table,
+                        value_columns,
+                        refreshed,
+                        f"t.{_quote_sql_identifier('id')} = ?",
+                        (recommendation_id,),
+                    )
+                )
+    return statements
+
+
 def _build_ordered_inserts(
     db: sqlite3.Connection,
     table_filter: frozenset[str],
     id_floors: dict[str, int],
     touched_recommendation_ids: set[int] | None = None,
 ) -> list[str]:
-    """Return SQL INSERTs for rows added above the load's id floors.
+    """Return id-free upserts for rows added above the load's id floors.
 
     Values are rendered by SQLite's ``quote()`` rather than parsing
-    ``iterdump()``.  This preserves explicit IDs and safely handles NULL,
-    quotes, and blobs while keeping the generated migration self-contained.
+    ``iterdump()``.  This safely handles NULL, quotes, and blobs while keeping
+    the generated migration self-contained.
+
+    Row ids are not copied: D1 allocates them.  Parent rows upsert on their
+    natural key and child rows resolve their parent by ``INSERT ... SELECT``,
+    so a seed that lands on a database whose id sequence has drifted updates
+    the row it belongs to instead of colliding with an id D1 already owns.
+    Every key is checked in the emitter — an unresolvable one raises
+    ``SystemExit`` rather than emitting SQL that would drop the row.
+
     Rows are emitted in a stable, parent-before-child order so the resulting
     SQL can be applied to a fresh database without violating foreign keys:
 
@@ -552,7 +909,10 @@ def _build_ordered_inserts(
         → imported_post_images → vibe_tags → (pipeline state) → (any others)
 
     ``id_floors`` must contain the post-migration MAX(id) for each data table;
-    rows at or below those floors are historical data and are omitted.
+    rows at or below those floors are historical data and are omitted, except
+    for recommendations the loader updates in place (see
+    *touched_recommendation_ids*), which are re-emitted through the same
+    natural key because their id is not a sufficient delta marker.
     """
     table_order = [
         "imported_vibe_posts",
@@ -575,45 +935,18 @@ def _build_ordered_inserts(
         ]
         if not columns:
             continue
-        quoted_columns = ", ".join(_quote_sql_identifier(column) for column in columns)
-        quoted_values = ", ".join(
-            f"quote({_quote_sql_identifier(column)})" for column in columns
-        )
-        rows = db.execute(
-            f"SELECT {quoted_values} FROM {table_name} "
-            f"WHERE {_quote_sql_identifier('id')} > ? "
-            f"ORDER BY {_quote_sql_identifier('id')}",
-            (id_floors.get(table, 0),),
-        )
+        floor = id_floors.get(table, 0)
+        if table not in DATA_TABLES:
+            raise SystemExit(
+                f"[pipeline:load] Table {table!r} has no seeded natural key, so its "
+                f"rows cannot be emitted without copying run-local ids — the exact "
+                f"mechanism that silently drops rows when the local id sequence has "
+                f"drifted from D1. Keep it out of the migration chunks or give it a "
+                f"natural key first."
+            )
         ordered.extend(
-            f"INSERT OR IGNORE INTO {table_name} ({quoted_columns}) VALUES "
-            f"({', '.join(value for value in row)});"
-            for row in rows
+            _seed_inserts(db, table, columns, floor, touched_recommendation_ids)
         )
-
-        # A recommendation can be updated in place by the loader (metadata
-        # and, later, evidence_score).  Its id is therefore not a sufficient
-        # delta marker.  Emit a complete idempotent UPDATE for touched rows
-        # that predate this load; new rows are already covered by INSERT.
-        if table == "recommendations" and touched_recommendation_ids:
-            for recommendation_id in sorted(touched_recommendation_ids):
-                if recommendation_id <= id_floors.get(table, 0):
-                    row = db.execute(
-                        f"SELECT {quoted_values} FROM {table_name} "
-                        f"WHERE {_quote_sql_identifier('id')} = ?",
-                        (recommendation_id,),
-                    ).fetchone()
-                    if row is None:
-                        continue
-                    assignments = ", ".join(
-                        f"{_quote_sql_identifier(column)}={value}"
-                        for column, value in zip(columns, row)
-                        if column != "id"
-                    )
-                    ordered.append(
-                        f"UPDATE {table_name} SET {assignments} "
-                        f"WHERE {_quote_sql_identifier('id')}={row[columns.index('id')]};"
-                    )
     return ordered
 
 
@@ -679,8 +1012,12 @@ def _write_data_migration(
 
     Each file:
       - contains only its assigned data tables (no pipeline state)
-      - rewrites every INSERT to ``INSERT OR IGNORE`` so the file is safe
-        to re-apply
+      - writes every row as an id-free upsert (``INSERT ... ON CONFLICT ...
+        DO UPDATE``) keyed by the table's natural unique constraint, so the
+        file is safe to re-apply and D1 keeps its own row ids
+      - resolves child rows through their parents' natural keys, so a seed
+        still attaches to the right post / recommendation when the run-local
+        id sequence differs from D1's
       - is parent-before-child ordered within the file; chunk order is
         also parent-before-child across files so foreign keys resolve on
         a fresh schema.
@@ -717,10 +1054,15 @@ def _write_data_migration(
             f"-- Run started: {run_started_at.isoformat()}\n"
             f"-- Source: data/working/load manifest from this run.\n"
             f"--\n"
-            f"-- Idempotent: every INSERT is INSERT OR IGNORE, keyed by the\n"
-            f"-- table's natural unique constraint.  Wrangler's migration\n"
-            f"-- tracking normally prevents re-apply; the OR IGNORE is\n"
-            f"-- defense in depth for partial / interrupted re-runs.\n"
+            f"-- Idempotent: every row is an upsert keyed by the table's\n"
+            f"-- natural unique constraint, and every child resolves its\n"
+            f"-- parents through that same key.  Row ids are never copied —\n"
+            f"-- the destination allocates them — so re-applying refreshes the\n"
+            f"-- row it belongs to instead of colliding with an id D1 already\n"
+            f"-- owns.  Wrangler's migration tracking normally prevents\n"
+            f"-- re-apply; the upsert is defense in depth for partial /\n"
+            f"-- interrupted re-runs, and a conflict target the destination\n"
+            f"-- cannot satisfy aborts the apply instead of dropping rows.\n"
             f"--\n"
             f"-- Chunk: {slug} ({offset + 1}/{len(_DATA_MIGRATION_CHUNKS)})\n"
             f"-- Tables: {table_list}.\n"

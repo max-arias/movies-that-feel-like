@@ -66,9 +66,22 @@ export const importedPostImages = sqliteTable(
     createdAt: text("created_at")
       .notNull()
       .default(sql`(datetime('now'))`),
+    // Set when a reachability probe positively identified Reddit's deleted-image
+    // placeholder. NULL means "not known to be deleted".
+    deletedAt: text("deleted_at"),
+    // Last successful probe; drives the periodic re-check schedule.
+    checkedAt: text("checked_at"),
   },
   (table) => [
     index("idx_imported_post_images_post").on(table.importedVibePostId),
+    uniqueIndex("idx_imported_post_images_post_source").on(
+      table.importedVibePostId,
+      table.sourceUrl
+    ),
+    index("idx_imported_post_images_liveness").on(
+      table.importedVibePostId,
+      table.deletedAt
+    ),
   ]
 );
 
@@ -111,6 +124,14 @@ export const recommendations = sqliteTable(
     index("idx_recommendations_igdb_id").on(table.igdbId),
     index("idx_recommendations_title").on(table.title),
     index("idx_recommendations_ambiguous").on(table.isAmbiguous),
+    // Natural keys: the loader finds movie/tv rows by tmdb_id and games by
+    // igdb_id, both scoped by media_type. Seeds resolve parents through these.
+    uniqueIndex("idx_recommendations_media_tmdb")
+      .on(table.mediaType, table.tmdbId)
+      .where(sql`tmdb_id IS NOT NULL`),
+    uniqueIndex("idx_recommendations_media_igdb")
+      .on(table.mediaType, table.igdbId)
+      .where(sql`igdb_id IS NOT NULL`),
   ]
 );
 
@@ -172,6 +193,7 @@ export const vibeTags = sqliteTable(
       table.tag
     ),
     index("idx_vibe_tags_post").on(table.importedVibePostId),
+    index("idx_vibe_tags_tag").on(table.tag),
   ]
 );
 
