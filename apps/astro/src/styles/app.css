@@ -72,6 +72,7 @@ body {
   --spacing-control-y: 7px;
   --spacing-control-gap: 11px;
   --spacing-empty: 50px;
+  --spacing-pagination-y: 2.5rem;
   --container-drawer-panel: min(84vw, 360px);
   --container-content: 1440px;
   --aspect-poster: 2 / 3;
@@ -80,6 +81,7 @@ body {
   --text-body: 15px;
   --text-brand: .625rem;
   --text-label: .625rem;
+  --text-pagination: .875rem;
   --text-brand--line-height: 1.1;
   --text-brand--letter-spacing: .12em;
   --text-brand--font-weight: 600;
