@@ -41,20 +41,13 @@ const { title, description } = Astro.props;
         <span class="h-brand-mark-height w-brand-mark-width flex items-center justify-center bg-red font-display text-mark text-paper transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-red-dark theme-dark:text-paper-dark" aria-hidden="true">MTFL</span>
         <span class="transition-colors duration-240 ease-theme motion-reduce:transition-none">Movies<br />That Feel Like</span>
       </a>
-      <div class="flex items-center justify-self-end gap-4">
-        <div class="hidden items-center gap-3 text-label tracking-theme text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none md:flex theme-dark:text-quiet-dark">
-          <a class="transition-colors duration-200 ease-theme hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:hover:text-red-dark theme-dark:outline-red-dark" href="https://www.reddit.com/r/MoviesThatFeelLike/" target="_blank" rel="noopener noreferrer">/r/MoviesThatFeelLike/</a>
-          <span class="text-line theme-dark:text-line-dark" aria-hidden="true">|</span>
-          <a class="transition-colors duration-200 ease-theme hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:hover:text-red-dark theme-dark:outline-red-dark" href="https://maxarias.com" target="_blank" rel="noopener noreferrer">maxarias.com</a>
-        </div>
-        <label class="flex cursor-pointer items-center gap-2 bg-transparent py-2 pl-2.5 text-label uppercase tracking-theme text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-ink-dark">
-          <input class="absolute h-px w-px opacity-0 focus-visible:outline-none" type="checkbox" value="dark" data-theme-toggle aria-label="Switch to dark theme" />
-          <span class="text-icon text-red transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:hidden theme-dark:text-red-dark" aria-hidden="true">☼</span>
-          <span class="hidden text-icon text-red transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:inline theme-dark:text-red-dark" aria-hidden="true">◐</span>
-          <span class="transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:hidden" aria-hidden="true">Light</span>
-          <span class="hidden transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:inline" aria-hidden="true">Dark</span>
-        </label>
-      </div>
+      <label class="flex cursor-pointer items-center justify-self-end gap-2 bg-transparent py-2 pl-2.5 text-label uppercase tracking-theme text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-ink-dark">
+        <input class="absolute h-px w-px opacity-0 focus-visible:outline-none" type="checkbox" value="dark" data-theme-toggle aria-label="Switch to dark theme" />
+        <span class="text-icon text-red transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:hidden theme-dark:text-red-dark" aria-hidden="true">☼</span>
+        <span class="hidden text-icon text-red transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:inline theme-dark:text-red-dark" aria-hidden="true">◐</span>
+        <span class="transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:hidden" aria-hidden="true">Light</span>
+        <span class="hidden transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:inline" aria-hidden="true">Dark</span>
+      </label>
     </header>
     <main class="relative mx-auto w-full max-w-content px-gutter motion-reduce:scroll-auto md:static">
       <slot />
