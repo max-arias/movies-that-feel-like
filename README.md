@@ -152,7 +152,7 @@ apps/astro/node_modules/.bin/wrangler d1 execute movies-that-feel-like --local -
 
 ## Current state
 
-The repo has a working tracer bullet, deployed and importing on a daily schedule:
+The repo has a working tracer bullet, deployed and importing twice a week:
 
 - fetch Reddit sample data
 - normalize/copy source images

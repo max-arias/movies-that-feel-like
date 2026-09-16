@@ -2,7 +2,8 @@ name: Import Reddit posts
 
 on:
   schedule:
-    - cron: '0 0 * * *'
+    # Twice a week: Monday and Thursday at 00:00 UTC.
+    - cron: '0 0 * * 1,4'
   workflow_dispatch:
     inputs:
       limit:

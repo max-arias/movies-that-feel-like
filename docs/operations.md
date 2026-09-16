@@ -28,9 +28,9 @@ import makes (Cloudflare Workers Builds), so a run that finds new posts is what
 puts them live.
 
 The production import is `.github/workflows/import-reddit.yml`. It runs at
-`00:00 UTC` every day (`0 0 * * *`), and can also be started with
-**Run workflow**. The import currently targets the fixed source year `2026`
-and fetches newest first with `--sort desc`.
+`00:00 UTC` on Mondays and Thursdays (`0 0 * * 1,4`), and can also be started
+with **Run workflow**. The import currently targets the fixed source year
+`2026` and fetches newest first with `--sort desc`.
 
 ## Configuration
 
