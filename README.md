@@ -10,11 +10,12 @@ The first version is intentionally read-only: users browse imported Reddit data 
 
 - Imports posts, images, and comments from `r/MoviesThatFeelLike`.
 - Keeps raw/intermediate artifacts locally so pipeline stages can be retried without refetching.
-- Extracts concrete movie/series recommendations from Reddit comments using OpenCode Go with `mimo-v2.5`.
+- Extracts concrete movie/series recommendations from Reddit comments with an LLM on OpenCode Go (the scheduled import runs `deepseek-v4.1-flash`).
 - Generates a short text-only vibe summary and tags from the post title/text/comments.
 - Resolves recommendations to canonical TMDB movie/TV records.
 - Links posts together through shared canonical recommendations.
-- Serves the web app through Astro on Cloudflare with D1 as the app database.
+- Drops any post whose images Reddit has deleted, and re-checks image reachability on a schedule.
+- Serves the web app through Astro on Cloudflare, rendering on demand from D1 as the app database.
 
 The pipeline does **not** analyze images with an LLM. It relies on the humans in the Reddit comments to interpret the image vibe.
 
@@ -23,7 +24,7 @@ The pipeline does **not** analyze images with an LLM. It relies on the humans in
 ```txt
 /
   apps/
-    astro/       # Astro + Cloudflare Pages/Workers UI
+    astro/       # Astro on Cloudflare Workers; renders from D1 on demand
     pipeline/    # Python import/extract/enrich/load pipeline
   packages/
     db/          # D1 schema and migrations
@@ -44,12 +45,12 @@ See `CONTEXT.md` for the glossary.
 ## Tech stack
 
 - Astro
-- Cloudflare Pages/Workers runtime
+- Cloudflare Workers runtime (on-demand rendering from D1; nothing prerendered)
 - Cloudflare D1 via Wrangler local dev
 - Tailwind CSS 4 + daisyUI 5
 - Python pipeline managed with `uv`
 - Arctic Shift / `arcshiftwrap` for Reddit archive data
-- Instructor + Pydantic + OpenCode Go (`mimo-v2.5`) for structured extraction
+- Instructor + Pydantic + OpenCode Go for structured extraction (pipeline default `mimo-v2.5`; the import runs `deepseek-v4.1-flash`)
 - TMDB API for media enrichment
 
 ## Required local environment
@@ -126,6 +127,13 @@ and request starts are limited to 6 RPM; tune with `--concurrency` and
 `--rate-limit-rpm`. A final extraction artifact is emitted only when every
 target post has a terminal success or error outcome.
 
+Image reachability is maintained separately from extraction. Reddit answers a
+deleted gallery image with a 1048-byte placeholder PNG, so a dead image still
+loads; `pipeline:check-images` probes the stored URLs and records which ones are
+dead, and `pipeline:refetch-images` re-derives rows for posts that lost them.
+A post is served only while it owns at least one image that is not known to be
+deleted. `docs/operations.md` has the production commands.
+
 Useful inspection:
 
 ```bash
@@ -137,27 +145,27 @@ apps/astro/node_modules/.bin/wrangler d1 execute movies-that-feel-like --local -
 
 - `docs/architecture-plan.md` — architecture and pipeline plan.
 - `docs/operations.md` — production Reddit import configuration, scheduling,
-  recovery, and failure triage.
+  recovery, failure triage, and the Worker build/deploy commands.
 - `docs/adr/0001-cloudflare-native-storage-and-deployment.md` — Cloudflare-native decision.
 - `docs/adr/0002-local-python-pipeline-with-instructor-and-gemini.md` — Python pipeline and Gemini decision.
-- `docs/session-handoff.md` — current implementation state and suggested next steps.
+- `docs/adr/0003-drizzle-d1-data-access.md` — Drizzle over D1 for the Astro app, including the decision that the site runs Astro SSR on Workers and reads D1 through `env.DB`.
 
 ## Current state
 
-The repo has a working tracer bullet:
+The repo has a working tracer bullet, deployed and importing on a daily schedule:
 
 - fetch Reddit sample data
 - normalize/copy source images
 - extract recommendations and vibe summaries
 - enrich recommendations through TMDB
 - load into local SQLite and Wrangler local D1
-- render feed and post detail pages from D1
+- render the feed and post detail pages on demand from D1
+- drop posts whose images Reddit has deleted
 
 ## Next likely work
 
 - Process and inspect a 10–25 post sample.
 - Review extraction quality and recommendation ranking.
 - Decide publish thresholds for noisy recommendations.
-- Add R2-backed image serving instead of hotlink display.
-- Create real Cloudflare D1/R2 resources for deployment.
-- Improve the UI once more real data is loaded.
+- Add R2-backed image serving instead of hotlink display — the durable fix for
+  deleted source images, which no amount of re-checking can undo.
