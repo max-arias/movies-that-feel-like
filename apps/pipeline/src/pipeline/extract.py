@@ -6,7 +6,9 @@ Dry-run mode (``--dry-run``) builds prompts without calling any LLM.
 Real mode supports two providers:
 
 * **OpenCode Go** (default) — model ``mimo-v2.5``, ``OPENCODE_GO_API_KEY``
-  env var, and the OpenCode Go OpenAI-compatible endpoint.
+  env var, and the OpenCode Go OpenAI-compatible endpoint. Go expects every
+  request to carry this client's user agent and a session id; see
+  ``opencode_go_headers``.
 
 * **OpenAI-compatible** — model ``openai/…`` or bare model id,
   ``OPENAI_API_KEY`` or ``OPENCODE_GO_API_KEY`` env var, optional
@@ -41,6 +43,12 @@ from pipeline.paths import checkpoints_dir, ensure_pipeline_dirs, normalized_dir
 
 EXTRACTION_SCHEMA_VERSION = "post-extraction-v3"
 DEFAULT_OPENCODE_GO_MODEL = "mimo-v2.5"
+
+# OpenCode Go rejects traffic that does not identify itself and cannot be
+# routed: it asks clients for their own user agent and a stable session id per
+# conversation. Both are supplied by ``opencode_go_headers``.
+OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
+OPENCODE_GO_USER_AGENT = "movies-that-feel-like-pipeline/1.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -215,7 +223,7 @@ def _resolve_openai_config(
         not resolved_base
         and opencode_key
     ):
-        resolved_base = "https://opencode.ai/zen/go/v1"
+        resolved_base = OPENCODE_GO_BASE_URL
 
     if not api_key:
         raise SystemExit(
@@ -227,11 +235,29 @@ def _resolve_openai_config(
     return actual_model, api_key, resolved_base
 
 
+def opencode_go_headers(base_url: str | None, session_id: str) -> dict[str, str]:
+    """Return the request headers the OpenCode Go endpoint requires.
+
+    Go routes a conversation to the backend that already holds its prompt
+    cache, so it rejects a request that arrives without ``x-opencode-session``
+    (HTTP 400 ``MissingSessionID``) and asks clients to send their own user
+    agent rather than a generic SDK name. Every call in one run shares a
+    session id, which keeps a run's prompts on one backend.
+
+    Endpoints other than Go return an empty mapping, so a request to any other
+    OpenAI-compatible provider is left untouched.
+    """
+    if not base_url or not base_url.rstrip("/").startswith(OPENCODE_GO_BASE_URL):
+        return {}
+    return {"user-agent": OPENCODE_GO_USER_AGENT, "x-opencode-session": session_id}
+
+
 def _build_extraction_client(
     provider: str,
     model: str,
     mode: str | None,
     api_base: str | None,
+    session_id: str,
 ) -> tuple[Any, str, dict[str, Any]]:
     """Build an Instructor client for *provider*.
 
@@ -270,6 +296,7 @@ def _build_extraction_client(
     openai_client = OpenAI(
         api_key=api_key, base_url=resolved_base,
         timeout=httpx.Timeout(180.0, connect=10.0), max_retries=0,
+        default_headers=opencode_go_headers(resolved_base, session_id),
     )
 
     instr_mode = {
@@ -596,7 +623,7 @@ def main(argv: list[str] | None = None) -> None:
     actual_model = args.model.removeprefix("openai/")
     resolved_api_base = args.api_base or os.environ.get("OPENAI_BASE_URL")
     if provider == "openai" and not resolved_api_base and os.environ.get("OPENCODE_GO_API_KEY"):
-        resolved_api_base = "https://opencode.ai/zen/go/v1"
+        resolved_api_base = OPENCODE_GO_BASE_URL
 
     # Operational tuning must not invalidate completed work; output-affecting
     # provider/model/mode and prompt/schema inputs must.
@@ -674,7 +701,8 @@ def main(argv: list[str] | None = None) -> None:
                                       "api_base_set": resolved_api_base is not None}
     if pending:
         client, actual_model, provider_audit = _build_extraction_client(
-            provider=provider, model=args.model, mode=args.mode, api_base=args.api_base)
+            provider=provider, model=args.model, mode=args.mode, api_base=args.api_base,
+            session_id=f"mtfl-extract-{run_id}")
     print(f"[pipeline:extract] Extracting …")
 
     try:

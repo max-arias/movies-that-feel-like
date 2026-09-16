@@ -28,6 +28,13 @@ concurrency:
 permissions:
   contents: write
 
+env:
+  # Extraction model for the OpenCode Go endpoint. Both extract invocations
+  # below must name the same model: the cache-round-trip probe only hits when
+  # its cache key — which includes the model, mode and base URL — matches the
+  # key the extraction step just wrote.
+  EXTRACTION_MODEL: deepseek-v4.1-flash
+
 jobs:
   import:
     runs-on: ubuntu-latest
@@ -132,7 +139,8 @@ jobs:
           EXTRACTION_ARTIFACT: ${{ github.workspace }}/data/working/extraction-${{ github.run_id }}.json
         run: |
           set -euo pipefail
-          npm run pipeline:extract -- --input "$NORMALIZED_ARTIFACT" --out "$EXTRACTION_ARTIFACT" --allow-errors \
+          npm run pipeline:extract -- --input "$NORMALIZED_ARTIFACT" --out "$EXTRACTION_ARTIFACT" \
+            --model "$EXTRACTION_MODEL" --allow-errors \
             --cache-snapshot "$GITHUB_WORKSPACE/data/working/extraction-cache-snapshot.json"
           printf '{"cache_records":[]}' > data/working/empty-cache.json
           npm run pipeline:cache-sql -- --extraction "$EXTRACTION_ARTIFACT" \
@@ -261,6 +269,7 @@ jobs:
           jq -e '.[0].success == true' "$GITHUB_WORKSPACE/data/working/extraction-cache-snapshot.json" >/dev/null
           jq -e '.[0].success == true' "$GITHUB_WORKSPACE/data/working/enrichment-cache-snapshot.json" >/dev/null
           npm run pipeline:extract -- --input "$NORMALIZED_ARTIFACT" --out "$GITHUB_WORKSPACE/data/working/extraction-probe.json" \
+            --model "$EXTRACTION_MODEL" \
             --limit 3 --cache-snapshot "$GITHUB_WORKSPACE/data/working/extraction-cache-snapshot.json"
           npm run pipeline:enrich -- --input "$GITHUB_WORKSPACE/data/working/extraction-probe.json" --out "$GITHUB_WORKSPACE/data/working/enrichment-probe.json" \
             --allow-failed-extraction --cache-snapshot "$GITHUB_WORKSPACE/data/working/enrichment-cache-snapshot.json"

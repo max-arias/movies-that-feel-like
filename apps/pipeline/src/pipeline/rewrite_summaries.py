@@ -13,6 +13,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 from pipeline.extraction_input import SYSTEM_INSTRUCTION
 from pipeline.extract import DEFAULT_OPENCODE_GO_MODEL
 
@@ -223,18 +224,20 @@ def main(argv: list[str] | None = None) -> None:
             ).fetchall()
         if args.workers < 1 or args.timeout_seconds <= 0:
             raise ValueError("workers must be at least 1 and timeout-seconds must be positive")
-        from pipeline.extract import _detect_provider, _resolve_openai_config
+        from pipeline.extract import _detect_provider, _resolve_openai_config, opencode_go_headers
         if _detect_provider(args.model) != "openai":
             raise ValueError("rewrite_summaries requires an OpenAI-compatible model")
         from openai import OpenAI
         import httpx
         model, api_key, base_url = _resolve_openai_config(args.model, args.api_base)
+        session_id = f"mtfl-rewrite-summaries-{uuid4().hex}"
         def client_factory() -> Any:
             return OpenAI(
                 api_key=api_key,
                 base_url=base_url,
                 timeout=httpx.Timeout(args.timeout_seconds, connect=min(10.0, args.timeout_seconds)),
                 max_retries=0,
+                default_headers=opencode_go_headers(base_url, session_id),
             )
 
         def report(done: int, total: int, post_id: str) -> None:

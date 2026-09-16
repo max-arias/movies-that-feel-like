@@ -48,6 +48,16 @@ The workflow uses Node 22, Python 3.11, Bun with `bun install --frozen-lockfile`
 `apps/astro/wrangler.jsonc`. Secrets are supplied only as environment
 variables; do not print them or put them in artifacts.
 
+Extraction runs on OpenCode Go. The model is `EXTRACTION_MODEL` at the top of
+`.github/workflows/import-reddit.yml` (currently `deepseek-v4.1-flash`), and
+both the extraction step and the cache round-trip probe use it — the probe only
+hits when its cache key, which includes the model, mode, and base URL, matches
+the key the extraction step just wrote. Go requires every request to carry this
+client's user agent and an `x-opencode-session` header; `pipeline.extract`
+sends both, and the model, mode and endpoint are part of the extraction cache
+key, so changing the model starts from a cold cache instead of reusing another
+model's output.
+
 Manual runs accept `limit` (default `100`), `max_pages` (default `50`), and
 `verify_cache_round_trip`. Both numeric inputs must be positive integers. The
 optional round-trip check reruns at most three original posts using re-exported

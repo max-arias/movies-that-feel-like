@@ -112,8 +112,14 @@ npm run seed
 npm run dev
 ```
 
-Extraction uses OpenCode Go with the default model `mimo-v2.5`; set
-`OPENCODE_GO_API_KEY` before running `pipeline:extract`.
+Extraction uses OpenCode Go; the pipeline default model is `mimo-v2.5`, and the
+scheduled import runs `deepseek-v4.1-flash` (`EXTRACTION_MODEL` in
+`.github/workflows/import-reddit.yml`). Select either explicitly with
+`--model`, and set `OPENCODE_GO_API_KEY` before running `pipeline:extract`. Go
+requires each request to identify this client and carry a session id, which the
+pipeline sends automatically; the model, mode, and endpoint are part of each
+cache key, so changing the model invalidates cached extractions rather than
+reusing a different model's output.
 Extraction is resumable: completed posts are fsynced to an append-only JSONL
 checkpoint in `data/working/checkpoints/`. The default bounded concurrency is 3
 and request starts are limited to 6 RPM; tune with `--concurrency` and
