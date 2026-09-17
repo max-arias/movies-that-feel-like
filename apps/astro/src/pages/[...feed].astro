@@ -1,0 +1,35 @@
+---
+// The on-demand feed: every feed URL the build does not prerender — deep pages
+// of the unfiltered feed, the long tail of tags, the canonical redirects for
+// `/page/1/`, `/tag/<slug>/page/1/` and out-of-range pages, missing trailing
+// slashes, and a 404 for a slug or path that is not a feed at all.
+//
+// The prerendered `/`, `/page/2..5/`, large tags and `/tags` are static files
+// beside this route; all of them render the same component from the same query,
+// so a URL's markup does not depend on which one answered it.
+
+import Layout from "../layouts/Layout.astro";
+import Feed from "../components/Feed.astro";
+import FeedNotFound from "../components/FeedNotFound.astro";
+import { getDb } from "../lib/db";
+import { feedDescription, feedTitle, resolveOnDemandFeed } from "../lib/feed-routes";
+
+// One URL per feed page: the asset store redirects the prerendered pages, the
+// on-demand ones redirect themselves.
+if (Astro.url.pathname !== "/" && !Astro.url.pathname.endsWith("/")) {
+  return Astro.redirect(`${Astro.url.pathname}/${Astro.url.search}`, 301);
+}
+
+const outcome = await resolveOnDemandFeed(getDb(), Astro.params.feed ?? "");
+if (outcome.kind === "redirect") return Astro.redirect(outcome.location, 301);
+if (outcome.kind === "missing") Astro.response.status = 404;
+
+const page = outcome.kind === "feed" ? outcome.page : null;
+---
+
+<Layout
+  title={page ? feedTitle(page) : "Feed page not found — Movies That Feel Like"}
+  description={page ? feedDescription(page) : undefined}
+>
+  {page ? <Feed page={page} /> : <FeedNotFound />}
+</Layout>

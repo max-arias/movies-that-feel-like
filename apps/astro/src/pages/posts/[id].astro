@@ -7,6 +7,7 @@
 import Layout from "../../layouts/Layout.astro";
 import { getDb } from "../../lib/db";
 import { loadPost, type Recommendation } from "../../lib/db/queries";
+import { feedHref } from "../../lib/feed-paths";
 
 const postId = Astro.params.id;
 const post = postId ? await loadPost(getDb(), postId) : null;
@@ -22,7 +23,7 @@ const heroNext = (i: number, total: number) => (i === total - 1 ? `#${slideId(0)
 const modalPrev = (i: number, total: number) => (i === 0 ? `#${modalSlideId(total - 1)}` : `#${modalSlideId(i - 1)}`);
 const modalNext = (i: number, total: number) => (i === total - 1 ? `#${modalSlideId(0)}` : `#${modalSlideId(i + 1)}`);
 const totalImages = post?.images.length ?? 0;
-const tagHref = (tag: string) => `/?tag=${encodeURIComponent(tag)}`;
+const tagHref = (tag: string) => feedHref(tag);
 const redditHref = (permalink: string) => `https://reddit.com${permalink}`;
 
 const externalHref = (rec: Recommendation): string | null => {

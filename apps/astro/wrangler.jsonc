@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "movies-that-feel-like",
+  "main": "src/worker-entry.ts",
   "compatibility_date": "2026-07-13",
   "compatibility_flags": ["nodejs_compat"],
   "kv_namespaces": [
@@ -16,5 +17,12 @@
       "database_id": "0e45f57f-016f-4c47-b2ba-e2ae0bb94f6f",
       "migrations_dir": "../../packages/db/migrations"
     }
-  ]
+  ],
+  "assets": {
+    "binding": "ASSETS",
+    // Every request to the root goes through the Worker: middleware answers the
+    // legacy `/?tag=…&page=…` URLs with a permanent redirect and delegates a
+    // plain `/` to the prerendered feed. Everything else is assets-first.
+    "run_worker_first": ["/"]
+  }
 }

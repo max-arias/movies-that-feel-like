@@ -1,0 +1,22 @@
+---
+// Pages 2..STATIC_FEED_PAGES of the unfiltered feed. Everything deeper is
+// served on demand by `[...feed].astro`, which renders the same component.
+export const prerender = true;
+
+import Layout from "../../layouts/Layout.astro";
+import Feed from "../../components/Feed.astro";
+import { getDb } from "../../lib/db";
+import { loadFeed } from "../../lib/db/queries";
+import { feedDescription, feedTitle, staticFeedPages } from "../../lib/feed-routes";
+
+export async function getStaticPaths() {
+  const { pageCount } = await loadFeed(getDb(), null, 1);
+  return staticFeedPages(pageCount).map((page) => ({ params: { page: String(page) } }));
+}
+
+const page = await loadFeed(getDb(), null, Number(Astro.params.page ?? "1"));
+---
+
+<Layout title={feedTitle(page)} description={feedDescription(page)}>
+  <Feed page={page} />
+</Layout>

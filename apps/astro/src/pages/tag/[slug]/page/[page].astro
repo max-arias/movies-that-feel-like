@@ -1,0 +1,32 @@
+---
+// A large tag's feed, pages 2 onward: a tag's whole pagination is prerendered.
+// Smaller tags, and any page that does not exist yet, are served on demand by
+// `[...feed].astro`, which renders the same component.
+export const prerender = true;
+
+import Layout from "../../../../layouts/Layout.astro";
+import Feed from "../../../../components/Feed.astro";
+import { getDb } from "../../../../lib/db";
+import { loadFeed, loadTagBySlug } from "../../../../lib/db/queries";
+import { feedDescription, feedTitle, loadStaticTags, STATIC_TAG_MIN_POSTS } from "../../../../lib/feed-routes";
+
+export async function getStaticPaths() {
+  const tags = await loadStaticTags(getDb());
+  return tags.flatMap(({ slug, pages }) => pages.map((page) => ({ params: { slug, page: String(page) } })));
+}
+
+const slug = Astro.params.slug ?? "";
+const tag = await loadTagBySlug(getDb(), slug);
+// The build listed this slug from the same summary a moment ago, so a miss is
+// a broken invariant, not a page: fail the build instead of publishing an
+// unfiltered feed at a tag's URL.
+if (!tag) {
+  throw new Error(`/tag/${slug}/page/${Astro.params.page}/ was prerendered for a tag below ${STATIC_TAG_MIN_POSTS} posts.`);
+}
+
+const page = await loadFeed(getDb(), tag.tag, Number(Astro.params.page ?? "1"));
+---
+
+<Layout title={feedTitle(page)} description={feedDescription(page)}>
+  <Feed page={page} />
+</Layout>

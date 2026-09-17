@@ -1,0 +1,16 @@
+---
+// The not-found panel for a feed URL: a tag that no longer counts a post, or a
+// page past the end of a feed. Styled after the post detail page's own
+// not-found box so the two read as one site.
+---
+<div class="hero min-h-64 rounded-box border border-line bg-paper transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:border-line-dark theme-dark:bg-paper-dark">
+  <div class="hero-content text-center">
+    <div class="max-w-md">
+      <h1 class="text-xl font-bold">Feed page not found</h1>
+      <p class="py-4 text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">
+        No feed lives at this URL. A tag can lose its last post, and a page can fall past the end of the feed.
+      </p>
+      <a href="/" class="btn btn-primary focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark">Back to feed</a>
+    </div>
+  </div>
+</div>
