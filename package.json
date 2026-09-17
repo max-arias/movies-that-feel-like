@@ -6,8 +6,10 @@
   "scripts": {
     "dev": "npm run dev -w apps/astro",
     "build": "npm run build -w apps/astro",
+    "build:production": "node scripts/build-production.mjs",
     "cf:deploy": "wrangler deploy --config apps/astro/dist/server/wrangler.json",
-    "cf:deploy:prod": "npm run build && npm run cf:deploy",
+    "cf:deploy:prod": "npm run build:production -- --snapshot \"${D1_SNAPSHOT:?set D1_SNAPSHOT to a file from npm run d1:export:prod}\" && npm run cf:deploy",
+    "d1:export:prod": "wrangler d1 export ${D1_DATABASE_NAME:-movies-that-feel-like} --remote --no-schema --skip-confirmation --config apps/astro/wrangler.jsonc",
     "check": "npm run validate-schema -w packages/db && npm run check -w apps/astro",
     "seed": "npm run pipeline:load -- --reset && npm run db:migrate",
     "pipeline:fetch": "npm run fetch -w apps/pipeline --",

@@ -22,10 +22,6 @@ on:
         default: false
         type: boolean
 
-concurrency:
-  group: movies-import-production
-  cancel-in-progress: false
-
 permissions:
   contents: write
 
@@ -40,6 +36,17 @@ jobs:
   import:
     runs-on: ubuntu-latest
     environment: production
+    # Production D1 is mutated by this job and by the deploy job it calls, so both
+    # hold the same group and the group lives on the jobs, never on the workflow:
+    # a workflow-level group would already be held by this run when the reusable
+    # deploy workflow is called, and the deploy job would wait on itself.
+    concurrency:
+      group: movies-import-production
+      cancel-in-progress: false
+    outputs:
+      # A run with no new posts commits nothing and pushes nothing, so there is
+      # nothing to deploy and the follow-up deploy job is skipped.
+      released: ${{ steps.normalize.outputs.post-count != '0' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -387,3 +394,14 @@ jobs:
           if ! git push origin --delete "$RECOVERY_REF"; then
             echo "Warning: main push succeeded, but cleanup of recovery ref '$RECOVERY_REF' failed; delete it manually." >&2
           fi
+
+  deploy:
+    # The release commit was pushed with GITHUB_TOKEN, which does not create push
+    # events, so the deploy has to be called explicitly. It reuses the same
+    # workflow a code push or a manual deploy runs, so production has one deploy
+    # path. A run that found no new posts pushed nothing, and the deployed site
+    # already matches main, so there is nothing to deploy.
+    needs: import
+    if: needs.import.outputs.released == 'true'
+    uses: ./.github/workflows/deploy-production.yml
+    secrets: inherit

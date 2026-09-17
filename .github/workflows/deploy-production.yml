@@ -1,0 +1,132 @@
+name: Deploy production
+
+# Builds and deploys the site from an export of the production D1 corpus: the
+# prerendered feed and tag pages read D1 at build time, so the build needs a copy
+# of the live data, restored into an isolated local database. The runtime Worker
+# keeps its own production `DB` binding.
+#
+# Triggered by pushes to main, by hand, and by the import workflow after it
+# pushes a release commit. The import job there pushes with GITHUB_TOKEN, which
+# does not create push events, so that call is explicit rather than implied.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/**'
+      - 'packages/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'bun.lock'
+      - '.github/workflows/deploy-production.yml'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  D1_DATABASE_NAME: movies-that-feel-like
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    # One production mutation at a time. The same group guards the import job, so
+    # an import and the deploy that follows it never overlap, a hand-pushed
+    # deploy waits for an in-flight import, and two deploys never race. The group
+    # is deliberately on the jobs rather than on the workflows: a called
+    # workflow's group would be held by the calling run and the deploy job would
+    # deadlock behind it. cancel-in-progress stays false — cancelling a job
+    # between a migration and a deploy would leave production half-updated.
+    concurrency:
+      group: movies-import-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          # Always the newest main: a queued deploy must not ship a commit that
+          # the release commit it waited for has already superseded.
+          ref: main
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version: 22 }
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Check tracked migration state
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          git ls-files 'packages/db/migrations/*.sql' | while IFS= read -r path; do basename "$path"; done | sort -u > /tmp/local-migrations
+          npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc \
+            --command 'SELECT name FROM d1_migrations ORDER BY name' --json \
+            | jq -r '.[0].results[]?.name' | sort -u > /tmp/remote-migrations
+          comm -23 /tmp/local-migrations /tmp/remote-migrations > /tmp/pending-migrations
+          comm -13 /tmp/local-migrations /tmp/remote-migrations > /tmp/unknown-remote-migrations
+          # Production ahead of the repository means a release was applied but its
+          # commit never landed; applying this commit's migrations on top would
+          # hide that. Pending local migrations are the normal case here: they are
+          # applied by the next step.
+          if [ -s /tmp/unknown-remote-migrations ]; then
+            echo 'Refusing deploy: production D1 has migrations the repository does not.' >&2
+            cat /tmp/unknown-remote-migrations >&2
+            exit 1
+          fi
+          echo "Pending migrations to apply: $(wc -l < /tmp/pending-migrations)"
+
+      - name: Apply pending migrations to production D1
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          # Additive migrations only: this runs against the schema the currently
+          # deployed Worker is still serving until the deploy below lands. The
+          # import workflow applies its own generated migrations before pushing,
+          # so this is usually a no-op there.
+          npx wrangler d1 migrations apply movies-that-feel-like --remote --config apps/astro/wrangler.jsonc
+
+      - name: Export production D1 corpus
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          snapshot="$RUNNER_TEMP/d1-corpus.sql"
+          # Data only: the build applies the tracked migrations itself, which keeps
+          # the schema (and its summary triggers) owned by packages/db/migrations.
+          npx wrangler d1 export movies-that-feel-like --remote --no-schema --skip-confirmation \
+            --config apps/astro/wrangler.jsonc --output "$snapshot"
+          test -s "$snapshot"
+          echo "D1_SNAPSHOT=$snapshot" >> "$GITHUB_ENV"
+          echo "Exported corpus: $(wc -c < "$snapshot") bytes, sha256 $(sha256sum "$snapshot" | cut -d' ' -f1)"
+
+      - name: Build production site from the exported corpus
+        # Deliberately no Cloudflare credentials: the build must read the local
+        # restore, so any attempt to reach production D1 during prerendering fails
+        # instead of silently querying production once per page.
+        run: |
+          node scripts/build-production.mjs \
+            --snapshot "$D1_SNAPSHOT" \
+            --state-dir "$RUNNER_TEMP/d1-build-state"
+
+      - name: Deploy Worker
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx wrangler deploy --config apps/astro/dist/server/wrangler.json
+
+      - name: Summarize deployment
+        if: always()
+        run: |
+          {
+            echo "### Production deploy"
+            echo
+            echo "- commit: \`${{ github.sha }}\`"
+            echo "- ref: \`${{ github.ref }}\`"
+            echo "- job status: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"
