@@ -14,8 +14,8 @@ The first version is intentionally read-only: users browse imported Reddit data 
 - Generates a short text-only vibe summary and tags from the post title/text/comments.
 - Resolves recommendations to canonical TMDB movie/TV records.
 - Links posts together through shared canonical recommendations.
-- Drops any post whose images Reddit has deleted, and re-checks image reachability on a schedule.
-- Serves the web app through Astro on Cloudflare, rendering on demand from D1 as the app database.
+- Drops any post whose images Reddit has deleted, and re-checks image reachability with an on-demand probe.
+- Serves the web app through Astro on Cloudflare: the first five feed pages, tag feeds with at least ten displayable posts (and their whole pagination) and the complete tag index are prerendered; the long tail of tags, deep feed pages and post details render on demand from D1. Legacy `/?tag=…&page=…` URLs are redirected at the Worker boundary.
 
 The pipeline does **not** analyze images with an LLM. It relies on the humans in the Reddit comments to interpret the image vibe.
 
@@ -24,7 +24,7 @@ The pipeline does **not** analyze images with an LLM. It relies on the humans in
 ```txt
 /
   apps/
-    astro/       # Astro on Cloudflare Workers; renders from D1 on demand
+    astro/       # Astro hybrid static/SSR on Cloudflare Workers
     pipeline/    # Python import/extract/enrich/load pipeline
   packages/
     db/          # D1 schema and migrations
@@ -45,8 +45,9 @@ See `CONTEXT.md` for the glossary.
 ## Tech stack
 
 - Astro
-- Cloudflare Workers runtime (on-demand rendering from D1; nothing prerendered)
+- Cloudflare Workers runtime and static assets (hybrid rendering from D1)
 - Cloudflare D1 via Wrangler local dev
+- GitHub Actions for the production deploy (snapshot-backed build, then `wrangler deploy`); Cloudflare Workers Builds stays disconnected
 - Tailwind CSS 4 + daisyUI 5
 - Python pipeline managed with `uv`
 - Arctic Shift / `arcshiftwrap` for Reddit archive data
@@ -85,7 +86,33 @@ npm run seed
 npm run dev
 ```
 
-`npm run seed` applies D1 migrations and loads the latest processed pipeline artifacts into Wrangler's local D1 storage.
+`npm run seed` loads the latest processed pipeline artifacts into Wrangler's local D1 storage and applies the D1 migrations. Development and verification read that local D1 only — the adapter sets `remoteBindings: false`, so neither the dev server nor a prerender can reach production D1 or KV.
+
+## Production build and deploy
+
+The prerendered pages read D1 at build time, so the production build restores an
+export of the production corpus into an isolated local database, prerenders
+against that, and only then deploys:
+
+```bash
+npm run d1:export:prod -- --output /tmp/d1-corpus.sql
+D1_SNAPSHOT=/tmp/d1-corpus.sql npm run cf:deploy:prod
+```
+
+`scripts/build-production.mjs` applies the tracked migrations into an isolated
+state directory, imports the data-only snapshot (dropping the summary triggers
+around the import so the exported summary rows land verbatim), verifies the
+restored corpus and migration ledger, builds with `BUILD_D1_STATE_DIR`, and
+refuses to emit an empty site — or to run under Cloudflare Workers Builds, whose
+plain push-triggered build has no snapshot.
+`.github/workflows/deploy-production.yml` runs the same sequence for pushes to
+`main` that touch the app, packages, scripts, `package.json` or the lockfile, and
+it is called explicitly by the import workflow, because the release
+commit is pushed with `GITHUB_TOKEN`, which creates no push events.
+
+Prerendered pages change only on deployment, so redeploy after image-liveness
+writes. Token scopes, the production environment and the Workers Builds
+disconnect are documented in `docs/operations.md`.
 
 ## Pipeline workflow
 
@@ -131,8 +158,10 @@ Image reachability is maintained separately from extraction. Reddit answers a
 deleted gallery image with a 1048-byte placeholder PNG, so a dead image still
 loads; `pipeline:check-images` probes the stored URLs and records which ones are
 dead, and `pipeline:refetch-images` re-derives rows for posts that lost them.
-A post is served only while it owns at least one image that is not known to be
-deleted. `docs/operations.md` has the production commands.
+A post is displayable only while it owns at least one image that is not known to
+be deleted. Database triggers keep displayability and counts current; static
+pages reflect the last deployment, so redeploy after liveness writes.
+`docs/operations.md` has the production commands and deployment prerequisites.
 
 Useful inspection:
 
@@ -144,23 +173,31 @@ apps/astro/node_modules/.bin/wrangler d1 execute movies-that-feel-like --local -
 ## Important docs
 
 - `docs/architecture-plan.md` — architecture and pipeline plan.
-- `docs/operations.md` — production Reddit import configuration, scheduling,
-  recovery, failure triage, and the Worker build/deploy commands.
+- `docs/operations.md` — rendering and deployment architecture, production
+  Reddit import configuration, scheduling, recovery, failure triage, the
+  snapshot-backed Worker build, D1 summary triggers, and the required Cloudflare
+  setup.
 - `docs/adr/0001-cloudflare-native-storage-and-deployment.md` — Cloudflare-native decision.
 - `docs/adr/0002-local-python-pipeline-with-instructor-and-gemini.md` — Python pipeline and Gemini decision.
-- `docs/adr/0003-drizzle-d1-data-access.md` — Drizzle over D1 for the Astro app, including the decision that the site runs Astro SSR on Workers and reads D1 through `env.DB`.
+- `docs/adr/0003-drizzle-d1-data-access.md` — Drizzle over D1 and the hybrid-rendering amendment: local export-backed builds, SSR fallbacks and materialized counts.
 
 ## Current state
 
-The repo has a working tracer bullet, deployed and importing twice a week:
+The repo has a working tracer bullet, and the import workflow is scheduled twice
+a week:
 
 - fetch Reddit sample data
 - normalize/copy source images
 - extract recommendations and vibe summaries
 - enrich recommendations through TMDB
 - load into local SQLite and Wrangler local D1
-- render the feed and post detail pages on demand from D1
+- prerender the hot feed/tag routes; render long-tail filters and post details on demand
 - drop posts whose images Reddit has deleted
+
+The production deploy is the GitHub Actions workflow described above and in
+`docs/operations.md`; that document lists the operator setup it requires (Cloudflare
+token scopes, the `production` environment, and disconnecting Cloudflare Workers
+Builds). This repository does not record whether a given deployment has run.
 
 ## Next likely work
 
