@@ -30,6 +30,14 @@ export const importedVibePosts = sqliteTable(
       .notNull()
       .default("pending")
       .$type<"pending" | "processing" | "publishable" | "failed" | "skipped">(),
+    // Derived invariant, owned by the database: true iff the post owns at
+    // least one image with a NULL `deleted_at`. Independent of `status`, so a
+    // publishable post whose only image was probed dead is not displayable.
+    // Triggers on imported_post_images keep it exact; a seed never refreshes it
+    // (D1 owns the liveness knowledge).
+    isDisplayable: integer("is_displayable", { mode: "boolean" })
+      .notNull()
+      .default(false),
     errorInfo: text("error_info"),
     processingRunId: integer("processing_run_id"),
     createdAt: text("created_at")
@@ -46,6 +54,14 @@ export const importedVibePosts = sqliteTable(
     index("idx_imported_vibe_posts_status").on(table.status),
     index("idx_imported_vibe_posts_created_utc").on(table.createdUtc),
     index("idx_imported_vibe_posts_reddit_id").on(table.redditPostId),
+    // Feed and tag pages page over exactly this ordering, filtered by
+    // status = 'publishable' AND is_displayable = 1.
+    index("idx_imported_vibe_posts_feed").on(
+      table.status,
+      table.isDisplayable,
+      table.createdUtc.desc(),
+      table.id.desc()
+    ),
   ]
 );
 
@@ -355,4 +371,42 @@ export const extractionResultCache = sqliteTable(
       table.id.desc()
     ),
   ]
+);
+
+// ── tag_counts ───────────────────────────────────────────────
+//
+// Materialized per-tag count of publishable, displayable posts. One row per
+// tag in the corpus vocabulary (including tags whose count is currently 0 —
+// readers filter `count > 0`). Maintained incrementally by database triggers
+// on imported_vibe_posts / imported_post_images / vibe_tags, so every writer
+// (pipeline stage, seed migration, direct SQL) lands the same values.
+//
+// `slug` is the deterministic URL key: 't-' plus the lowercase hex of the
+// tag's UTF-8 bytes, which is injective and safe for any Unicode tag
+// (including slashes). It is written by the same SQL expression the triggers
+// and the schema migration use.
+
+export const tagCounts = sqliteTable(
+  "tag_counts",
+  {
+    tag: text("tag").primaryKey(),
+    slug: text("slug").notNull(),
+    count: integer("count").notNull().default(0),
+  },
+  (table) => [uniqueIndex("idx_tag_counts_slug").on(table.slug)]
+);
+
+// ── site_stats ───────────────────────────────────────────────
+//
+// Singleton row (`id = 1`) holding corpus-wide counters. Same maintenance
+// contract as tag_counts: triggers own it, readers must not trust a missing
+// row (a deleted singleton is repaired by a trigger on this table).
+
+export const siteStats = sqliteTable(
+  "site_stats",
+  {
+    id: integer("id").primaryKey(),
+    postCount: integer("post_count").notNull().default(0),
+  },
+  (table) => [check("site_stats_singleton", sql`${table.id} = 1`)]
 );

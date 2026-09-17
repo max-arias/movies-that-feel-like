@@ -27,6 +27,8 @@ const TABLES: Record<string, Record<string, unknown>> = {
   pipeline_artifacts: schema.pipelineArtifacts,
   enrichment_resolution_cache: schema.enrichmentResolutionCache,
   extraction_result_cache: schema.extractionResultCache,
+  tag_counts: schema.tagCounts,
+  site_stats: schema.siteStats,
 } as const;
 
 /**

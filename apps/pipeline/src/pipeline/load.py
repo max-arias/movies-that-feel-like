@@ -569,6 +569,16 @@ _SEED_REFRESH_ONLY: dict[str, frozenset[str]] = {
 # is the destination's allocation and ``created_at`` records its own history.
 _SEED_NEVER_REFRESHED: frozenset[str] = frozenset({"id", "created_at"})
 
+# Derived columns the destination maintains itself. ``imported_vibe_posts
+# .is_displayable`` is recomputed by D1's own triggers from D1's image rows,
+# which are the only place image liveness is known (a local run never probes),
+# so a seed neither inserts nor refreshes it: the insert branch is normalized
+# by the destination's trigger and the update branch must not overwrite the
+# destination's truth with the run-local derivation.
+_SEED_DESTINATION_DERIVED: dict[str, frozenset[str]] = {
+    "imported_vibe_posts": frozenset({"is_displayable"}),
+}
+
 
 def _identifier_list(columns: Sequence[str]) -> str:
     return ", ".join(_quote_sql_identifier(column) for column in columns)
@@ -847,7 +857,10 @@ def _seed_inserts(
     touched_recommendation_ids: set[int] | None = None,
 ) -> list[str]:
     """Render one data table's delta rows (``id`` > *floor*) as id-free upserts."""
-    value_columns = [column for column in columns if column != "id"]
+    derived = _SEED_DESTINATION_DERIVED.get(table, frozenset())
+    value_columns = [
+        column for column in columns if column != "id" and column not in derived
+    ]
     refreshed = _refreshed_columns(table, value_columns)
     if table in ("imported_post_images", "vibe_tags"):
         return _seed_post_child_rows(db, table, value_columns, refreshed, floor)
@@ -1360,15 +1373,30 @@ def main(argv: list[str] | None = None) -> None:
             if "igdb_id" not in rec_cols:
                 missing.append("recommendations.igdb_id")
             image_cols = {r[1] for r in db.execute("PRAGMA table_info(imported_post_images)").fetchall()}
-            for column in ("source_url", "preview_url"):
+            for column in ("source_url", "preview_url", "deleted_at", "checked_at"):
                 if column not in image_cols:
                     missing.append(f"imported_post_images.{column}")
+            post_cols = {r[1] for r in db.execute("PRAGMA table_info(imported_vibe_posts)").fetchall()}
+            if "is_displayable" not in post_cols:
+                missing.append("imported_vibe_posts.is_displayable")
+            # The summary tables and their triggers arrive with the same
+            # migration; without them the loader would write a database whose
+            # counts are maintained by nothing.
+            present_tables = {
+                r[0]
+                for r in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+            for table in ("tag_counts", "site_stats"):
+                if table not in present_tables:
+                    missing.append(table)
             if missing:
                 print(
-                    f"[pipeline:load] Existing DB is missing required columns: "
+                    f"[pipeline:load] Existing DB is missing required schema: "
                     f"{', '.join(missing)}. "
                     f"Run with --reset to re-create the DB from migrations, "
-                    f"or apply the image URL schema migration before loading"
+                    f"or apply the pending schema migrations before loading"
                 )
                 raise SystemExit(1)
 
