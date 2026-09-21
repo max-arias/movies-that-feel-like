@@ -110,7 +110,7 @@ export async function loadStaticTags(db: Db): Promise<{ slug: string; pages: num
   const tags = await loadTagCounts(db);
   return tags
     .filter(({ count }) => count >= STATIC_TAG_MIN_POSTS)
-    .map(({ slug, count }) => ({ slug, pages: staticTagPages(Math.ceil(count / PAGE_SIZE)) }));
+    .map(({ tag, count }) => ({ slug: tag, pages: staticTagPages(Math.ceil(count / PAGE_SIZE)) }));
 }
 
 export type OnDemandFeed =

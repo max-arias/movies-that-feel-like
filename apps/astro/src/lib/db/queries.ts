@@ -152,11 +152,17 @@ async function selectTagCountRow(db: Db, key: SQL): Promise<TagCount | null> {
 }
 
 /**
- * The tag a `/tag/<slug>/` path names, or null. Slugs are the canonical URL
- * key: a tag named exactly like another tag's slug cannot shadow this lookup.
+ * The tag a `/tag/<slug>/` path names, or null. The path segment is encoded
+ * with `encodeURIComponent`, while the summary stores the original tag name.
  */
 export async function loadTagBySlug(db: Db, slug: string): Promise<TagCount | null> {
-  return selectTagCountRow(db, eq(tagCountsTable.slug, slug));
+  let tag = slug;
+  try {
+    tag = decodeURIComponent(slug);
+  } catch {
+    // Astro can provide an already-decoded tag containing a literal `%`.
+  }
+  return selectTagCountRow(db, eq(tagCountsTable.tag, tag));
 }
 
 /** Every displayable post on the site, from the singleton summary row. */

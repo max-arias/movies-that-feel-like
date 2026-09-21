@@ -381,10 +381,9 @@ export const extractionResultCache = sqliteTable(
 // on imported_vibe_posts / imported_post_images / vibe_tags, so every writer
 // (pipeline stage, seed migration, direct SQL) lands the same values.
 //
-// `slug` is the deterministic URL key: 't-' plus the lowercase hex of the
-// tag's UTF-8 bytes, which is injective and safe for any Unicode tag
-// (including slashes). It is written by the same SQL expression the triggers
-// and the schema migration use.
+// `slug` is a deterministic internal key retained in the summary. Public URLs
+// encode the original tag name directly, so ordinary tags remain readable
+// while names with punctuation stay safe.
 
 export const tagCounts = sqliteTable(
   "tag_counts",

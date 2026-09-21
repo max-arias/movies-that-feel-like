@@ -5,22 +5,15 @@
  * `/tag/<slug>/` and `/tag/<slug>/page/<n>/`. A page-1 href never carries a
  * `/page/1/` suffix, so each page has exactly one URL.
  *
- * Slugs are deterministic and collision-free: `t-` followed by the lowercase
- * hex of the tag's UTF-8 bytes. That is the value SQLite computes for the
- * `tag_counts.slug` column as `'t-' || lower(hex(cast(tag as blob)))`, so the
- * two sides agree for ASCII, emoji, and any Unicode a tag can carry — hex
- * cannot collide with another tag's hex, and it is slash- and space-safe in a
- * path segment.
+ * Tag names are URL-encoded as path segments, keeping ordinary names readable
+ * while preserving spaces, punctuation, and Unicode without path collisions.
  */
 
-const utf8 = new TextEncoder();
-
-/** The URL slug of `tag`; identical to `tag_counts.slug` in the database. */
+/** The URL path segment for `tag`. */
 export function tagSlug(tag: string): string {
-  let hex = "";
-  for (const byte of utf8.encode(tag)) hex += byte.toString(16).padStart(2, "0");
-  return `t-${hex}`;
+  return encodeURIComponent(tag);
 }
+
 
 /**
  * The canonical href for one feed page. `null` is the unfiltered feed, which
