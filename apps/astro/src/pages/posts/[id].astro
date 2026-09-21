@@ -115,6 +115,7 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
                   <>
                     <a
                       href={heroPrev(i, totalImages)}
+                      data-carousel-control
                       class="btn btn-circle btn-sm absolute left-4 top-1/2 -translate-y-1/2 border border-ink/20 bg-paper/90 text-ink shadow-md hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:btn-md theme-dark:border-ink-dark/20 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
                       aria-label="Show previous image"
                     >
@@ -124,6 +125,7 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
                     </a>
                     <a
                       href={heroNext(i, totalImages)}
+                      data-carousel-control
                       class="btn btn-circle btn-sm absolute right-4 top-1/2 -translate-y-1/2 border border-ink/20 bg-paper/90 text-ink shadow-md hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:btn-md theme-dark:border-ink-dark/20 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
                       aria-label="Show next image"
                     >
@@ -344,6 +346,7 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
                   <>
                     <a
                       href={modalPrev(i, totalImages)}
+                      data-carousel-control
                       class="btn btn-circle absolute left-3 top-1/2 -translate-y-1/2 border border-paper/30 bg-paper/90 text-ink hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:left-5 theme-dark:border-paper-dark/30 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
                       aria-label="Show previous image"
                     >
@@ -353,6 +356,7 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
                     </a>
                     <a
                       href={modalNext(i, totalImages)}
+                      data-carousel-control
                       class="btn btn-circle absolute right-3 top-1/2 -translate-y-1/2 border border-paper/30 bg-paper/90 text-ink hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:right-5 theme-dark:border-paper-dark/30 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
                       aria-label="Show next image"
                     >
@@ -405,6 +409,21 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
   document.addEventListener("astro:page-load", setupImageFallbacks);
 
   const pad = (n: number) => String(n).padStart(2, "0");
+
+  document.querySelectorAll<HTMLAnchorElement>("[data-carousel-control]").forEach((control) => {
+    control.addEventListener("click", (event) => {
+      event.preventDefault();
+      const targetId = control.getAttribute("href")?.slice(1);
+      const target = targetId ? document.getElementById(targetId) : null;
+      if (!target) return;
+      target.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+        block: "nearest",
+        inline: "start",
+      });
+      window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+    });
+  });
 
   const heroCarousel = document.querySelector<HTMLElement>("[data-hero-carousel]");
   const heroStatus = document.querySelector<HTMLElement>("[data-hero-status]");
