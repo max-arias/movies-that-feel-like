@@ -17,7 +17,7 @@ const tags = (await loadTagCounts(getDb())).sort((a, b) => a.tag.localeCompare(b
   title="All tags — Movies That Feel Like"
   description="Every feeling the index can be filtered by, from the largest tag to the smallest."
 >
-  <div class="pb-24">
+  <div class="pt-8 pb-24">
     <header class="mb-8 flex flex-wrap items-baseline justify-between gap-2 border-b border-line pb-3 transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:border-line-dark">
       <h1 class="font-display text-caption uppercase tracking-theme text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-ink-dark">All tags</h1>
       <p class="text-label uppercase tracking-theme text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">{tags.length} tags</p>
@@ -29,7 +29,7 @@ const tags = (await loadTagCounts(getDb())).sort((a, b) => a.tag.localeCompare(b
             <a
               href={feedHref(tag)}
               aria-label={`${tag}, ${count} ${count === 1 ? "post" : "posts"}`}
-              class="flex items-baseline justify-between gap-3 border-b border-line py-tag font-display text-summary font-extrabold uppercase leading-tag tracking-tag text-quiet transition-colors duration-200 ease-theme motion-reduce:transition-none hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:border-line-dark theme-dark:text-quiet-dark theme-dark:hover:text-red-dark theme-dark:outline-red-dark"
+              class="flex items-baseline justify-between gap-3 border-b border-line py-tag font-display text-sm font-extrabold uppercase leading-tag tracking-tag text-quiet transition-colors duration-200 ease-theme motion-reduce:transition-none hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:border-line-dark theme-dark:text-quiet-dark theme-dark:hover:text-red-dark theme-dark:outline-red-dark"
             >
               <span class="min-w-0 wrap-normal">{tag}</span>
               <b class="font-body text-count font-medium text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">{count}</b>
