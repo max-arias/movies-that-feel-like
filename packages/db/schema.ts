@@ -392,7 +392,11 @@ export const tagCounts = sqliteTable(
     slug: text("slug").notNull(),
     count: integer("count").notNull().default(0),
   },
-  (table) => [uniqueIndex("idx_tag_counts_slug").on(table.slug)]
+  (table) => [
+    uniqueIndex("idx_tag_counts_slug").on(table.slug),
+    // The sidebar reads the largest tags first and stops after a page.
+    index("idx_tag_counts_rank").on(table.count.desc(), table.tag),
+  ]
 );
 
 // ── site_stats ───────────────────────────────────────────────
