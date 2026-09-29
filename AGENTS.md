@@ -6,7 +6,20 @@
 
 ### Issue tracker
 
-Issues for `max-arias/movies-that-feel-like` live in GitHub Issues; external PRs are not a triage surface. See `docs/agents/issue-tracker.md`.
+Tickets live in the Obsidian vault, not GitHub Issues:
+
+- Board: `/mnt/c/Users/max/Documents/Obsidian Vault/movies-that-feel-like/Board.md`.
+- Tickets: `/mnt/c/Users/max/Documents/Obsidian Vault/movies-that-feel-like/tickets/MTFL-<n>.md`.
+
+Read `/mnt/c/Users/max/Documents/Obsidian Vault/Ticket System.md` for the format
+and operations (create, read, list, comment, claim, resolve, frontier), triage
+labels, and how `/wayfinder` maps, children and blockers work.
+
+GitHub Issues are no longer used. Don't create issues with `gh`. When a skill
+says "publish to the issue tracker", create a MTFL ticket; when it says "fetch
+the relevant ticket", read the MTFL ticket note.
+
+External pull requests are not a ticket-triage surface.
 
 ### Triage labels
 
