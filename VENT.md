@@ -19,3 +19,11 @@ Trigger: replaying the complete migration history, clearing seed data, then impo
 Workaround: let the single run finish, inspect actual migration progress, and recover the final summary rather than restarting it.
 Suggested fix: retain full diagnostics in a log artifact while printing phase summaries; evaluate a schema-only bootstrap separately before changing the authoritative migration path.
 Impact: medium
+
+## 26-10-07 15:55 — agent_background_dev_server
+
+Symptom: Astro reported `Dev server running at http://127.0.0.1:4321`, but the supervised launcher exited and browser navigation returned `net::ERR_CONNECTION_REFUSED`.
+Trigger: Astro 7 automatically backgrounds `astro dev` when it detects an agent; supervision tracks the launcher rather than its detached child. Running `astro check` alongside the first server also invalidated its Vite dependency cache.
+Workaround: after two CLI launches and a restart, launch the public `dev` API in a foreground Node process: `node --input-type=module -e 'import { dev } from "astro"; await dev({ server: { host: "127.0.0.1", port: 4331 } });'`.
+Suggested fix: document a supervised foreground preview command and run checks before starting the preview.
+Impact: medium

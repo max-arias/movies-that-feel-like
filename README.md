@@ -16,6 +16,8 @@ The first version is intentionally read-only: users browse imported Reddit data 
 - Links posts together through shared canonical recommendations.
 - Drops any post whose images Reddit has deleted, and re-checks image reachability with an on-demand probe.
 - Serves the web app through Astro on Cloudflare: the first five feed pages, tag feeds with at least ten displayable posts (and their whole pagination) and the complete tag index are prerendered; the long tail of tags, deep feed pages and post details render on demand from D1. Legacy `/?tag=…&page=…` URLs are redirected at the Worker boundary.
+- Post pages pair a full-bleed image hero and overlaid vibe headline with the original Reddit title/source and tags. Recommendations retain the bento layout, with always-visible title, year, and rating over a dark bottom gradient on the artwork; there are no synopsis panels or unverified suggestion counts.
+- Post galleries display the first ten images at most, including in the fullscreen lightbox. Hero images crossfade over 1.6 seconds every five seconds, with clickable preview thumbnails in a five-column grid (at most two rows), instead of arrows or a scrolling strip. Selecting a preview resets the timer; a Play/Pause control is available. Autoplay pauses in hidden tabs and while the lightbox is open, and starts disabled for reduced-motion preferences. The fullscreen lightbox retains its separate navigation.
 
 The pipeline does **not** analyze images with an LLM. It relies on the humans in the Reddit comments to interpret the image vibe.
 

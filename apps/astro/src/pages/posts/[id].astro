@@ -1,8 +1,6 @@
 ---
-// Post detail page — single editorial surface for an Imported Vibe Post.
-// Hero row (16:9 DaisyUI carousel + vibe summary sidebar) → shared tag row → 5-col
-// recommendation poster grid. Clicking any hero image opens a DaisyUI modal with
-// a full-screen DaisyUI carousel of the same images. See issue #4 for the spec.
+// Post detail: full-bleed editorial hero, source/tags, and bento recommendations.
+// Tile captions overlay the artwork; gallery images retain their lightbox.
 
 import Layout from "../../layouts/Layout.astro";
 import { getDb } from "../../lib/db";
@@ -16,13 +14,11 @@ const post = postId ? await loadPost(getDb(), postId) : null;
 // not found rather than served as a hero-less shell.
 if (!post) Astro.response.status = 404;
 
-const slideId = (i: number) => `slide${i + 1}`;
 const modalSlideId = (i: number) => `modal-slide${i + 1}`;
-const heroPrev = (i: number, total: number) => (i === 0 ? `#${slideId(total - 1)}` : `#${slideId(i - 1)}`);
-const heroNext = (i: number, total: number) => (i === total - 1 ? `#${slideId(0)}` : `#${slideId(i + 1)}`);
 const modalPrev = (i: number, total: number) => (i === 0 ? `#${modalSlideId(total - 1)}` : `#${modalSlideId(i - 1)}`);
 const modalNext = (i: number, total: number) => (i === total - 1 ? `#${modalSlideId(0)}` : `#${modalSlideId(i + 1)}`);
-const totalImages = post?.images.length ?? 0;
+const galleryImages = post?.images.slice(0, 10) ?? [];
+const totalImages = galleryImages.length;
 const tagHref = (tag: string) => feedHref(tag);
 const redditHref = (permalink: string) => `https://reddit.com${permalink}`;
 
@@ -76,21 +72,21 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
     </div>
   ) : (
     <div class="pb-24">
-      <section class="pt-4 mb-1.5 grid grid-cols-1 items-center gap-8 lg:grid-cols-[7fr_3fr]" aria-label="Post hero">
-        <div class="relative">
+      <section class="post-hero" aria-label="Post hero">
+        <div class="relative h-full">
           <div
-            class="carousel aspect-video w-full overflow-hidden bg-gallery"
+            class="hero-images h-full w-full overflow-hidden bg-gallery"
             transition:name={`post-image-${post.redditPostId}`}
-            data-hero-carousel
+            data-hero-gallery
             aria-label={`Image gallery. ${totalImages} image${totalImages === 1 ? "" : "s"}.`}
           >
-            {post.images.map((img, i) => {
+            {galleryImages.map((img, i) => {
               const primaryUrl = img.previewUrl ?? img.sourceUrl;
               const fallbackUrls = [img.sourceUrl]
                 .filter((url): url is string => typeof url === "string" && url.trim().length > 0)
                 .filter((url) => url !== primaryUrl);
               return (
-              <div id={slideId(i)} class="carousel-item relative w-full">
+              <div class="hero-image" data-hero-slide data-active={i === 0 ? "true" : "false"} inert={i !== 0}>
                 <button
                   type="button"
                   class="block h-full w-full focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark"
@@ -111,69 +107,46 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
                     <span class="absolute inset-0 hidden items-center justify-center bg-gallery-empty text-no-image text-gallery-empty-text" data-image-fallback aria-hidden="true">No image loaded.</span>
                   </div>
                 </button>
-                {totalImages > 1 && (
-                  <>
-                    <a
-                      href={heroPrev(i, totalImages)}
-                      data-carousel-control
-                      class="btn btn-circle btn-sm absolute left-4 top-1/2 -translate-y-1/2 border border-ink/20 bg-paper/90 text-ink shadow-md hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:btn-md theme-dark:border-ink-dark/20 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
-                      aria-label="Show previous image"
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" aria-hidden="true">
-                        <path d="m15 18-6-6 6-6" />
-                      </svg>
-                    </a>
-                    <a
-                      href={heroNext(i, totalImages)}
-                      data-carousel-control
-                      class="btn btn-circle btn-sm absolute right-4 top-1/2 -translate-y-1/2 border border-ink/20 bg-paper/90 text-ink shadow-md hover:bg-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 motion-reduce:transition-none sm:btn-md theme-dark:border-ink-dark/20 theme-dark:bg-paper-dark/90 theme-dark:text-ink-dark theme-dark:hover:bg-paper-dark theme-dark:outline-red-dark"
-                      aria-label="Show next image"
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" aria-hidden="true">
-                        <path d="m9 18 6-6-6-6" />
-                      </svg>
-                    </a>
-                  </>
-                )}
               </div>
               );
             })}
           </div>
-          {totalImages > 1 && (
-            <div class="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end p-3">
-              <p
-                class="rounded-full bg-ink px-3 py-1 text-label uppercase tabular-nums tracking-theme text-paper shadow-md motion-reduce:transition-none theme-dark:bg-paper-dark theme-dark:text-ink-dark"
-                data-hero-status
-                aria-live="polite"
-              >
-                01 / {String(totalImages).padStart(2, "0")}
-              </p>
-            </div>
-          )}
+          <div class="post-hero-shade" aria-hidden="true"></div>
+          <div class="post-hero-heading">
+            <h1 transition:name={`post-vibe-${post.redditPostId}`}>
+              {post.vibeSummary ?? post.title}
+            </h1>
+            {totalImages > 1 && (
+              <div class="hero-pagination">
+                <div class="hero-thumbnails" role="group" aria-label="Choose hero image">
+                  {galleryImages.map((img, i) => (
+                    <button
+                      type="button"
+                      data-hero-thumbnail={i}
+                      aria-label={`Show image ${i + 1} of ${totalImages}`}
+                      aria-pressed={i === 0 ? "true" : "false"}
+                    >
+                      <img src={img.previewUrl ?? img.sourceUrl} alt="" loading="lazy" decoding="async" />
+                    </button>
+                  ))}
+                </div>
+                <button type="button" class="hero-playback" data-hero-playback aria-label="Pause automatic image changes">Pause</button>
+              </div>
+            )}
+          </div>
         </div>
-
-        <aside class="flex flex-col gap-4" aria-label="Post mood and source">
-          {post.vibeSummary && (
-            <p transition:name={`post-vibe-${post.redditPostId}`} class="font-body text-vibe-summary lg:text-vibe-summary-desktop font-normal text-quiet text-pretty transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">
-              {post.vibeSummary}
-            </p>
-          )}
-          {post.permalink && (
-            <a
-              href={redditHref(post.permalink)}
-              class="btn btn-outline btn-sm self-start border border-ink bg-paper text-ink normal-case transition-colors duration-240 ease-theme motion-reduce:transition-none hover:border-ink hover:bg-ink hover:text-paper focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:border-ink-dark theme-dark:bg-paper-dark theme-dark:text-ink-dark theme-dark:hover:border-ink-dark theme-dark:hover:bg-ink-dark theme-dark:hover:text-paper-dark theme-dark:outline-red-dark"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              View on Reddit ↗
-            </a>
-          )}
-        </aside>
       </section>
 
+      <div class="post-source">
+        <p class="text-quiet theme-dark:text-quiet-dark">
+          “{post.title}”
+          {post.permalink && (
+            <a href={redditHref(post.permalink)} class="ml-2 whitespace-nowrap underline focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark" target="_blank" rel="noopener noreferrer">Thread ↗</a>
+          )}
+        </p>
       {post.tags.length > 0 && (
-        <nav class="mb-6" aria-label="Post tags">
-          <ul class="scrollbar-hidden flex flex-row flex-nowrap gap-2 overflow-x-auto">
+        <nav aria-label="Post tags">
+          <ul class="flex flex-row flex-wrap gap-2">
             {post.tags.map((tag) => (
               <li class="shrink-0">
                 <a
@@ -185,6 +158,7 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
           </ul>
         </nav>
       )}
+      </div>
 
       {post.recommendations.length > 0 && (
         <section aria-label="Recommendations">
@@ -243,7 +217,7 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
                 ? responsiveImage(imageUrl, usesBackdrop ? "backdrop" : "poster", imageSizes)
                 : null;
               const cardClass = [
-                "group relative block overflow-hidden bg-gallery focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark",
+                "recommendation-tile group relative block overflow-hidden bg-gallery focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark",
                 !isGalleryHero && !isFourCardLead && !isSparseHero && "aspect-poster",
                 isGalleryHero && "col-span-2 aspect-recommendation-hero md:col-span-2 md:col-start-1 md:row-start-1 md:row-span-2 md:aspect-auto md:h-full",
                 isFourCardLead && "col-span-2 aspect-recommendation-hero md:col-span-2 md:aspect-auto md:h-full",
@@ -252,7 +226,7 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
               ].filter(Boolean).join(" ");
               const cardInner = (
                 <>
-                  <div class="absolute inset-0 bg-gallery transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-gallery">
+                  <div class="absolute inset-0 overflow-hidden bg-gallery">
                     {image ? (
                       <img
                         src={image.src}
@@ -270,19 +244,19 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
                       <div class="flex h-full w-full items-center justify-center text-no-image text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">No poster</div>
                     )}
                   </div>
-                  <div class="pointer-events-none absolute inset-x-0 bottom-0 flex h-recommendation-overlay flex-col justify-end bg-gradient-to-t from-ink via-ink/70 to-transparent px-3 pb-3 pt-8 text-paper transition-colors duration-240 ease-theme motion-reduce:transition-none">
-                    <h3 class="flex items-baseline gap-1 text-base font-semibold leading-tight group-hover:text-red group-focus-visible:text-red theme-dark:group-hover:text-red-dark theme-dark:group-focus-visible:text-red-dark">
+                  <div class="recommendation-caption pointer-events-none absolute inset-x-0 bottom-0 px-3 pb-3 pt-12 text-paper">
+                    <h3 class:list={["flex items-baseline gap-1 font-semibold leading-tight", isGalleryHero || isFourCardLead || isSparseHero ? "text-xl" : "text-base"]}>
                       <span class="min-w-0">{rec.title}</span>
                       {href && (
                         <span class="shrink-0" aria-hidden="true">↗</span>
                       )}
                     </h3>
-                    <p class="mt-1 text-xs text-paper/75 theme-dark:text-paper-dark/75">
+                    <p class="mt-1 text-xs text-paper/75">
                       {rec.releaseYear ?? "—"}
                     {rec.voteAverage != null && (
                       <>
                         <span aria-hidden="true"> · </span>
-                        <span aria-label={`Rating ${rec.voteAverage.toFixed(1)} out of 10`}>⭐ {rec.voteAverage.toFixed(1)}</span>
+                        <span aria-label={`Rating ${rec.voteAverage.toFixed(1)} out of 10`}>★ {rec.voteAverage.toFixed(1)}</span>
                       </>
                     )}
                     </p>
@@ -323,7 +297,7 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
             data-modal-carousel
             aria-label={`Image gallery lightbox. ${totalImages} image${totalImages === 1 ? "" : "s"}.`}
           >
-            {post.images.map((img, i) => {
+            {galleryImages.map((img, i) => {
               const primaryUrl = img.previewUrl ?? img.sourceUrl;
               const fallbackUrls = [img.sourceUrl]
                 .filter((url): url is string => typeof url === "string" && url.trim().length > 0)
@@ -379,6 +353,151 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
   )}
 </Layout>
 
+<style>
+  .post-hero {
+    min-height: max(420px, min(82svh, 760px));
+    margin-inline: calc(50% - 50vw);
+    background: var(--color-gallery);
+  }
+
+  .post-hero > div {
+    display: grid;
+    min-height: inherit;
+    align-items: end;
+  }
+
+  .post-hero :global([data-hero-gallery]) {
+    position: absolute;
+    inset: 0;
+  }
+
+  .hero-image {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 1600ms cubic-bezier(.45, 0, .55, 1);
+  }
+
+  .hero-image[data-active="true"] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .post-hero-shade {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(to top, oklch(12% .02 50 / .92), oklch(12% .02 50 / .45) 45%, transparent 75%);
+  }
+
+  .post-hero-heading {
+    position: relative;
+    padding: 120px var(--spacing-gutter) 40px;
+    pointer-events: none;
+    color: var(--color-paper);
+    display: grid;
+    align-items: end;
+    gap: 28px;
+  }
+
+  .post-hero-heading h1 {
+    max-width: 16ch;
+    margin: 0;
+    font-size: clamp(2.6rem, 1.2rem + 4.6vw, 5.8rem);
+    font-weight: 400;
+    font-style: italic;
+    line-height: .98;
+    letter-spacing: -.025em;
+    text-wrap: balance;
+  }
+
+  .hero-pagination {
+    min-width: 0;
+    pointer-events: auto;
+  }
+
+  .hero-thumbnails {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    width: min(100%, 312px);
+    gap: 8px;
+    overflow: visible;
+    padding: 4px;
+  }
+
+  .hero-thumbnails button {
+    width: 100%;
+    aspect-ratio: 1;
+    border: 2px solid transparent;
+    opacity: .6;
+    cursor: pointer;
+    transition: opacity 200ms ease, border-color 200ms ease;
+  }
+
+  .hero-thumbnails button[aria-pressed="true"],
+  .hero-thumbnails button:hover {
+    opacity: 1;
+    border-color: var(--color-paper);
+  }
+
+  .hero-thumbnails img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .hero-playback {
+    margin-top: 8px;
+    padding: 4px;
+    font-size: 12px;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  @media (min-width: 960px) {
+    .post-hero-heading {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 42%);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .hero-image {
+      transition: none;
+    }
+  }
+
+  .post-source {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px 28px;
+    padding-block: 22px;
+    margin-bottom: 28px;
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  .post-source p {
+    max-width: 62ch;
+    font-style: italic;
+  }
+
+  :global([data-theme="dark"]) .post-source {
+    border-color: var(--color-line-dark);
+  }
+
+  .recommendation-caption {
+    background: linear-gradient(to top, oklch(12% .006 60 / .95), oklch(12% .006 60 / .65) 55%, transparent);
+  }
+
+  @media (max-width: 767px) {
+    .post-hero {
+      min-height: max(420px, 70svh);
+    }
+  }
+</style>
+
 <script>
   const setupImageFallbacks = () => {
     document.querySelectorAll<HTMLImageElement>("[data-fallback-image]").forEach((image) => {
@@ -408,8 +527,6 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
   setupImageFallbacks();
   document.addEventListener("astro:page-load", setupImageFallbacks);
 
-  const pad = (n: number) => String(n).padStart(2, "0");
-
   document.querySelectorAll<HTMLAnchorElement>("[data-carousel-control]").forEach((control) => {
     control.addEventListener("click", (event) => {
       event.preventDefault();
@@ -425,34 +542,75 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
     });
   });
 
-  const heroCarousel = document.querySelector<HTMLElement>("[data-hero-carousel]");
-  const heroStatus = document.querySelector<HTMLElement>("[data-hero-status]");
+  let disposeHero: (() => void) | undefined;
 
-  const readHeroSlide = (): number => {
-    const hash = window.location.hash;
-    const m = hash.match(/#slide(\d+)/);
-    return m ? Math.max(1, Math.min(parseInt(m[1], 10), heroCarousel?.querySelectorAll(".carousel-item").length ?? 1)) : 1;
+  const setupHero = () => {
+    disposeHero?.();
+    const gallery = document.querySelector<HTMLElement>("[data-hero-gallery]");
+    if (!gallery) return;
+    const slides = Array.from(gallery.querySelectorAll<HTMLElement>("[data-hero-slide]"));
+    const thumbnails = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-hero-thumbnail]"));
+    const playback = document.querySelector<HTMLButtonElement>("[data-hero-playback]");
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const controller = new AbortController();
+    const options = { signal: controller.signal };
+    let current = 0;
+    let paused = motion.matches;
+    let timer: ReturnType<typeof setInterval> | undefined;
+
+    const show = (index: number) => {
+      current = index;
+      slides.forEach((slide, i) => {
+        slide.dataset.active = String(i === current);
+        slide.inert = i !== current;
+      });
+      thumbnails.forEach((thumbnail, i) => thumbnail.setAttribute("aria-pressed", String(i === current)));
+    };
+
+    const updatePlayback = () => {
+      if (!playback) return;
+      playback.textContent = paused ? "Play" : "Pause";
+      playback.setAttribute("aria-label", paused ? "Start automatic image changes" : "Pause automatic image changes");
+    };
+
+    const schedule = () => {
+      clearInterval(timer);
+      if (paused || document.hidden || slides.length < 2) return;
+      timer = setInterval(() => {
+        if (!document.querySelector<HTMLDialogElement>("#hero-lightbox")?.open) {
+          show((current + 1) % slides.length);
+        }
+      }, 5000);
+    };
+
+    thumbnails.forEach((thumbnail, index) => {
+      thumbnail.addEventListener("click", () => {
+        show(index);
+        schedule();
+      }, options);
+    });
+    playback?.addEventListener("click", () => {
+      paused = !paused;
+      updatePlayback();
+      schedule();
+    }, options);
+    document.addEventListener("visibilitychange", schedule, options);
+    motion.addEventListener("change", () => {
+      paused = motion.matches;
+      updatePlayback();
+      schedule();
+    }, options);
+    updatePlayback();
+    schedule();
+    disposeHero = () => {
+      clearInterval(timer);
+      controller.abort();
+    };
   };
 
-  const renderHeroStatus = () => {
-    if (!heroStatus || !heroCarousel) return;
-    const total = heroCarousel.querySelectorAll(".carousel-item").length;
-    heroStatus.textContent = `${pad(readHeroSlide())} / ${pad(total)}`;
-  };
-
-  if (heroCarousel) {
-    renderHeroStatus();
-    heroCarousel.addEventListener("scroll", () => {
-      if (!heroCarousel) return;
-      const items = Array.from(heroCarousel.querySelectorAll<HTMLElement>(".carousel-item"));
-      if (items.length === 0) return;
-      const w = heroCarousel.clientWidth || 1;
-      const idx = Math.round(heroCarousel.scrollLeft / w);
-      const slideNum = Math.max(1, Math.min(idx + 1, items.length));
-      heroStatus && (heroStatus.textContent = `${pad(slideNum)} / ${pad(items.length)}`);
-    }, { passive: true });
-  }
-  window.addEventListener("hashchange", renderHeroStatus);
+  setupHero();
+  document.addEventListener("astro:page-load", setupHero);
+  document.addEventListener("astro:before-swap", () => disposeHero?.());
 
   const lightbox = document.getElementById("hero-lightbox") as HTMLDialogElement | null;
   const modalCarousel = lightbox?.querySelector<HTMLElement>("[data-modal-carousel]") ?? null;
