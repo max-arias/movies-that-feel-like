@@ -10,7 +10,7 @@ The first version is intentionally read-only: users browse imported Reddit data 
 
 - Imports posts, images, and comments from `r/MoviesThatFeelLike`.
 - Keeps raw/intermediate artifacts locally so pipeline stages can be retried without refetching.
-- Extracts concrete movie/series recommendations from Reddit comments with an LLM on OpenCode Go (the scheduled import runs `deepseek-v4.1-flash`).
+- Extracts concrete movie/series recommendations from Reddit comments with Google Gemini (`gemini-3.8-flash`).
 - Generates a short text-only vibe summary and tags from the post title/text/comments.
 - Resolves recommendations to canonical TMDB movie/TV records.
 - Links posts together through shared canonical recommendations.
@@ -53,7 +53,7 @@ See `CONTEXT.md` for the glossary.
 - Tailwind CSS 4 + daisyUI 5
 - Python pipeline managed with `uv`
 - Arctic Shift / `arcshiftwrap` for Reddit archive data
-- Instructor + Pydantic + OpenCode Go for structured extraction (pipeline default `mimo-v2.5`; the import runs `deepseek-v4.1-flash`)
+- Instructor + Pydantic + Google GenAI for structured extraction (`google/gemini-3.8-flash`)
 - TMDB API for media enrichment
 
 ## Required local environment
@@ -61,7 +61,7 @@ See `CONTEXT.md` for the glossary.
 The pipeline expects these env vars when running the extraction/enrichment stages:
 
 ```bash
-OPENCODE_GO_API_KEY=...
+GEMINI_API_KEY=...
 TMDB_ACCESS_TOKEN=...
 ```
 
@@ -142,19 +142,27 @@ npm run seed
 npm run dev
 ```
 
-Extraction uses OpenCode Go; the pipeline default model is `mimo-v2.5`, and the
-scheduled import runs `deepseek-v4.1-flash` (`EXTRACTION_MODEL` in
-`.github/workflows/import-reddit.yml`). Select either explicitly with
-`--model`, and set `OPENCODE_GO_API_KEY` before running `pipeline:extract`. Go
-requires each request to identify this client and carry a session id, which the
-pipeline sends automatically; the model, mode, and endpoint are part of each
-cache key, so changing the model invalidates cached extractions rather than
-reusing a different model's output.
+Extraction uses Google Gemini through the native Google GenAI SDK and
+Instructor. Both the pipeline default and scheduled import use
+`google/gemini-3.8-flash` (`EXTRACTION_MODEL` in
+`.github/workflows/import-reddit.yml`). Set `GEMINI_API_KEY` before running
+`pipeline:extract`. Gemini defaults to structured JSON output; `--mode tools`
+is also supported. The provider, model, mode, and endpoint are part of each
+cache key, so changing providers or models starts from a cold cache.
+
 Extraction is resumable: completed posts are fsynced to an append-only JSONL
-checkpoint in `data/working/checkpoints/`. The default bounded concurrency is 3
-and request starts are limited to 6 RPM; tune with `--concurrency` and
-`--rate-limit-rpm`. A final extraction artifact is emitted only when every
-target post has a terminal success or error outcome.
+checkpoint in `data/working/checkpoints/`. The default concurrency is 1 and
+request starts are limited to 5 RPM; tune with `--concurrency` and
+`--rate-limit-rpm`. These settings do not guarantee free-tier capacity: check
+the project's model-specific daily and token quotas in Google AI Studio.
+Provider access/billing failures stop the batch and still write an artifact
+with successful results, errors, and the number of unattempted posts. Transient
+quota/server failures use bounded retries.
+
+Explicit OpenAI-compatible models remain available with `--model openai/<id>`,
+`OPENAI_API_KEY`, and optionally `--api-base` or `OPENAI_BASE_URL`. There is no
+automatic fallback to a paid provider. The summary-rewrite CLI uses Gemini by
+default too, and emits a migration only after every requested rewrite succeeds.
 
 Image reachability is maintained separately from extraction. Reddit answers a
 deleted gallery image with a 1048-byte placeholder PNG, so a dead image still

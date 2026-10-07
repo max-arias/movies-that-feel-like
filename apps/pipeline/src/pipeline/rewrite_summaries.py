@@ -13,9 +13,8 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 from pipeline.extraction_input import SYSTEM_INSTRUCTION
-from pipeline.extract import DEFAULT_OPENCODE_GO_MODEL
+from pipeline.extract import DEFAULT_EXTRACTION_MODEL
 
 
 def sql_quote(value: str) -> str:
@@ -75,9 +74,9 @@ class MalformedSummaryError(ValueError):
 
 
 def normalize_summary(value: Any) -> str:
-    """Accept only a nonblank, plain-text fragment from message.content."""
+    """Accept only a nonblank, plain-text fragment from the provider."""
     if not isinstance(value, str):
-        raise MalformedSummaryError("provider message.content was not text")
+        raise MalformedSummaryError("provider summary was not text")
     summary = " ".join(value.split())
     if not summary or summary.startswith("```") or summary.startswith(("{", "[")):
         raise MalformedSummaryError("provider returned malformed summary text")
@@ -90,6 +89,8 @@ def retry_delay(exc: BaseException, attempt: int, backoff_seconds: float) -> flo
     """Return a delay for transient provider errors, or None when non-retryable."""
     response = getattr(exc, "response", None)
     status = getattr(response, "status_code", getattr(exc, "status_code", None))
+    if status is None:
+        status = getattr(exc, "code", None)
     retryable = bool(getattr(exc, "retryable", False))
     if status in (408, 429) or (isinstance(status, int) and 500 <= status <= 599):
         retryable = True
@@ -121,20 +122,38 @@ def _call_summary(
     prompt: dict[str, str],
     max_attempts: int,
     backoff_seconds: float,
+    *,
+    provider: str = "openai",
 ) -> str:
-    kwargs: dict[str, Any] = {"messages": [
-        {"role": "system", "content": prompt["system_prompt"]},
-        {"role": "user", "content": prompt["user_prompt"]}],
-        "model": model,
-        "temperature": 0.1,
-    }
+    if provider == "google":
+        from google.genai import types
+
+        config = types.GenerateContentConfig(
+            system_instruction=prompt["system_prompt"], temperature=0.1
+        )
+    elif provider != "openai":
+        raise ValueError(f"unsupported summary provider: {provider}")
     last: Exception | None = None
     for attempt in range(1, max(1, max_attempts) + 1):
         try:
-            response = client.chat.completions.create(**kwargs)
-            choices = getattr(response, "choices", None)
-            message = choices[0].message if choices else None
-            return normalize_summary(getattr(message, "content", None))
+            if provider == "google":
+                response = client.models.generate_content(
+                    model=model, contents=prompt["user_prompt"], config=config
+                )
+                text = response.text
+            else:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": prompt["system_prompt"]},
+                        {"role": "user", "content": prompt["user_prompt"]},
+                    ],
+                    temperature=0.1,
+                )
+                choices = getattr(response, "choices", None)
+                message = choices[0].message if choices else None
+                text = getattr(message, "content", None)
+            return normalize_summary(text)
         except Exception as exc:
             last = exc
             delay = retry_delay(exc, attempt, backoff_seconds)
@@ -152,6 +171,7 @@ def rewrite_rows(
     workers: int,
     max_attempts: int,
     backoff_seconds: float,
+    provider: str = "openai",
     progress: Any = None,
 ) -> dict[str, str]:
     """Rewrite rows concurrently; raise before returning on any row failure."""
@@ -169,6 +189,7 @@ def rewrite_rows(
             build_summary_prompt(title, selftext),
             max_attempts,
             backoff_seconds,
+            provider=provider,
         )
         return str(post_id), summary
 
@@ -203,7 +224,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Create a migration for concise vibe-summary rewrites")
     parser.add_argument("--db", default="data/app.db")
     parser.add_argument("--migrations-dir", default="packages/db/migrations")
-    parser.add_argument("--model", default=DEFAULT_OPENCODE_GO_MODEL)
+    parser.add_argument("--model", default=DEFAULT_EXTRACTION_MODEL)
     parser.add_argument("--api-base", default=None)
     parser.add_argument("--max-attempts", type=int, default=3)
     parser.add_argument("--backoff-seconds", type=float, default=5.0)
@@ -224,21 +245,39 @@ def main(argv: list[str] | None = None) -> None:
             ).fetchall()
         if args.workers < 1 or args.timeout_seconds <= 0:
             raise ValueError("workers must be at least 1 and timeout-seconds must be positive")
-        from pipeline.extract import _detect_provider, _resolve_openai_config, opencode_go_headers
-        if _detect_provider(args.model) != "openai":
-            raise ValueError("rewrite_summaries requires an OpenAI-compatible model")
-        from openai import OpenAI
-        import httpx
-        model, api_key, base_url = _resolve_openai_config(args.model, args.api_base)
-        session_id = f"mtfl-rewrite-summaries-{uuid4().hex}"
-        def client_factory() -> Any:
-            return OpenAI(
-                api_key=api_key,
-                base_url=base_url,
-                timeout=httpx.Timeout(args.timeout_seconds, connect=min(10.0, args.timeout_seconds)),
-                max_retries=0,
-                default_headers=opencode_go_headers(base_url, session_id),
+        from pipeline.extract import _detect_provider, _resolve_openai_config
+
+        provider = _detect_provider(args.model)
+        if provider == "google":
+            if args.api_base:
+                raise ValueError("--api-base is only supported for OpenAI-compatible models")
+            api_key = os.environ.get("GEMINI_API_KEY")
+            if not api_key:
+                raise ValueError("GEMINI_API_KEY must be set for Google models")
+            from google import genai
+            from google.genai import types
+
+            model = args.model.removeprefix("google/")
+            http_options = types.HttpOptions(
+                timeout=max(1, int(args.timeout_seconds * 1000)),
+                retry_options=types.HttpRetryOptions(attempts=1),
             )
+
+            def client_factory() -> Any:
+                return genai.Client(api_key=api_key, http_options=http_options)
+        else:
+            from openai import OpenAI
+            import httpx
+
+            model, api_key, base_url = _resolve_openai_config(args.model, args.api_base)
+
+            def client_factory() -> Any:
+                return OpenAI(
+                    api_key=api_key,
+                    base_url=base_url,
+                    timeout=httpx.Timeout(args.timeout_seconds, connect=min(10.0, args.timeout_seconds)),
+                    max_retries=0,
+                )
 
         def report(done: int, total: int, post_id: str) -> None:
             print(f"[pipeline:rewrite-summaries] [{done}/{total}] completed {post_id}", flush=True)
@@ -251,6 +290,7 @@ def main(argv: list[str] | None = None) -> None:
             max_attempts=args.max_attempts,
             backoff_seconds=args.backoff_seconds,
             progress=report,
+            provider=provider,
         )
         output = render_updates(summaries)
         migration = write_migration(Path(args.migrations_dir), output)

@@ -26,11 +26,12 @@ permissions:
   contents: write
 
 env:
-  # Extraction model for the OpenCode Go endpoint. Both extract invocations
-  # below must name the same model: the cache-round-trip probe only hits when
-  # its cache key — which includes the model, mode and base URL — matches the
-  # key the extraction step just wrote.
-  EXTRACTION_MODEL: deepseek-v4.1-flash
+  # Both extraction passes must share the model and output-affecting settings
+  # so the cache-round-trip probe can reuse this run's extractions.
+  EXTRACTION_MODEL: google/gemini-3.8-flash
+  # Conservative free-tier pacing; actual quotas are project/model-specific.
+  EXTRACTION_CONCURRENCY: '1'
+  EXTRACTION_RATE_LIMIT_RPM: '5'
 
 jobs:
   import:
@@ -43,6 +44,12 @@ jobs:
     concurrency:
       group: movies-import-production
       cancel-in-progress: false
+    # Fixed run paths remain available to diagnostic uploads after an early exit.
+    env:
+      RAW_ARTIFACT: ${{ github.workspace }}/data/working/raw-${{ github.run_id }}.json
+      NORMALIZED_ARTIFACT: ${{ github.workspace }}/data/working/normalized-${{ github.run_id }}.json
+      EXTRACTION_ARTIFACT: ${{ github.workspace }}/data/working/extraction-${{ github.run_id }}.json
+      ENRICHMENT_ARTIFACT: ${{ github.workspace }}/data/working/enrichment-${{ github.run_id }}.json
     outputs:
       # A run with no new posts commits nothing and pushes nothing, so there is
       # nothing to deploy and the follow-up deploy job is skipped.
@@ -109,8 +116,8 @@ jobs:
           set -euo pipefail
           [[ "$IMPORT_LIMIT" =~ ^[1-9][0-9]*$ ]] || { echo "limit must be a positive integer" >&2; exit 1; }
           [[ "$IMPORT_MAX_PAGES" =~ ^[1-9][0-9]*$ ]] || { echo "max_pages must be a positive integer" >&2; exit 1; }
-          raw="$GITHUB_WORKSPACE/data/working/raw-${GITHUB_RUN_ID}.json"
-          normalized="$GITHUB_WORKSPACE/data/working/normalized-${GITHUB_RUN_ID}.json"
+          raw="$RAW_ARTIFACT"
+          normalized="$NORMALIZED_ARTIFACT"
           npm run pipeline:fetch -- --subreddit MoviesThatFeelLike --year 2026 --limit "$IMPORT_LIMIT" \
             --max-pages "$IMPORT_MAX_PAGES" --sort desc --out "$raw" \
             --exclude-reddit-ids-file "$GITHUB_WORKSPACE/data/working/excluded-reddit-ids.txt"
@@ -118,7 +125,6 @@ jobs:
             --exclude-reddit-ids-file "$GITHUB_WORKSPACE/data/working/excluded-reddit-ids.txt"
           posts=$(jq -r '.posts | length' "$normalized")
           echo "post-count=$posts" >> "$GITHUB_OUTPUT"
-          printf 'RAW_ARTIFACT=%s\nNORMALIZED_ARTIFACT=%s\n' "$raw" "$normalized" >> "$GITHUB_ENV"
 
       - name: Reject truncated fetch scan
         run: |
@@ -143,19 +149,18 @@ jobs:
       - name: Extract recommendations and persist extraction cache
         if: steps.normalize.outputs.post-count != '0'
         env:
-          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
-          EXTRACTION_ARTIFACT: ${{ github.workspace }}/data/working/extraction-${{ github.run_id }}.json
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           set -euo pipefail
           npm run pipeline:extract -- --input "$NORMALIZED_ARTIFACT" --out "$EXTRACTION_ARTIFACT" \
             --model "$EXTRACTION_MODEL" --allow-errors \
+            --concurrency "$EXTRACTION_CONCURRENCY" --rate-limit-rpm "$EXTRACTION_RATE_LIMIT_RPM" \
             --cache-snapshot "$GITHUB_WORKSPACE/data/working/extraction-cache-snapshot.json"
           printf '{"cache_records":[]}' > data/working/empty-cache.json
           npm run pipeline:cache-sql -- --extraction "$EXTRACTION_ARTIFACT" \
             --enrichment "$GITHUB_WORKSPACE/data/working/empty-cache.json" \
             --out-dir "$GITHUB_WORKSPACE/data/working/cache-sql/extraction" \
             --manifest "$GITHUB_WORKSPACE/data/working/extraction-cache-manifest.json"
-          echo "EXTRACTION_ARTIFACT=$EXTRACTION_ARTIFACT" >> "$GITHUB_ENV"
 
       - name: Execute extraction cache DML remotely
         if: steps.normalize.outputs.post-count != '0'
@@ -188,6 +193,20 @@ jobs:
           jq -e --argjson expected "$expected" '([.[0].results[]?.cache_key] | sort) == ($expected | sort)' <<<"$rows" >/dev/null
           echo "extraction cache chunks=$(jq '.chunks|length' "$manifest") rows=$(jq '.sources.extraction.record_count' "$manifest")"
 
+      - name: Require nonempty extraction results
+        if: steps.normalize.outputs.post-count != '0'
+        run: |
+          set -euo pipefail
+          if ! jq -e '.results | type == "array" and length > 0' "$EXTRACTION_ARTIFACT" >/dev/null; then
+            echo 'Refusing enrichment and load: extraction produced no successful post results.' >&2
+            if [ -f "$EXTRACTION_ARTIFACT" ]; then
+              jq -r '"First extraction error: " + ((.errors[0].error // .errors[0].message // .errors[0] // "No error recorded; inspect the extraction artifact and checkpoints.") | tostring)' "$EXTRACTION_ARTIFACT" >&2
+            else
+              echo "Extraction artifact is missing: $EXTRACTION_ARTIFACT" >&2
+            fi
+            exit 1
+          fi
+
       - name: Export canonical enrichment cache snapshot
         if: steps.normalize.outputs.post-count != '0'
         env:
@@ -206,7 +225,6 @@ jobs:
           TMDB_ACCESS_TOKEN: ${{ secrets.TMDB_ACCESS_TOKEN }}
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
-          ENRICHMENT_ARTIFACT: ${{ github.workspace }}/data/working/enrichment-${{ github.run_id }}.json
         run: |
           set -euo pipefail
           npm run pipeline:enrich -- --input "$EXTRACTION_ARTIFACT" --out "$ENRICHMENT_ARTIFACT" \
@@ -215,7 +233,6 @@ jobs:
             --enrichment "$ENRICHMENT_ARTIFACT" \
             --out-dir "$GITHUB_WORKSPACE/data/working/cache-sql/enrichment" \
             --manifest "$GITHUB_WORKSPACE/data/working/enrichment-cache-manifest.json"
-          echo "ENRICHMENT_ARTIFACT=$ENRICHMENT_ARTIFACT" >> "$GITHUB_ENV"
 
       - name: Execute enrichment cache DML remotely
         if: steps.normalize.outputs.post-count != '0'
@@ -268,7 +285,7 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TMDB_ACCESS_TOKEN: ${{ secrets.TMDB_ACCESS_TOKEN }}
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
@@ -278,6 +295,7 @@ jobs:
           jq -e '.[0].success == true' "$GITHUB_WORKSPACE/data/working/enrichment-cache-snapshot.json" >/dev/null
           npm run pipeline:extract -- --input "$NORMALIZED_ARTIFACT" --out "$GITHUB_WORKSPACE/data/working/extraction-probe.json" \
             --model "$EXTRACTION_MODEL" \
+            --concurrency "$EXTRACTION_CONCURRENCY" --rate-limit-rpm "$EXTRACTION_RATE_LIMIT_RPM" \
             --limit 3 --cache-snapshot "$GITHUB_WORKSPACE/data/working/extraction-cache-snapshot.json"
           npm run pipeline:enrich -- --input "$GITHUB_WORKSPACE/data/working/extraction-probe.json" --out "$GITHUB_WORKSPACE/data/working/enrichment-probe.json" \
             --allow-failed-extraction --cache-snapshot "$GITHUB_WORKSPACE/data/working/enrichment-cache-snapshot.json"
@@ -314,7 +332,7 @@ jobs:
           done
 
       - name: Upload exact run artifacts
-        if: steps.normalize.outputs.post-count != '0'
+        if: always() && (failure() || (steps.normalize.outputs.post-count != '' && steps.normalize.outputs.post-count != '0'))
         uses: actions/upload-artifact@v4
         with:
           name: reddit-import-${{ github.run_id }}
@@ -326,6 +344,7 @@ jobs:
             ${{ env.ENRICHMENT_ARTIFACT }}
             ${{ github.workspace }}/data/working/load-${{ github.run_id }}.json
             ${{ github.workspace }}/data/working/load-${{ github.run_id }}-repo-relative.json
+            data/working/checkpoints/*.jsonl
             data/working/*cache-snapshot.json
             data/working/*cache-manifest.json
             data/working/cache-sql/extraction/*.sql

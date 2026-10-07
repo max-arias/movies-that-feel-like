@@ -3,16 +3,12 @@ pipeline.extract — LLM extraction of recommendations and vibe summaries
 from normalized posts and their comment trees.
 
 Dry-run mode (``--dry-run``) builds prompts without calling any LLM.
-Real mode supports two providers:
+Real mode defaults to **Gemini** — model ``google/gemini-3.8-flash`` with
+``GEMINI_API_KEY`` and the native Google GenAI SDK.
 
-* **OpenCode Go** (default) — model ``mimo-v2.5``, ``OPENCODE_GO_API_KEY``
-  env var, and the OpenCode Go OpenAI-compatible endpoint. Go expects every
-  request to carry this client's user agent and a session id; see
-  ``opencode_go_headers``.
-
-* **OpenAI-compatible** — model ``openai/…`` or bare model id,
-  ``OPENAI_API_KEY`` or ``OPENCODE_GO_API_KEY`` env var, optional
-  ``--api-base``.
+An explicit ``openai/…`` or bare model id selects **OpenAI-compatible**
+extraction with ``OPENAI_API_KEY`` and optional ``--api-base`` or
+``OPENAI_BASE_URL``. There is no automatic provider fallback.
 """
 
 from __future__ import annotations
@@ -42,13 +38,7 @@ from pipeline.models import PostExtraction
 from pipeline.paths import checkpoints_dir, ensure_pipeline_dirs, normalized_dir, working_dir
 
 EXTRACTION_SCHEMA_VERSION = "post-extraction-v3"
-DEFAULT_OPENCODE_GO_MODEL = "mimo-v2.5"
-
-# OpenCode Go rejects traffic that does not identify itself and cannot be
-# routed: it asks clients for their own user agent and a stable session id per
-# conversation. Both are supplied by ``opencode_go_headers``.
-OPENCODE_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
-OPENCODE_GO_USER_AGENT = "movies-that-feel-like-pipeline/1.0"
+DEFAULT_EXTRACTION_MODEL = "google/gemini-3.8-flash"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,8 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Environment:\n"
-            "  OPENCODE_GO_API_KEY     API key for the default OpenCode Go provider.\n"
-            "  OPENAI_API_KEY          API key for other OpenAI-compatible providers.\n"
+            "  GEMINI_API_KEY          API key for the default Gemini provider.\n"
+            "  OPENAI_API_KEY          API key for explicit OpenAI-compatible models.\n"
             "  OPENAI_BASE_URL         Override base URL for OpenAI-compatible.\n"
             "\nRetry (per-post):\n"
             "  On transient provider failures the call is retried with\n"
@@ -68,11 +58,11 @@ def build_parser() -> argparse.ArgumentParser:
             "  # Dry-run — no API key needed\n"
             "  pipeline:extract --dry-run --limit 1\n"
             "\n"
-            "  # OpenCode Go extraction (default model and endpoint)\n"
-            "  OPENCODE_GO_API_KEY=... pipeline:extract --limit 5 --max-attempts 5\n"
+            "  # Gemini extraction (default model)\n"
+            "  GEMINI_API_KEY=... pipeline:extract --limit 5 --max-attempts 5\n"
             "\n"
-            "  # OpenAI-compatible (e.g. opencode-go)\n"
-            "  OPENCODE_GO_API_KEY=... pipeline:extract --model mimo-v2.5\n"
+            "  # Explicit OpenAI-compatible extraction\n"
+            "  OPENAI_API_KEY=... pipeline:extract --model openai/gpt-4.1-mini\n"
         ),
     )
     parser.add_argument(
@@ -108,7 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model",
-        default=DEFAULT_OPENCODE_GO_MODEL,
+        default=DEFAULT_EXTRACTION_MODEL,
         help=(
             "Model identifier.  Prefix with ``google/`` for Gemini, "
             "``openai/`` or bare name for OpenAI-compatible "
@@ -120,25 +110,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         choices=["json", "md_json", "tools"],
         help=(
-            "Instructor extraction mode.  The default OpenCode Go model "
-            "uses ``md_json``; other OpenAI-compatible models default to "
-            "``json`` and Gemini defaults to auto-detected. "
-            "Use ``md_json`` for models that don't support native JSON mode."
+            "Instructor extraction mode (default: json). Gemini supports "
+            "json and tools; md_json is only supported for OpenAI-compatible models."
         ),
     )
     parser.add_argument(
         "--api-base",
         default=None,
         help=(
-            "Custom OpenAI-compatible base URL "
-            "(default: https://opencode.ai/zen/go/v1 for the default "
-            "OpenCode Go provider)"
+            "Custom OpenAI-compatible base URL (otherwise OPENAI_BASE_URL "
+            "or the SDK default). Not supported for Gemini."
         ),
     )
     parser.add_argument("--sleep-seconds", type=float, default=0.0,
                         help="Deprecated and ignored; use --rate-limit-rpm")
-    parser.add_argument("--concurrency", type=int, default=8, help="Maximum posts in flight (default: %(default)s)")
-    parser.add_argument("--rate-limit-rpm", type=float, default=60.0, help="Global request-start limit (default: %(default)s RPM)")
+    parser.add_argument("--concurrency", type=int, default=1, help="Maximum posts in flight (default: %(default)s)")
+    parser.add_argument("--rate-limit-rpm", type=float, default=5.0, help="Global request-start limit (default: %(default)s RPM)")
     parser.add_argument(
         "--max-attempts",
         type=int,
@@ -188,13 +175,9 @@ def _detect_provider(model: str) -> str:
 
 def _resolve_instructor_mode(provider: str, model: str, mode: str | None) -> str:
     """Return the effective Instructor mode for a provider/model selection."""
-    if mode is not None:
-        return mode
-    if provider == "google":
-        return "auto"
-    if model == DEFAULT_OPENCODE_GO_MODEL:
-        return "md_json"
-    return "json"
+    if provider == "google" and mode == "md_json":
+        raise SystemExit("[pipeline:extract] Gemini supports --mode json or tools, not md_json.")
+    return mode or "json"
 
 
 def _resolve_openai_config(
@@ -207,49 +190,15 @@ def _resolve_openai_config(
     """
     actual_model = model.removeprefix("openai/")
 
-    # The default model is intentionally tied to OpenCode Go. Other model
-    # selections retain the existing OPENAI_API_KEY-compatible path.
-    opencode_key = os.environ.get("OPENCODE_GO_API_KEY")
-    if model == DEFAULT_OPENCODE_GO_MODEL and not opencode_key:
-        raise SystemExit(
-            "[pipeline:extract] OPENCODE_GO_API_KEY must be set for the "
-            "default OpenCode Go model. Use --dry-run to preview prompts without a key."
-        )
-    api_key = opencode_key or os.environ.get("OPENAI_API_KEY")
-
-    # Base-URL resolution: CLI arg > OPENAI_BASE_URL > opencode-go default.
+    api_key = os.environ.get("OPENAI_API_KEY")
     resolved_base = api_base or os.environ.get("OPENAI_BASE_URL")
-    if (
-        not resolved_base
-        and opencode_key
-    ):
-        resolved_base = OPENCODE_GO_BASE_URL
-
     if not api_key:
         raise SystemExit(
-            "[pipeline:extract] OPENAI_API_KEY or OPENCODE_GO_API_KEY "
-            "must be set for OpenAI-compatible models. "
+            "[pipeline:extract] OPENAI_API_KEY must be set for OpenAI-compatible models. "
             "Use --dry-run to preview prompts without a key."
         )
 
     return actual_model, api_key, resolved_base
-
-
-def opencode_go_headers(base_url: str | None, session_id: str) -> dict[str, str]:
-    """Return the request headers the OpenCode Go endpoint requires.
-
-    Go routes a conversation to the backend that already holds its prompt
-    cache, so it rejects a request that arrives without ``x-opencode-session``
-    (HTTP 400 ``MissingSessionID``) and asks clients to send their own user
-    agent rather than a generic SDK name. Every call in one run shares a
-    session id, which keeps a run's prompts on one backend.
-
-    Endpoints other than Go return an empty mapping, so a request to any other
-    OpenAI-compatible provider is left untouched.
-    """
-    if not base_url or not base_url.rstrip("/").startswith(OPENCODE_GO_BASE_URL):
-        return {}
-    return {"user-agent": OPENCODE_GO_USER_AGENT, "x-opencode-session": session_id}
 
 
 def _build_extraction_client(
@@ -257,7 +206,6 @@ def _build_extraction_client(
     model: str,
     mode: str | None,
     api_base: str | None,
-    session_id: str,
 ) -> tuple[Any, str, dict[str, Any]]:
     """Build an Instructor client for *provider*.
 
@@ -268,21 +216,31 @@ def _build_extraction_client(
     effective_mode = _resolve_instructor_mode(provider, model, mode)
 
     if provider == "google":
-        from instructor import from_provider
+        import instructor
+        from google import genai
+        from google.genai import types
 
-        # Expose GEMINI_API_KEY as GOOGLE_API_KEY for the Google client.
+        if api_base is not None:
+            raise SystemExit("[pipeline:extract] --api-base is only supported for OpenAI-compatible models.")
         gemini_key = os.environ.get("GEMINI_API_KEY")
         if not gemini_key:
             raise SystemExit(
                 "[pipeline:extract] GEMINI_API_KEY must be set "
                 "for Google models. Use --dry-run to preview without a key."
             )
-        os.environ["GOOGLE_API_KEY"] = gemini_key
 
-        client = from_provider(model)
+        actual_model = model.removeprefix("google/")
+        google_client = genai.Client(
+            api_key=gemini_key,
+            http_options=types.HttpOptions(
+                timeout=180_000, retry_options=types.HttpRetryOptions(attempts=1),
+            ),
+        )
+        instr_mode = {"json": instructor.Mode.JSON, "tools": instructor.Mode.TOOLS}[effective_mode]
+        client = instructor.from_genai(google_client, mode=instr_mode, model=actual_model)
         audit["provider"] = "google"
         audit["mode"] = effective_mode
-        return client, model, audit
+        return client, actual_model, audit
 
     # ── OpenAI-compatible ─────────────────────────────────────────────
     import instructor
@@ -296,7 +254,6 @@ def _build_extraction_client(
     openai_client = OpenAI(
         api_key=api_key, base_url=resolved_base,
         timeout=httpx.Timeout(180.0, connect=10.0), max_retries=0,
-        default_headers=opencode_go_headers(resolved_base, session_id),
     )
 
     instr_mode = {
@@ -321,13 +278,12 @@ class _RequestLimiter:
         self.next_start = 0.0
         self.cooldown_until = 0.0
 
-    def wait(self) -> None:
+    def wait(self, stopped: threading.Event) -> bool:
         with self.lock:
             now = time.monotonic()
             start = max(now, self.next_start, self.cooldown_until)
             self.next_start = start + self.interval
-        if start > now:
-            time.sleep(start - now)
+        return not stopped.wait(max(0.0, start - now))
 
     def cooldown(self, seconds: float) -> None:
         with self.lock:
@@ -340,42 +296,115 @@ def _malformed_model_json(value: BaseException | str) -> bool:
     return "invalid json" in text and "invalid escape" in text
 
 
-def _retryable(exc: Exception) -> tuple[bool, float | None]:
-    """Classify through Instructor wrappers and exception chains."""
+def _exception_chain(exc: BaseException):
+    """Walk Instructor's last_error and Python chains, including cycles."""
     seen: set[int] = set()
-    stack: list[BaseException] = [exc]
+    stack = [exc]
     while stack:
         current = stack.pop()
         if id(current) in seen:
             continue
         seen.add(id(current))
-        response = getattr(current, "response", None)
-        status = getattr(response, "status_code", None)
+        yield current
+        for attr in ("last_error", "__cause__", "__context__"):
+            nested = getattr(current, attr, None)
+            if isinstance(nested, BaseException):
+                stack.append(nested)
+
+
+def _provider_status(exc: BaseException) -> int | None:
+    for status in (getattr(exc, "status_code", None),
+                   getattr(getattr(exc, "response", None), "status_code", None),
+                   getattr(exc, "code", None)):
+        if isinstance(status, int) and not isinstance(status, bool):
+            return status
+    return None
+
+
+def _fatal_provider_error(exc: BaseException) -> dict[str, Any] | None:
+    for current in _exception_chain(exc):
+        status = _provider_status(current)
+        if status not in (401, 402, 403):
+            continue
+        action = {
+            401: "Check the provider API credentials before retrying.",
+            402: ("Check provider account funding/usage and provider service status or support "
+                  "before retrying; insufficient funds may be upstream at the provider."),
+            403: "Restore provider account permissions or model access before retrying.",
+        }[status]
+        return {"fatal": True, "provider_status": status, "action": action,
+                "error": f"Provider HTTP {status}: {current}. {action}"}
+    return None
+
+
+def _account_error_record(error: dict[str, Any]) -> bool:
+    """Do not permanently resume account errors, including old checkpoints."""
+    if error.get("fatal") or error.get("provider_status") in (401, 402, 403):
+        return True
+    text = str(error.get("error", "")).lower()
+    markers = ("http ", "error code: ", "status code: ", "status_code=")
+    return ("insufficient account funds" in text or
+            any(f"{marker}{status}" in text
+                for marker in markers for status in (401, 402, 403)))
+
+
+def _retry_after(response: Any) -> float | None:
+    headers = getattr(response, "headers", {}) or {}
+    milliseconds = headers.get("retry-after-ms")
+    value = milliseconds or headers.get("Retry-After") or headers.get("retry-after")
+    if not value:
+        return None
+    try:
+        return float(value) / (1000 if milliseconds else 1)
+    except (TypeError, ValueError):
+        try:
+            return max(0.0, email.utils.parsedate_to_datetime(value).timestamp() - time.time())
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+
+def _retryable(exc: Exception) -> tuple[bool, float | None]:
+    """Classify through Instructor wrappers and exception chains."""
+    if _fatal_provider_error(exc):
+        return False, None
+    for current in _exception_chain(exc):
+        status = _provider_status(current)
         if status is not None:
-            if status not in (408, 429) and not (500 <= status <= 599):
-                return False, None
-            headers = getattr(response, "headers", {}) or {}
-            value = headers.get("retry-after-ms") or headers.get("Retry-After") or headers.get("retry-after")
-            delay = None
-            if value:
-                try:
-                    delay = float(value) / (1000 if "ms" in ("retry-after-ms" if headers.get("retry-after-ms") else "") else 1)
-                except (TypeError, ValueError):
-                    try:
-                        delay = max(0.0, email.utils.parsedate_to_datetime(value).timestamp() - time.time())
-                    except (TypeError, ValueError, OverflowError):
-                        pass
-            return True, delay
+            retry = status in (408, 429) or 500 <= status <= 599
+            return retry, _retry_after(getattr(current, "response", None)) if retry else None
         name = type(current).__name__.lower()
         if _malformed_model_json(current):
             return True, None
         if any(x in name for x in ("timeout", "connection", "connect", "read", "transport")):
             return True, None
-        for attr in ("last_error", "__cause__", "__context__"):
-            nested = getattr(current, attr, None)
-            if isinstance(nested, BaseException):
-                stack.append(nested)
     return False, None
+
+
+def _wait_for_retry(
+    limiter: _RequestLimiter, stopped: threading.Event, exc: Exception,
+    retry_after: float | None, attempt: int, backoff_seconds: float,
+    backoff_multiplier: float, label: str,
+) -> None:
+    if any(_provider_status(e) == 429 for e in _exception_chain(exc)) or retry_after is not None:
+        limiter.cooldown(retry_after or 1.0)
+    delay = retry_after
+    if delay is None:
+        delay = min(180.0, backoff_seconds * (backoff_multiplier ** (attempt - 1)))
+        delay *= random.uniform(.8, 1.2)
+    print(f"  {label} retrying in {delay:.1f}s: {exc}", flush=True)
+    stopped.wait(delay)
+
+
+def _extraction_result(extraction: PostExtraction, post_id: str, attempt: int) -> dict[str, Any]:
+    result = extraction.model_dump()
+    # Never replace an incorrect provider identity; that would poison the cache.
+    if result.get("reddit_post_id") != post_id:
+        raise ValueError(
+            f"response post id {result.get('reddit_post_id')!r} "
+            f"does not match prompt post id {post_id!r}"
+        )
+    result["attempt_count"] = attempt
+    return result
 
 
 def _run_extraction(
@@ -388,8 +417,8 @@ def _run_extraction(
     client: Any,
     actual_model: str,
     provider: str,
-    concurrency: int = 3,
-    rate_limit_rpm: float = 6.0,
+    concurrency: int = 1,
+    rate_limit_rpm: float = 5.0,
     on_complete: Any = None,
 ) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
     """Call Instructor for each prompt with per-post retry/backoff.
@@ -398,9 +427,13 @@ def _run_extraction(
     provider-specific model id, and *provider* ``'google'`` or ``'openai'``.
 
     Returns ``(results_by_request_number, errors)``. Results retain their
-    request number so failures cannot compress the result stream.
+    request number so failures cannot compress the result stream. Errors with
+    ``fatal`` set identify an account-wide abort; unattempted posts stay pending.
+    Already-started calls may finish and their successes are checkpointed.
     """
     limiter = _RequestLimiter(rate_limit_rpm)
+    stopped = threading.Event()
+    start_lock = threading.Lock()
 
     # Build the create() kwargs common to both providers.
     def process(item: tuple[int, dict[str, Any]]) -> tuple[int, dict[str, Any] | None, dict[str, Any] | None]:
@@ -418,31 +451,26 @@ def _run_extraction(
             ],
             "max_retries": 0,
         }
-        if provider == "google":
-            create_kwargs["generation_config"] = {"temperature": 0.1}
-        else:
-            create_kwargs["temperature"] = 0.1
-            create_kwargs["model"] = actual_model
+        create_kwargs["model"] = actual_model
+        # The native GenAI Instructor handler maps temperature to SDK config.
+        create_kwargs["temperature"] = 0.1
 
         last_error: Exception | None = None
         calls = 0
         retry = False
+        fatal = None
 
         for attempt in range(1, max_attempts + 1):
             try:
-                limiter.wait(); calls += 1
+                if not limiter.wait(stopped):
+                    break
+                with start_lock:
+                    if stopped.is_set():
+                        break
+                    calls += 1
                 print(f"  [{i}/{total}] {post_id} extracting (attempt {attempt}/{max_attempts})", flush=True)
                 extraction: PostExtraction = client.create(**create_kwargs)
-                # Success — record result and break retry loop
-                result = extraction.model_dump()
-                # A provider response for another post is invalid; never
-                # overwrite its identity because that would poison the cache.
-                if result.get("reddit_post_id") != post_id:
-                    raise ValueError(
-                        f"response post id {result.get('reddit_post_id')!r} "
-                        f"does not match prompt post id {post_id!r}"
-                    )
-                result["attempt_count"] = attempt
+                result = _extraction_result(extraction, post_id, attempt)
                 rec_count = len(extraction.recommendations)
                 print(f"  [{i}/{total}] {post_id} OK ({rec_count} recommendations)", flush=True)
                 last_error = None
@@ -450,13 +478,16 @@ def _run_extraction(
 
             except Exception as exc:
                 last_error = exc
+                fatal = _fatal_provider_error(exc)
+                if fatal:
+                    retry = False
+                    with start_lock:
+                        stopped.set()
+                    break
                 retry, retry_after = _retryable(exc)
                 if attempt < max_attempts and retry:
-                    if getattr(getattr(exc, "response", None), "status_code", None) == 429 or retry_after is not None:
-                        limiter.cooldown(retry_after or 1.0)
-                    wait = retry_after if retry_after is not None else min(180.0, backoff_seconds * (backoff_multiplier ** (attempt - 1))) * random.uniform(.8, 1.2)
-                    print(f"  [{i}/{total}] retrying in {wait:.1f}s: {exc}", flush=True)
-                    time.sleep(wait)
+                    _wait_for_retry(limiter, stopped, exc, retry_after, attempt,
+                                    backoff_seconds, backoff_multiplier, f"[{i}/{total}]")
                 else:
                     break
 
@@ -468,9 +499,12 @@ def _run_extraction(
                     "model": actual_model,
                     "retryable": retry,
                 }
-            print(f"  [{i}/{total}] {post_id} FAILED: {last_error}", flush=True)
+            if fatal:
+                error.update(fatal)
+            print(f"  [{i}/{total}] {post_id} FAILED: {error['error']}", flush=True)
             return i, None, error
-        return i, None, {"reddit_post_id": post_id, "error": "unknown extraction failure", "attempt_count": calls, "model": actual_model}
+        # A worker stopped before its first provider call is still pending.
+        return i, None, None
 
     by_index: dict[int, tuple[dict[str, Any] | None, dict[str, Any] | None]] = {}
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as executor:
@@ -481,11 +515,12 @@ def _run_extraction(
                 for future in as_completed(list(futures)):
                     item = futures.pop(future)
                     i, result, error = future.result()
-                    by_index[i] = (result, error)
-                    if on_complete:
-                        on_complete(i, prompts[i - 1], result, error)
+                    if result is not None or error is not None:
+                        by_index[i] = (result, error)
+                        if on_complete:
+                            on_complete(i, prompts[i - 1], result, error)
                     nxt = next(iterator, None)
-                    if nxt is not None:
+                    if nxt is not None and not stopped.is_set():
                         futures[executor.submit(process, nxt)] = nxt
                     break
         except BaseException:
@@ -525,6 +560,10 @@ def _build_prompts(
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
+    selected_provider = _detect_provider(args.model)
+    _resolve_instructor_mode(selected_provider, args.model, args.mode)
+    if selected_provider == "google" and args.api_base is not None:
+        raise SystemExit("[pipeline:extract] --api-base is only supported for OpenAI-compatible models.")
 
     ensure_pipeline_dirs()
 
@@ -620,10 +659,8 @@ def main(argv: list[str] | None = None) -> None:
 
     # Resolve output-affecting identity without constructing a client. This is
     # important for an all-hit snapshot run: it must not require an API key.
-    actual_model = args.model.removeprefix("openai/")
-    resolved_api_base = args.api_base or os.environ.get("OPENAI_BASE_URL")
-    if provider == "openai" and not resolved_api_base and os.environ.get("OPENCODE_GO_API_KEY"):
-        resolved_api_base = OPENCODE_GO_BASE_URL
+    actual_model = args.model.removeprefix(f"{provider}/")
+    resolved_api_base = (args.api_base or os.environ.get("OPENAI_BASE_URL")) if provider == "openai" else None
 
     # Operational tuning must not invalidate completed work; output-affecting
     # provider/model/mode and prompt/schema inputs must.
@@ -655,7 +692,8 @@ def main(argv: list[str] | None = None) -> None:
                     # resumable; retryable errors must be attempted again.
                     error = record.get("error")
                     if isinstance(error, dict) and (
-                        error.get("retryable") or _malformed_model_json(error.get("error", ""))
+                        error.get("retryable") or _account_error_record(error)
+                        or _malformed_model_json(error.get("error", ""))
                     ):
                         continue
                     if record.get("result") is not None or isinstance(error, dict):
@@ -701,8 +739,7 @@ def main(argv: list[str] | None = None) -> None:
                                       "api_base_set": resolved_api_base is not None}
     if pending:
         client, actual_model, provider_audit = _build_extraction_client(
-            provider=provider, model=args.model, mode=args.mode, api_base=args.api_base,
-            session_id=f"mtfl-extract-{run_id}")
+            provider=provider, model=args.model, mode=args.mode, api_base=args.api_base)
     print(f"[pipeline:extract] Extracting …")
 
     try:
@@ -727,7 +764,8 @@ def main(argv: list[str] | None = None) -> None:
     # shift a later response onto the wrong post.
     for ordinal, result in results.items():
         all_results[pending[ordinal - 1]["ordinal"]] = result
-    all_errors = [r["error"] for r in checkpoint_records.values() if r.get("error") is not None] + errors
+    all_errors = [r["error"] for ordinal, r in checkpoint_records.items()
+                  if ordinal not in all_results and r.get("error") is not None] + errors
     results = [all_results[i] for i in range(len(prompts)) if i in all_results]
     errors = all_errors
 
@@ -762,9 +800,10 @@ def main(argv: list[str] | None = None) -> None:
     # ── Failed-extraction safeguard ──────────────────────────────────
     success_count = len(results)
     error_count = len(errors)
+    fatal_error = next((error for error in errors if error.get("fatal")), None)
     is_failed = error_count > 0
 
-    if is_failed and not (args.allow_errors or args.allow_empty):
+    if fatal_error or (is_failed and not (args.allow_errors or args.allow_empty)):
         artifact_status = "failed"
     else:
         artifact_status = "extracted"
@@ -803,7 +842,7 @@ def main(argv: list[str] | None = None) -> None:
             "error_count": error_count,
             "target_count": len(prompts),
             "completed_count": success_count + error_count,
-            "pending_count": 0,
+            "pending_count": max(0, len(prompts) - success_count - error_count),
             "recommendation_count": recommendation_count,
             "cache_hits": len(hit_results),
             "cache_misses": len(prompts) - len(hit_results),
@@ -813,11 +852,14 @@ def main(argv: list[str] | None = None) -> None:
 
     write_json_artifact(out, extraction_artifact)
 
-    if is_failed and not (args.allow_errors or args.allow_empty):
-        print(
-            f"[pipeline:extract] FAILED: 0 successes, {error_count} errors. "
-            f"Use --allow-errors to override."
-        )
+    if artifact_status == "failed":
+        if fatal_error:
+            print(f"[pipeline:extract] FAILED: {fatal_error['error']}")
+        else:
+            print(
+                f"[pipeline:extract] FAILED: {success_count} successes, {error_count} errors. "
+                f"Use --allow-errors to override."
+            )
         print(f"[pipeline:extract] Artifact written to {out}")
         sys.exit(1)
 

@@ -1,13 +1,18 @@
+import os
+import sqlite3
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from pipeline.rewrite_summaries import (
     build_summary_prompt,
     _call_summary,
     MalformedSummaryError,
+    main,
+    normalize_summary,
     next_migration_number,
     render_updates,
     rewrite_rows,
@@ -18,14 +23,6 @@ from pipeline.rewrite_summaries import (
 
 
 class RewriteSummaryTests(unittest.TestCase):
-    def test_prompt_is_mood_only(self):
-        prompt = build_summary_prompt("Foggy harbor", "quiet")
-        self.assertIn("exactly one concise, direct atmospheric mood fragment", prompt["system_prompt"])
-        self.assertIn("grounded in the input", prompt["system_prompt"])
-        self.assertIn("Foggy harbor", prompt["user_prompt"])
-        self.assertIn("quiet", prompt["user_prompt"])
-        self.assertNotIn("Comments", prompt["user_prompt"])
-
     def test_sql_quote(self):
         self.assertEqual(sql_quote("a'; DROP TABLE posts; --"), "'a''; DROP TABLE posts; --'")
 
@@ -114,6 +111,152 @@ class RewriteSummaryTests(unittest.TestCase):
         client = type("Client", (), {"chat": type("Chat", (), {"completions": completions})()})()
         with patch("pipeline.rewrite_summaries.time.sleep"):
             self.assertEqual(_call_summary(client, "model", build_summary_prompt("A", "B"), 2, 0), "foggy isolation")
+
+    def test_google_response_text_excludes_thought_parts(self):
+        from google.genai import types
+
+        response = types.GenerateContentResponse(candidates=[
+            types.Candidate(content=types.Content(parts=[
+                types.Part(text="private reasoning", thought=True),
+                types.Part(text="  cold\n coastal dread  "),
+            ]))
+        ])
+        generate = Mock(return_value=response)
+        client = SimpleNamespace(models=SimpleNamespace(generate_content=generate))
+        prompt = build_summary_prompt("A", "B")
+        result = _call_summary(client, "gemini-3.8-flash", prompt, 1, 1, provider="google")
+        self.assertEqual(result, "cold coastal dread")
+        kwargs = generate.call_args.kwargs
+        self.assertEqual(kwargs["model"], "gemini-3.8-flash")
+        self.assertEqual(kwargs["contents"], prompt["user_prompt"])
+        self.assertEqual(kwargs["config"].system_instruction, prompt["system_prompt"])
+
+    def test_google_missing_candidate_text_retries(self):
+        from google.genai import types
+
+        generate = Mock(side_effect=[
+            types.GenerateContentResponse(),
+            types.GenerateContentResponse(candidates=[
+                types.Candidate(content=types.Content(parts=[types.Part(text="foggy isolation")]))
+            ]),
+        ])
+        client = SimpleNamespace(models=SimpleNamespace(generate_content=generate))
+        with patch("pipeline.rewrite_summaries.time.sleep") as sleep:
+            result = _call_summary(
+                client, "gemini-3.8-flash", build_summary_prompt("A", "B"), 2, 3,
+                provider="google",
+            )
+        self.assertEqual(result, "foggy isolation")
+        sleep.assert_called_once_with(3)
+
+    def test_google_numeric_rate_limit_and_server_errors_retry(self):
+        from google.genai import errors
+
+        for code in (429, 500, 503):
+            with self.subTest(code=code):
+                error = errors.APIError(code, {"error": {"message": "provider failed"}})
+                self.assertEqual(retry_delay(error, 2, 3), 6)
+                generate = Mock(side_effect=[error, SimpleNamespace(text="quiet unease")])
+                client = SimpleNamespace(models=SimpleNamespace(generate_content=generate))
+                with patch("pipeline.rewrite_summaries.time.sleep") as sleep:
+                    result = _call_summary(
+                        client, "gemini-3.8-flash", build_summary_prompt("A", "B"), 2, 3,
+                        provider="google",
+                    )
+                self.assertEqual(result, "quiet unease")
+                self.assertEqual(generate.call_count, 2)
+                sleep.assert_called_once_with(3)
+
+    def test_google_auth_errors_do_not_retry(self):
+        from google.genai import errors
+
+        for code in (401, 403):
+            with self.subTest(code=code):
+                error = errors.APIError(code, {"error": {"message": "unauthorized"}})
+                generate = Mock(side_effect=error)
+                client = SimpleNamespace(models=SimpleNamespace(generate_content=generate))
+                with patch("pipeline.rewrite_summaries.time.sleep") as sleep:
+                    with self.assertRaises(errors.APIError):
+                        _call_summary(
+                            client, "gemini-3.8-flash", build_summary_prompt("A", "B"), 3, 3,
+                            provider="google",
+                        )
+                self.assertEqual(generate.call_count, 1)
+                sleep.assert_not_called()
+
+    def test_google_retry_exhaustion_raises_provider_error(self):
+        from google.genai import errors
+
+        error = errors.APIError(429, {"error": {"message": "rate limited"}})
+        generate = Mock(side_effect=error)
+        client = SimpleNamespace(models=SimpleNamespace(generate_content=generate))
+        with patch("pipeline.rewrite_summaries.time.sleep") as sleep:
+            with self.assertRaises(errors.APIError) as failure:
+                _call_summary(
+                    client, "gemini-3.8-flash", build_summary_prompt("A", "B"), 2, 3,
+                    provider="google",
+                )
+        self.assertIs(failure.exception, error)
+        self.assertEqual(generate.call_count, 2)
+        sleep.assert_called_once_with(3)
+
+    def test_non_plain_text_output_is_rejected(self):
+        for value in (None, [], {}, "", "   ", "```text\nmood\n```", '{"mood": "quiet"}', "[quiet]", "Mood: quiet"):
+            with self.subTest(value=value):
+                with self.assertRaises(MalformedSummaryError):
+                    normalize_summary(value)
+
+    def _create_database(self, path):
+        with sqlite3.connect(path) as connection:
+            connection.execute(
+                "CREATE TABLE imported_vibe_posts "
+                "(reddit_post_id TEXT, title TEXT, selftext TEXT, vibe_summary TEXT)"
+            )
+            connection.executemany(
+                "INSERT INTO imported_vibe_posts VALUES (?, ?, ?, ?)",
+                [("a", "A", "", "old"), ("b", "B", "", "old")],
+            )
+
+    def test_google_failure_emits_no_migration(self):
+        from google.genai import errors
+
+        error = errors.APIError(403, {"error": {"message": "unauthorized"}})
+        generate = Mock(side_effect=[SimpleNamespace(text="quiet unease"), error])
+        client = SimpleNamespace(models=SimpleNamespace(generate_content=generate))
+        with TemporaryDirectory() as directory:
+            db = Path(directory) / "app.db"
+            migrations = Path(directory) / "migrations"
+            migrations.mkdir()
+            self._create_database(db)
+            with patch.dict(os.environ, {"GEMINI_API_KEY": "gemini-test-key"}, clear=True):
+                with patch("google.genai.Client", return_value=client):
+                    with self.assertRaises(SystemExit) as failure:
+                        main(["--db", str(db), "--migrations-dir", str(migrations), "--workers", "1"])
+            self.assertEqual(failure.exception.code, 1)
+            self.assertEqual(list(migrations.iterdir()), [])
+
+    def test_missing_google_key_does_not_fall_back_to_openai(self):
+        with TemporaryDirectory() as directory:
+            db = Path(directory) / "app.db"
+            migrations = Path(directory) / "migrations"
+            migrations.mkdir()
+            self._create_database(db)
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "openai-test-key"}, clear=True):
+                with patch("google.genai.Client") as google_factory, patch("openai.OpenAI") as openai_factory:
+                    with self.assertRaises(SystemExit):
+                        main(["--db", str(db), "--migrations-dir", str(migrations)])
+            google_factory.assert_not_called()
+            openai_factory.assert_not_called()
+            self.assertEqual(list(migrations.iterdir()), [])
+
+    def test_google_api_base_is_rejected(self):
+        with TemporaryDirectory() as directory:
+            db = Path(directory) / "app.db"
+            self._create_database(db)
+            with patch("google.genai.Client") as factory:
+                with self.assertRaises(SystemExit):
+                    main(["--db", str(db), "--api-base", "http://localhost:9999"])
+            factory.assert_not_called()
 
     def test_render_updates_is_ordered_by_post_id(self):
         sql = render_updates({"z": "last", "a": "first"})

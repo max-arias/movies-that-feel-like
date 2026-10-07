@@ -219,7 +219,7 @@ environment** settings:
   the script. Least privilege means not granting anything the two workflows do
   not use.
 - Variable `CLOUDFLARE_ACCOUNT_ID`.
-- Secrets `OPENCODE_GO_API_KEY`, `TMDB_ACCESS_TOKEN`, `TWITCH_CLIENT_ID`, and
+- Secrets `GEMINI_API_KEY`, `TMDB_ACCESS_TOKEN`, `TWITCH_CLIENT_ID`, and
   `TWITCH_CLIENT_SECRET` (Twitch is required because game enrichment is active).
 
 The workflows use Node 22, Python 3.11, Bun with `bun install --frozen-lockfile`,
@@ -227,15 +227,22 @@ The workflows use Node 22, Python 3.11, Bun with `bun install --frozen-lockfile`
 the database identity. Secrets are supplied only as environment variables; do
 not print them or put them in artifacts.
 
-Extraction runs on OpenCode Go. The model is `EXTRACTION_MODEL` at the top of
-`.github/workflows/import-reddit.yml` (currently `deepseek-v4.1-flash`), and
-both the extraction step and the cache round-trip probe use it — the probe only
-hits when its cache key, which includes the model, mode, and base URL, matches
-the key the extraction step just wrote. Go requires every request to carry this
-client's user agent and an `x-opencode-session` header; `pipeline.extract`
-sends both, and the model, mode and endpoint are part of the extraction cache
-key, so changing the model starts from a cold cache instead of reusing another
-model's output.
+Extraction runs on Google Gemini through the native Google GenAI SDK and
+Instructor. Set `GEMINI_API_KEY` as a repository secret or in the `production`
+environment. The model is `EXTRACTION_MODEL` at the top of
+`.github/workflows/import-reddit.yml` (currently `google/gemini-3.8-flash`).
+Both extraction and the cache round-trip probe use the same model and
+structured-output mode so their cache identities match. Provider, model, mode,
+and endpoint are part of the cache key; the Gemini cutover starts from a cold
+extraction cache without reusing OpenCode results.
+
+The workflow starts at most 5 extraction requests per minute with one worker.
+Keep the Google project on the Free tier if no paid usage is wanted; there is
+no automatic provider fallback. Check
+[AI Studio's actual model quotas](https://aistudio.google.com/rate-limit)
+before a 100-post run: pacing does not bypass daily or token quotas. Reduce the
+run's `limit` or pacing if necessary. Google documents free-tier input/output
+and data-use terms in its [pricing page](https://ai.google.dev/gemini-api/docs/pricing).
 
 ## Production import
 
@@ -277,11 +284,24 @@ the production exclusion file.
 
 Extraction runs with `--allow-errors`, so an individual extraction failure is
 tolerated and that post is deferred while successful posts continue through the
-pipeline. Enrich runs with `--allow-failed-extraction`, and load runs with
-`--allow-partial-extraction`, which loads only posts with successful extraction
-results. Failed posts are not marked imported or skipped and remain eligible
-for a later refresh. If every extraction fails, load stops; errors from
-enrichment or loading still fail the workflow before commit and apply.
+pipeline. Provider HTTP 401, 402, and 403 are batch-wide failures: extraction
+stops starting new requests, finishes already-in-flight calls, writes a failed
+artifact, and exits nonzero even with `--allow-errors` or `--allow-empty`.
+Successful checkpoints are retained; provider account failures are retried on
+resume after access is restored, and unattempted posts remain pending.
+
+Before enrichment, the workflow requires a nonempty extraction `results` array,
+not merely a positive summary counter. Enrich runs with
+`--allow-failed-extraction`, and load runs with `--allow-partial-extraction`,
+which loads only posts with successful extraction results. Failed posts are not
+marked imported or skipped and remain eligible for a later refresh. Enrichment
+or loading errors still fail the workflow before commit and apply.
+
+Run artifacts and extraction checkpoints are uploaded even when an earlier
+stage fails. Download `reddit-import-<run-id>` from the failed run to inspect
+the original provider error, successful results, and pending counts. Artifact
+paths are fixed at job start, so extraction diagnostics do not depend on the
+failed step publishing environment variables.
 
 After extraction and again after enrichment, the workflow renders cache
 observations with the repository's `npm run pipeline:cache-sql` script (which
@@ -353,9 +373,16 @@ or a bounded `limit` and a higher `max_pages` for a controlled backfill.
    variable, database access, and `apps/astro/wrangler.jsonc` database identity.
 2. **Fetch/normalize:** inspect Arctic Shift availability and the run's raw
    artifact; confirm the exclusion query completed before normalization.
-3. **Extract/enrich:** verify the OpenCode, TMDB, and Twitch credentials. Any
-   enrichment artifact error fails the workflow before load, so fix credentials
-   and retry rather than allowing incomplete posts to be excluded or loaded.
+3. **Extract/enrich:** verify the Gemini, TMDB, and Twitch credentials. For
+   extraction HTTP 401/403, verify `GEMINI_API_KEY`, its Google project, and
+   model access. For HTTP 429 `RESOURCE_EXHAUSTED`, inspect
+   [AI Studio quotas](https://aistudio.google.com/rate-limit): per-minute limits
+   may clear after waiting, while daily exhaustion needs a quota reset or a
+   smaller import. Transient quota/server failures have bounded retries.
+   Restore provider access before rerunning; do not enable empty-extraction
+   loading or silently switch to a paid provider. Any enrichment artifact
+   error also fails the workflow before load, so fix credentials and retry
+   rather than allowing incomplete posts to be excluded or loaded.
 4. **Direct apply/push:** verify the D1 Edit token, inspect remote
    `d1_migrations`, and confirm that only manifest-listed migration SQL was
    staged. If D1 applied but push failed, retry the existing commit rather than
