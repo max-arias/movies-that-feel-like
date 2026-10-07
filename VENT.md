@@ -27,3 +27,11 @@ Trigger: Astro 7 automatically backgrounds `astro dev` when it detects an agent;
 Workaround: after two CLI launches and a restart, launch the public `dev` API in a foreground Node process: `node --input-type=module -e 'import { dev } from "astro"; await dev({ server: { host: "127.0.0.1", port: 4331 } });'`.
 Suggested fix: document a supervised foreground preview command and run checks before starting the preview.
 Impact: medium
+
+## 26-10-07 16:56 — github_push_server_error
+
+Symptom: GitHub rejected publication with `remote: Internal Server Error` and `[remote rejected] main -> main (Internal Server Error)`.
+Trigger: publishing the verified Gemini cutover and previously approved UI commit.
+Workaround: two SSH push attempts and one authenticated HTTPS attempt failed; GitHub's status API still reported `All Systems Operational`. Check the non-forced Git data API path rather than repeatedly retrying the same receive-pack endpoint.
+Suggested fix: use bounded retries for server errors, retain request IDs, and distinguish publication failures from local code/test failures. Any alternate publication must preserve commit history and refuse a moved branch rather than force it.
+Impact: medium
