@@ -2,14 +2,15 @@ name: Import Reddit posts
 
 on:
   schedule:
-    # Twice a week: Monday and Thursday at 00:00 UTC.
-    - cron: '0 0 * * 1,4'
+    # Gemini free tier: 20 requests/day ÷ 5 per run = 4 full runs per day; later
+    # runs no-op once Gemini reports the daily quota exhausted.
+    - cron: '17 */4 * * *'
   workflow_dispatch:
     inputs:
       limit:
         description: 'Maximum posts to fetch for this run'
         required: true
-        default: '100'
+        default: '30'
         type: string
       max_pages:
         description: 'Maximum fetch pages before stopping (positive integer)'
@@ -29,9 +30,12 @@ env:
   # Both extraction passes must share the model and output-affecting settings
   # so the cache-round-trip probe can reuse this run's extractions.
   EXTRACTION_MODEL: google/gemini-3.8-flash
-  # Conservative free-tier pacing; actual quotas are project/model-specific.
-  EXTRACTION_CONCURRENCY: '1'
+  # Free-tier budget: every provider attempt, retries included, counts toward
+  # Gemini's daily request quota, so each run is capped at EXTRACTION_MAX_REQUESTS.
   EXTRACTION_RATE_LIMIT_RPM: '5'
+  EXTRACTION_BATCH_SIZE: '5'
+  EXTRACTION_BATCH_MAX_CHARS: '80000'
+  EXTRACTION_MAX_REQUESTS: '5'
 
 jobs:
   import:
@@ -51,9 +55,9 @@ jobs:
       EXTRACTION_ARTIFACT: ${{ github.workspace }}/data/working/extraction-${{ github.run_id }}.json
       ENRICHMENT_ARTIFACT: ${{ github.workspace }}/data/working/enrichment-${{ github.run_id }}.json
     outputs:
-      # A run with no new posts commits nothing and pushes nothing, so there is
-      # nothing to deploy and the follow-up deploy job is skipped.
-      released: ${{ steps.normalize.outputs.post-count != '0' }}
+      # A run that extracted nothing (no new posts, or every post deferred by
+      # quota) commits nothing and pushes nothing, so the deploy job is skipped.
+      released: ${{ steps.extraction_results.outputs.has-results == 'true' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -110,7 +114,7 @@ jobs:
       - name: Fetch and normalize new posts
         id: normalize
         env:
-          IMPORT_LIMIT: ${{ inputs.limit || '100' }}
+          IMPORT_LIMIT: ${{ inputs.limit || '30' }}
           IMPORT_MAX_PAGES: ${{ inputs.max_pages || '50' }}
         run: |
           set -euo pipefail
@@ -154,7 +158,8 @@ jobs:
           set -euo pipefail
           npm run pipeline:extract -- --input "$NORMALIZED_ARTIFACT" --out "$EXTRACTION_ARTIFACT" \
             --model "$EXTRACTION_MODEL" --allow-errors \
-            --concurrency "$EXTRACTION_CONCURRENCY" --rate-limit-rpm "$EXTRACTION_RATE_LIMIT_RPM" \
+            --batch-size "$EXTRACTION_BATCH_SIZE" --batch-max-chars "$EXTRACTION_BATCH_MAX_CHARS" \
+            --max-requests "$EXTRACTION_MAX_REQUESTS" --rate-limit-rpm "$EXTRACTION_RATE_LIMIT_RPM" \
             --cache-snapshot "$GITHUB_WORKSPACE/data/working/extraction-cache-snapshot.json"
           printf '{"cache_records":[]}' > data/working/empty-cache.json
           npm run pipeline:cache-sql -- --extraction "$EXTRACTION_ARTIFACT" \
@@ -193,22 +198,28 @@ jobs:
           jq -e --argjson expected "$expected" '([.[0].results[]?.cache_key] | sort) == ($expected | sort)' <<<"$rows" >/dev/null
           echo "extraction cache chunks=$(jq '.chunks|length' "$manifest") rows=$(jq '.sources.extraction.record_count' "$manifest")"
 
-      - name: Require nonempty extraction results
+      - name: Decide whether extraction produced results
+        id: extraction_results
         if: steps.normalize.outputs.post-count != '0'
         run: |
           set -euo pipefail
-          if ! jq -e '.results | type == "array" and length > 0' "$EXTRACTION_ARTIFACT" >/dev/null; then
-            echo 'Refusing enrichment and load: extraction produced no successful post results.' >&2
-            if [ -f "$EXTRACTION_ARTIFACT" ]; then
-              jq -r '"First extraction error: " + ((.errors[0].error // .errors[0].message // .errors[0] // "No error recorded; inspect the extraction artifact and checkpoints.") | tostring)' "$EXTRACTION_ARTIFACT" >&2
-            else
-              echo "Extraction artifact is missing: $EXTRACTION_ARTIFACT" >&2
-            fi
-            exit 1
+          if jq -e '.results | type == "array" and length > 0' "$EXTRACTION_ARTIFACT" >/dev/null 2>&1; then
+            echo 'has-results=true' >> "$GITHUB_OUTPUT"; exit 0
           fi
+          if [ -f "$EXTRACTION_ARTIFACT" ] && jq -e '((.errors // []) | length) == 0 and (.summary.deferred_count // 0) > 0' "$EXTRACTION_ARTIFACT" >/dev/null; then
+            jq -r '"No posts extracted this run: \(.summary.deferred_count) deferred (\(.stop_reason // "request_budget")); they stay eligible for the next run."' "$EXTRACTION_ARTIFACT"
+            echo 'has-results=false' >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo 'Refusing enrichment and load: extraction produced no successful post results.' >&2
+          if [ -f "$EXTRACTION_ARTIFACT" ]; then
+            jq -r '"First extraction error: " + ((.errors[0].error // .errors[0].message // .errors[0] // "No error recorded; inspect the extraction artifact and checkpoints.") | tostring)' "$EXTRACTION_ARTIFACT" >&2
+          else
+            echo "Extraction artifact is missing: $EXTRACTION_ARTIFACT" >&2
+          fi
+          exit 1
 
       - name: Export canonical enrichment cache snapshot
-        if: steps.normalize.outputs.post-count != '0'
+        if: steps.extraction_results.outputs.has-results == 'true'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -220,7 +231,7 @@ jobs:
           jq -r '.[0].results | "enrichment snapshot rows=" + (length|tostring) + " eligible=" + ((.[0].eligible_count // 0)|tostring)' data/working/enrichment-cache-snapshot.json
 
       - name: Enrich recommendations and persist enrichment cache
-        if: steps.normalize.outputs.post-count != '0'
+        if: steps.extraction_results.outputs.has-results == 'true'
         env:
           TMDB_ACCESS_TOKEN: ${{ secrets.TMDB_ACCESS_TOKEN }}
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
@@ -235,7 +246,7 @@ jobs:
             --manifest "$GITHUB_WORKSPACE/data/working/enrichment-cache-manifest.json"
 
       - name: Execute enrichment cache DML remotely
-        if: steps.normalize.outputs.post-count != '0'
+        if: steps.extraction_results.outputs.has-results == 'true'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -266,7 +277,7 @@ jobs:
           echo "enrichment cache chunks=$(jq '.chunks|length' "$manifest") rows=$(jq '.sources.enrichment.record_count' "$manifest")"
 
       - name: Re-export persisted canonical cache snapshots
-        if: inputs.verify_cache_round_trip == true && steps.normalize.outputs.post-count != '0'
+        if: inputs.verify_cache_round_trip == true && steps.extraction_results.outputs.has-results == 'true'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -281,7 +292,7 @@ jobs:
           echo "persisted extraction rows=$(jq '.[0].results|length' data/working/extraction-cache-snapshot.json) enrichment rows=$(jq '.[0].results|length' data/working/enrichment-cache-snapshot.json)"
 
       - name: Verify cache round trip (bounded probe; never loads)
-        if: inputs.verify_cache_round_trip == true && steps.normalize.outputs.post-count != '0'
+        if: inputs.verify_cache_round_trip == true && steps.extraction_results.outputs.has-results == 'true'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -295,7 +306,7 @@ jobs:
           jq -e '.[0].success == true' "$GITHUB_WORKSPACE/data/working/enrichment-cache-snapshot.json" >/dev/null
           npm run pipeline:extract -- --input "$NORMALIZED_ARTIFACT" --out "$GITHUB_WORKSPACE/data/working/extraction-probe.json" \
             --model "$EXTRACTION_MODEL" \
-            --concurrency "$EXTRACTION_CONCURRENCY" --rate-limit-rpm "$EXTRACTION_RATE_LIMIT_RPM" \
+            --max-requests 0 --rate-limit-rpm "$EXTRACTION_RATE_LIMIT_RPM" \
             --limit 3 --cache-snapshot "$GITHUB_WORKSPACE/data/working/extraction-cache-snapshot.json"
           npm run pipeline:enrich -- --input "$GITHUB_WORKSPACE/data/working/extraction-probe.json" --out "$GITHUB_WORKSPACE/data/working/enrichment-probe.json" \
             --allow-failed-extraction --cache-snapshot "$GITHUB_WORKSPACE/data/working/enrichment-cache-snapshot.json"
@@ -304,19 +315,19 @@ jobs:
           echo 'Cache round trip passed: bounded probe was cache-only; probe artifacts were not loaded.'
 
       - name: Reject enrichment errors
-        if: steps.normalize.outputs.post-count != '0'
+        if: steps.extraction_results.outputs.has-results == 'true'
         run: |
           errors=$(jq -r '.summary.error_count // (.errors | length) // 0' "$ENRICHMENT_ARTIFACT")
           [ "$errors" -eq 0 ] || { echo "Enrichment artifact contains $errors error(s)" >&2; exit 1; }
 
       - name: Load and generate migrations
-        if: steps.normalize.outputs.post-count != '0'
+        if: steps.extraction_results.outputs.has-results == 'true'
         run: |
           npm run pipeline:load -- --normalized "$NORMALIZED_ARTIFACT" --extraction "$EXTRACTION_ARTIFACT" \
             --enrichment "$ENRICHMENT_ARTIFACT" --out "$GITHUB_WORKSPACE/data/working/load-${GITHUB_RUN_ID}.json" --allow-partial-extraction
 
       - name: Validate load and prepare exact migration set
-        if: steps.normalize.outputs.post-count != '0'
+        if: steps.extraction_results.outputs.has-results == 'true'
         run: |
           set -euo pipefail
           load="$GITHUB_WORKSPACE/data/working/load-${GITHUB_RUN_ID}.json"
@@ -352,7 +363,7 @@ jobs:
             data/working/publishable-migrations/*.sql
 
       - name: Create local release commit
-        if: steps.normalize.outputs.post-count != '0'
+        if: steps.extraction_results.outputs.has-results == 'true'
         run: |
           set -euo pipefail
           mapfile -t migrations < <(jq -r '.data_migrations[].path' "$GITHUB_WORKSPACE/data/working/load-${GITHUB_RUN_ID}-repo-relative.json")
@@ -367,7 +378,7 @@ jobs:
           git diff-tree --no-commit-id --name-only -r HEAD | sort | cmp - /tmp/release-migrations || { echo 'Release commit paths differ from load manifest' >&2; exit 1; }
 
       - name: Publish non-PR recovery ref
-        if: steps.normalize.outputs.post-count != '0'
+        if: steps.extraction_results.outputs.has-results == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -378,7 +389,7 @@ jobs:
           git push origin "HEAD:refs/heads/$recovery_ref"
 
       - name: Apply release migrations and push main
-        if: steps.normalize.outputs.post-count != '0'
+        if: steps.extraction_results.outputs.has-results == 'true'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

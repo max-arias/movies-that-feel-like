@@ -10,7 +10,7 @@ from typing import Any
 from pipeline.models import PostExtraction
 
 EXTRACTION_CACHE_VERSION = 1
-EXTRACTOR_VERSION = "extractor-v3"
+EXTRACTOR_VERSION = "extractor-v4-batch"
 PAYLOAD_VERSION = 1
 
 

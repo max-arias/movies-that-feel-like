@@ -106,7 +106,7 @@ def flatten_comments(
 # ── Prompt builder ───────────────────────────────────────────────────
 
 
-EXTRACTION_PROMPT_VERSION = "extraction-prompt-v3"
+EXTRACTION_PROMPT_VERSION = "extraction-prompt-v4-batch"
 SYSTEM_INSTRUCTION = (
     "Extract the recommendations and the atmosphere from this Reddit post. Return exactly the "
     "requested JSON schema. Only cite recommendations supported by the supplied post or comments. "
@@ -115,6 +115,17 @@ SYSTEM_INSTRUCTION = (
     "input; never invent identifiers or metadata. The reddit_post_id and reddit_title in the output "
     "must be copied from the input. A post with no supported recommendation must return empty "
     "recommendations. Do not add explanations outside the schema."
+)
+BATCH_SYSTEM_INSTRUCTION = (
+    "You extract movie, TV series, and video game recommendations and the atmosphere of several "
+    "independent Reddit posts. Return exactly the requested JSON schema with one entry in posts for "
+    "every post in the input, in input order, each with that post's reddit_post_id copied exactly. "
+    "Treat every post separately: a recommendation and its evidence must come only from that post's "
+    "own title, selftext, and comments. For every evidence item copy the exact comment_id of a comment "
+    "listed under the same post and quote the triggering words as extracted_text; never invent "
+    "identifiers. The vibe summary must be exactly one concise, direct atmospheric mood fragment "
+    "grounded in that post. A post with no supported recommendation must return empty recommendations. "
+    "Do not add explanations outside the schema."
 )
 
 

@@ -178,21 +178,23 @@ def _check_extraction_health(
     status = extraction.get("status", "")
     summary = extraction.get("summary", {})
     success_count = summary.get("success_count", 0)
-    error_count = summary.get("error_count", 0)
+    # Deferred posts were never extracted; loading them as skipped would let
+    # fetch exclude them permanently, so they count as incomplete.
+    incomplete = (summary.get("error_count") or 0) + (summary.get("deferred_count") or 0)
 
     if status == "failed" and not allow_empty:
         raise ValueError(
             "extraction artifact has failed status; rerun extraction with a "
             "working API key or pass --allow-empty-extraction to override"
         )
-    if error_count > 0 and success_count == 0 and not allow_empty:
+    if incomplete > 0 and success_count == 0 and not allow_empty:
         raise ValueError(
             "extraction artifact has no successful results; pass "
             "--allow-empty-extraction to override"
         )
-    if error_count > 0 and success_count > 0 and not (allow_partial or allow_empty):
+    if incomplete > 0 and success_count > 0 and not (allow_partial or allow_empty):
         raise ValueError(
-            "extraction artifact contains failed target posts; pass "
+            "extraction artifact contains failed or deferred target posts; pass "
             "--allow-partial-extraction to load successful posts only"
         )
 

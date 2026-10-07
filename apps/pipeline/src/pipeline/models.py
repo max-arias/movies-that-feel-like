@@ -65,3 +65,28 @@ class PostExtraction(BaseModel):
     extraction_notes: list[str] = Field(
         default_factory=list, description="Warnings or observations from extraction"
     )
+
+
+class BatchEvidence(BaseModel):
+    comment_id: str = Field(description="Exact comment_id of a comment listed under the same post")
+    extracted_text: str = Field(description="Words in that comment naming the recommendation")
+
+
+class BatchRecommendation(BaseModel):
+    title: str
+    year: int | None = None
+    media_type: Literal["movie", "tv", "game", "unknown"] = "unknown"
+    evidence: list[BatchEvidence] = Field(default_factory=list)
+    confidence: float | None = None
+
+
+class BatchPostExtraction(BaseModel):
+    reddit_post_id: str
+    cleaned_title: str = ""
+    recommendations: list[BatchRecommendation] = Field(default_factory=list)
+    vibe: VibeSummary
+    extraction_notes: list[str] = Field(default_factory=list)
+
+
+class BatchExtractionResponse(BaseModel):
+    posts: list[BatchPostExtraction]

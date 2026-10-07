@@ -34,11 +34,12 @@ def write_json_artifact(path: Path, payload: Any) -> None:
 
 
 def validate_complete_extraction(payload: Any, *, allow_failed: bool = False) -> None:
-    """Reject incomplete or failed extraction artifacts as consumer inputs."""
+    """Reject incomplete, failed, or deferred extraction artifacts as consumer inputs."""
     if isinstance(payload, dict):
         summary = payload.get("summary", {})
-        if not allow_failed and (payload.get("status") == "failed" or summary.get("error_count", 0) > 0):
-            raise ValueError("extraction artifact contains failed target posts")
+        if not allow_failed and (payload.get("status") == "failed" or summary.get("error_count", 0) > 0
+                                 or summary.get("deferred_count", 0) > 0):
+            raise ValueError("extraction artifact contains failed or deferred target posts")
     pending = payload.get("summary", {}).get("pending_count") if isinstance(payload, dict) else None
     if pending is not None and pending != 0:
         raise ValueError(f"incomplete extraction artifact: pending_count={pending}")

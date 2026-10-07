@@ -13,6 +13,7 @@ from pipeline.load import (
     _select_post_ids_for_load,
     main,
 )
+from pipeline.artifacts import validate_complete_extraction
 
 
 class LoadPartialExtractionTests(unittest.TestCase):
@@ -34,6 +35,27 @@ class LoadPartialExtractionTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             _check_extraction_health(artifact, allow_partial=True, allow_empty=False)
+
+    def test_deferred_posts_require_partial_load(self):
+        # A non-partial load would insert deferred posts as skipped, and fetch
+        # would then exclude them forever.
+        artifact = {"status": "extracted",
+                    "summary": {"success_count": 3, "error_count": 0, "deferred_count": 2}}
+
+        with self.assertRaisesRegex(ValueError, "deferred"):
+            _check_extraction_health(artifact, allow_partial=False, allow_empty=False)
+
+        _check_extraction_health(artifact, allow_partial=True, allow_empty=False)
+
+    def test_deferred_posts_are_not_a_complete_extraction(self):
+        artifact = {"status": "extracted",
+                    "summary": {"success_count": 3, "error_count": 0, "deferred_count": 2,
+                                "pending_count": 0}}
+
+        with self.assertRaisesRegex(ValueError, "deferred"):
+            validate_complete_extraction(artifact)
+
+        validate_complete_extraction(artifact, allow_failed=True)
 
     def test_partial_mode_selects_only_successful_extraction_posts(self):
         normalized = {

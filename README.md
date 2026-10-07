@@ -150,14 +150,28 @@ Instructor. Both the pipeline default and scheduled import use
 is also supported. The provider, model, mode, and endpoint are part of each
 cache key, so changing providers or models starts from a cold cache.
 
-Extraction is resumable: completed posts are fsynced to an append-only JSONL
-checkpoint in `data/working/checkpoints/`. The default concurrency is 1 and
-request starts are limited to 5 RPM; tune with `--concurrency` and
-`--rate-limit-rpm`. These settings do not guarantee free-tier capacity: check
-the project's model-specific daily and token quotas in Google AI Studio.
-Provider access/billing failures stop the batch and still write an artifact
-with successful results, errors, and the number of unattempted posts. Transient
-quota/server failures use bounded retries.
+Extraction is serial and batched: up to 5 posts and 80,000 summed prompt
+characters per request, at most 5 provider attempts per run, paced at 5 RPM.
+Tune with `--batch-size`, `--batch-max-chars`, `--max-requests`, and
+`--rate-limit-rpm`. Failed attempts and retries count against the budget.
+The scheduled import runs every four hours and fetches up to 30 posts.
+The measured free-tier quota is 20 requests/day for this project/model;
+check Google AI Studio for current daily and token quotas.
+
+Daily quota exhaustion, provider overload, and the request budget defer posts
+instead of failing them. A short per-minute limit retries the batch once;
+503 overloads do not retry. Malformed multi-post responses split into smaller
+batches, and omitted posts are retried once before deferral. Evidence must cite
+a comment belonging to the same post; its body, score, and permalink come from
+the input, not generated metadata.
+
+Completed posts are fsynced to an append-only JSONL checkpoint in
+`data/working/checkpoints/`; deferred posts are never checkpointed or loaded.
+Successful results still proceed through enrichment and partial loading.
+Provider access/billing failures remain fatal, even with `--allow-errors`,
+and unattempted posts remain pending. Batch composition does not change
+per-post cache keys. A `--max-requests 0` cache probe makes no provider requests
+and needs no API key; cache misses are deferred for a later run.
 
 Explicit OpenAI-compatible models remain available with `--model openai/<id>`,
 `OPENAI_API_KEY`, and optionally `--api-base` or `OPENAI_BASE_URL`. There is no

@@ -14,27 +14,27 @@ extraction with ``OPENAI_API_KEY`` and optional ``--api-base`` or
 from __future__ import annotations
 
 import argparse
+import email.utils
+import fcntl
 import hashlib
 import json
 import os
-import random
 import sys
-import threading
 import time
-import email.utils
-import fcntl
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Literal
 
 from pipeline.artifacts import read_json_artifact, timestamp_slug, write_json_artifact
-from pipeline.extraction_input import build_extraction_prompt, flatten_comments
-from pipeline.extraction_input import EXTRACTION_PROMPT_VERSION
-from pipeline.extraction_cache import (EXTRACTOR_VERSION, PAYLOAD_VERSION,
-                                       canonical_json, extraction_cache_key, lookup as lookup_cache,
+from pipeline.extraction_batches import (BatchPost, batch_post_from_prompt, pack_batches,
+                                         render_batch_prompt, resolve_batch_response)
+from pipeline.extraction_input import (BATCH_SYSTEM_INSTRUCTION, EXTRACTION_PROMPT_VERSION,
+                                       build_extraction_prompt, flatten_comments)
+from pipeline.extraction_cache import (canonical_json, extraction_cache_key, lookup as lookup_cache,
                                        make_cache_record, read_cache_snapshot)
-from pipeline.models import PostExtraction
+from pipeline.models import BatchExtractionResponse, PostExtraction
 from pipeline.paths import checkpoints_dir, ensure_pipeline_dirs, normalized_dir, working_dir
 
 EXTRACTION_SCHEMA_VERSION = "post-extraction-v3"
@@ -50,16 +50,17 @@ def build_parser() -> argparse.ArgumentParser:
             "  GEMINI_API_KEY          API key for the default Gemini provider.\n"
             "  OPENAI_API_KEY          API key for explicit OpenAI-compatible models.\n"
             "  OPENAI_BASE_URL         Override base URL for OpenAI-compatible.\n"
-            "\nRetry (per-post):\n"
-            "  On transient provider failures the call is retried with\n"
-            "  exponential backoff: wait = backoff-seconds * backoff-multiplier^(attempt-1).\n"
-            "  After max-attempts the error is recorded and the run fails safely.\n"
+            "\nBatching and quota:\n"
+            "  Posts are packed into multi-post requests (--batch-size, --batch-max-chars).\n"
+            "  --max-requests caps provider requests per run, retries included. Daily quota,\n"
+            "  provider overload, and the request budget stop the run and defer remaining\n"
+            "  posts; deferred posts are not failures and stay eligible for a later run.\n"
             "\nExamples:\n"
             "  # Dry-run — no API key needed\n"
             "  pipeline:extract --dry-run --limit 1\n"
             "\n"
             "  # Gemini extraction (default model)\n"
-            "  GEMINI_API_KEY=... pipeline:extract --limit 5 --max-attempts 5\n"
+            "  GEMINI_API_KEY=... pipeline:extract --limit 5 --max-requests 1\n"
             "\n"
             "  # Explicit OpenAI-compatible extraction\n"
             "  OPENAI_API_KEY=... pipeline:extract --model openai/gpt-4.1-mini\n"
@@ -122,28 +123,13 @@ def build_parser() -> argparse.ArgumentParser:
             "or the SDK default). Not supported for Gemini."
         ),
     )
-    parser.add_argument("--sleep-seconds", type=float, default=0.0,
-                        help="Deprecated and ignored; use --rate-limit-rpm")
-    parser.add_argument("--concurrency", type=int, default=1, help="Maximum posts in flight (default: %(default)s)")
-    parser.add_argument("--rate-limit-rpm", type=float, default=5.0, help="Global request-start limit (default: %(default)s RPM)")
-    parser.add_argument(
-        "--max-attempts",
-        type=int,
-        default=3,
-        help="Total attempts per post for transient provider failures (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--backoff-seconds",
-        type=float,
-        default=5.0,
-        help="Initial retry sleep before exponential backoff (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--backoff-multiplier",
-        type=float,
-        default=2.0,
-        help="Exponential backoff multiplier per retry (default: %(default)s)",
-    )
+    parser.add_argument("--batch-size", type=int, default=5,
+                        help="Maximum posts per provider request (default: %(default)s)")
+    parser.add_argument("--batch-max-chars", type=int, default=80000,
+                        help="Maximum summed per-post prompt characters per request (default: %(default)s)")
+    parser.add_argument("--max-requests", type=int, default=5,
+                        help="Provider requests per run, retries included; 0 makes no requests (default: %(default)s)")
+    parser.add_argument("--rate-limit-rpm", type=float, default=5.0, help="Request-start limit (default: %(default)s RPM)")
     parser.add_argument(
         "--allow-errors",
         action="store_true",
@@ -272,28 +258,20 @@ def _build_extraction_client(
 
 
 class _RequestLimiter:
+    """Serial request-start pacing: at most *rpm* request starts per minute."""
+
     def __init__(self, rpm: float) -> None:
         self.interval = 60.0 / rpm if rpm > 0 else 0.0
-        self.lock = threading.Lock()
         self.next_start = 0.0
-        self.cooldown_until = 0.0
 
-    def wait(self, stopped: threading.Event) -> bool:
-        with self.lock:
+    def wait(self) -> None:
+        if self.interval <= 0:
+            return
+        now = time.monotonic()
+        if self.next_start > now:
+            time.sleep(self.next_start - now)
             now = time.monotonic()
-            start = max(now, self.next_start, self.cooldown_until)
-            self.next_start = start + self.interval
-        return not stopped.wait(max(0.0, start - now))
-
-    def cooldown(self, seconds: float) -> None:
-        with self.lock:
-            self.cooldown_until = max(self.cooldown_until, time.monotonic() + max(0, seconds))
-
-
-def _malformed_model_json(value: BaseException | str) -> bool:
-    """Recognize provider output parse failures, not local schema/program bugs."""
-    text = str(value).lower()
-    return "invalid json" in text and "invalid escape" in text
+        self.next_start = now + self.interval
 
 
 def _exception_chain(exc: BaseException):
@@ -306,10 +284,11 @@ def _exception_chain(exc: BaseException):
             continue
         seen.add(id(current))
         yield current
-        for attr in ("last_error", "__cause__", "__context__"):
-            nested = getattr(current, attr, None)
-            if isinstance(nested, BaseException):
-                stack.append(nested)
+        nested_errors = [getattr(current, attr, None) for attr in ("last_error", "__cause__", "__context__")]
+        failed_attempts = getattr(current, "failed_attempts", None)
+        if isinstance(failed_attempts, list) and failed_attempts:
+            nested_errors.append(getattr(failed_attempts[-1], "exception", None))
+        stack.extend(nested for nested in nested_errors if isinstance(nested, BaseException))
 
 
 def _provider_status(exc: BaseException) -> int | None:
@@ -363,172 +342,233 @@ def _retry_after(response: Any) -> float | None:
             return None
 
 
-def _retryable(exc: Exception) -> tuple[bool, float | None]:
-    """Classify through Instructor wrappers and exception chains."""
-    if _fatal_provider_error(exc):
-        return False, None
-    for current in _exception_chain(exc):
+FailureKind = Literal["fatal", "daily_quota", "rate_limited", "unavailable", "structural", "rejected"]
+MAX_RATE_RETRY_SECONDS = 120.0
+DEFAULT_RATE_RETRY_SECONDS = 60.0
+
+
+def _error_details(exc: BaseException) -> list[dict[str, Any]] | None:
+    """Return google.rpc detail objects from a google-genai APIError body, if any."""
+    details = getattr(exc, "details", None)
+    error = details.get("error") if isinstance(details, dict) else None
+    items = error.get("details") if isinstance(error, dict) else None
+    if not isinstance(items, list):
+        return None
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _daily_quota(exc: BaseException) -> bool:
+    details = _error_details(exc)
+    if details is None:
+        return "PerDay" in str(exc)
+    for item in details:
+        if not str(item.get("@type", "")).endswith("google.rpc.QuotaFailure"):
+            continue
+        violations = item.get("violations") or []
+        if any("PerDay" in str(v.get("quotaId", "")) for v in violations if isinstance(v, dict)):
+            return True
+    return False
+
+
+def _rate_limit_delay(exc: BaseException) -> float | None:
+    """Seconds from google.rpc.RetryInfo (e.g. ``"20353s"``), else Retry-After."""
+    for item in _error_details(exc) or []:
+        if not str(item.get("@type", "")).endswith("google.rpc.RetryInfo"):
+            continue
+        delay = str(item.get("retryDelay", ""))
+        try:
+            return float(delay.removesuffix("s"))
+        except ValueError:
+            continue
+    return _retry_after(getattr(exc, "response", None))
+
+
+def _classify_status(current: BaseException, status: int) -> tuple[FailureKind, float | None]:
+    if status in (401, 402, 403):
+        return "fatal", None
+    if status == 429:
+        if _daily_quota(current):
+            return "daily_quota", None
+        return "rate_limited", _rate_limit_delay(current)
+    if status == 408 or 500 <= status <= 599:
+        return "unavailable", None
+    return "rejected", None
+
+
+def classify_failure(exc: BaseException) -> tuple[FailureKind, float | None]:
+    """Classify a provider/Instructor failure through every wrapper link."""
+    chain = list(_exception_chain(exc))
+    for current in chain:
         status = _provider_status(current)
         if status is not None:
-            retry = status in (408, 429) or 500 <= status <= 599
-            return retry, _retry_after(getattr(current, "response", None)) if retry else None
-        name = type(current).__name__.lower()
-        if _malformed_model_json(current):
-            return True, None
-        if any(x in name for x in ("timeout", "connection", "connect", "read", "transport")):
-            return True, None
-    return False, None
+            return _classify_status(current, status)
+    from pydantic import ValidationError
+
+    if any(x in type(current).__name__.lower() for current in chain
+           for x in ("timeout", "connect", "transport")):
+        return "unavailable", None
+    if any(isinstance(current, (ValidationError, json.JSONDecodeError)) for current in chain):
+        return "structural", None
+    return "rejected", None
 
 
-def _wait_for_retry(
-    limiter: _RequestLimiter, stopped: threading.Event, exc: Exception,
-    retry_after: float | None, attempt: int, backoff_seconds: float,
-    backoff_multiplier: float, label: str,
-) -> None:
-    if any(_provider_status(e) == 429 for e in _exception_chain(exc)) or retry_after is not None:
-        limiter.cooldown(retry_after or 1.0)
-    delay = retry_after
-    if delay is None:
-        delay = min(180.0, backoff_seconds * (backoff_multiplier ** (attempt - 1)))
-        delay *= random.uniform(.8, 1.2)
-    print(f"  {label} retrying in {delay:.1f}s: {exc}", flush=True)
-    stopped.wait(delay)
+@dataclass
+class QueuedBatch:
+    posts: list[BatchPost]
+    rate_retry_used: bool = False
 
 
-def _extraction_result(extraction: PostExtraction, post_id: str, attempt: int) -> dict[str, Any]:
-    result = extraction.model_dump()
-    # Never replace an incorrect provider identity; that would poison the cache.
-    if result.get("reddit_post_id") != post_id:
-        raise ValueError(
-            f"response post id {result.get('reddit_post_id')!r} "
-            f"does not match prompt post id {post_id!r}"
-        )
-    result["attempt_count"] = attempt
-    return result
+@dataclass
+class RunOutcome:
+    results: dict[int, dict[str, Any]] = field(default_factory=dict)
+    errors: list[dict[str, Any]] = field(default_factory=list)
+    deferred: list[dict[str, Any]] = field(default_factory=list)
+    pending: list[BatchPost] = field(default_factory=list)
+    request_count: int = 0
+    stop_reason: str | None = None
+    dropped_evidence: int = 0
 
 
-def _run_extraction(
-    prompts: list[dict[str, Any]],
-    sleep_seconds: float,
-    max_attempts: int,
-    backoff_seconds: float,
-    backoff_multiplier: float,
-    *,
-    client: Any,
-    actual_model: str,
-    provider: str,
-    concurrency: int = 1,
-    rate_limit_rpm: float = 5.0,
-    on_complete: Any = None,
-) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
-    """Call Instructor for each prompt with per-post retry/backoff.
+# on_resolved(post, result, error, provider_call_count) runs once per resolved post.
+OnResolved = Callable[[BatchPost, "dict[str, Any] | None", "dict[str, Any] | None", int], None]
 
-    *client* is the pre-built Instructor client, *actual_model* the
-    provider-specific model id, and *provider* ``'google'`` or ``'openai'``.
 
-    Returns ``(results_by_request_number, errors)``. Results retain their
-    request number so failures cannot compress the result stream. Errors with
-    ``fatal`` set identify an account-wide abort; unattempted posts stay pending.
-    Already-started calls may finish and their successes are checkpointed.
-    """
-    limiter = _RequestLimiter(rate_limit_rpm)
-    stopped = threading.Event()
-    start_lock = threading.Lock()
+class _BatchRun:
+    """Serial batch execution; every provider attempt counts against the budget."""
 
-    # Build the create() kwargs common to both providers.
-    def process(item: tuple[int, dict[str, Any]]) -> tuple[int, dict[str, Any] | None, dict[str, Any] | None]:
-        i, entry = item
-        post_id = entry["reddit_post_id"]
-        system = entry["system_prompt"]
-        user = entry["user_prompt"]
-        total = len(prompts)
+    def __init__(self, queue: deque[QueuedBatch], *, client: Any, actual_model: str,
+                 max_requests: int, limiter: _RequestLimiter, on_resolved: OnResolved | None) -> None:
+        self.queue = queue
+        self.client = client
+        self.actual_model = actual_model
+        self.max_requests = max_requests
+        self.limiter = limiter
+        self.on_resolved = on_resolved
+        self.outcome = RunOutcome()
+        self.omissions: dict[int, int] = {}
+        self.calls: dict[int, int] = {}
 
-        create_kwargs: dict[str, Any] = {
-            "response_model": PostExtraction,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "max_retries": 0,
-        }
-        create_kwargs["model"] = actual_model
-        # The native GenAI Instructor handler maps temperature to SDK config.
-        create_kwargs["temperature"] = 0.1
+    def run(self) -> RunOutcome:
+        while self.queue and self.outcome.stop_reason is None:
+            if self.outcome.request_count >= self.max_requests:
+                self._stop([], "request_budget")
+                break
+            self._attempt(self.queue.popleft())
+        return self.outcome
 
-        last_error: Exception | None = None
-        calls = 0
-        retry = False
-        fatal = None
-
-        for attempt in range(1, max_attempts + 1):
-            try:
-                if not limiter.wait(stopped):
-                    break
-                with start_lock:
-                    if stopped.is_set():
-                        break
-                    calls += 1
-                print(f"  [{i}/{total}] {post_id} extracting (attempt {attempt}/{max_attempts})", flush=True)
-                extraction: PostExtraction = client.create(**create_kwargs)
-                result = _extraction_result(extraction, post_id, attempt)
-                rec_count = len(extraction.recommendations)
-                print(f"  [{i}/{total}] {post_id} OK ({rec_count} recommendations)", flush=True)
-                last_error = None
-                return i, result, None
-
-            except Exception as exc:
-                last_error = exc
-                fatal = _fatal_provider_error(exc)
-                if fatal:
-                    retry = False
-                    with start_lock:
-                        stopped.set()
-                    break
-                retry, retry_after = _retryable(exc)
-                if attempt < max_attempts and retry:
-                    _wait_for_retry(limiter, stopped, exc, retry_after, attempt,
-                                    backoff_seconds, backoff_multiplier, f"[{i}/{total}]")
-                else:
-                    break
-
-        if last_error is not None:
-            error = {
-                    "reddit_post_id": post_id,
-                    "error": str(last_error),
-                    "attempt_count": calls,
-                    "model": actual_model,
-                    "retryable": retry,
-                }
-            if fatal:
-                error.update(fatal)
-            print(f"  [{i}/{total}] {post_id} FAILED: {error['error']}", flush=True)
-            return i, None, error
-        # A worker stopped before its first provider call is still pending.
-        return i, None, None
-
-    by_index: dict[int, tuple[dict[str, Any] | None, dict[str, Any] | None]] = {}
-    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as executor:
-        iterator = iter(enumerate(prompts, 1))
-        futures = {executor.submit(process, item): item for item in [next(iterator, None) for _ in range(max(1, concurrency))] if item is not None}
+    def _attempt(self, batch: QueuedBatch) -> None:
+        self.limiter.wait()
+        self.outcome.request_count += 1
+        for post in batch.posts:
+            self.calls[post.ordinal] = self.calls.get(post.ordinal, 0) + 1
+        ids = ", ".join(post.reddit_post_id for post in batch.posts)
+        print(f"  [request {self.outcome.request_count}/{self.max_requests}] "
+              f"extracting {len(batch.posts)} post(s): {ids}", flush=True)
         try:
-            while futures:
-                for future in as_completed(list(futures)):
-                    item = futures.pop(future)
-                    i, result, error = future.result()
-                    if result is not None or error is not None:
-                        by_index[i] = (result, error)
-                        if on_complete:
-                            on_complete(i, prompts[i - 1], result, error)
-                    nxt = next(iterator, None)
-                    if nxt is not None and not stopped.is_set():
-                        futures[executor.submit(process, nxt)] = nxt
-                    break
-        except BaseException:
-            for future in futures:
-                future.cancel()
-            raise
-    return ({i: x for i in sorted(by_index) if (x := by_index[i][0]) is not None},
-            [x for i in sorted(by_index) if (x := by_index[i][1]) is not None])
+            response = self.client.create(
+                response_model=BatchExtractionResponse,
+                messages=[{"role": "system", "content": BATCH_SYSTEM_INSTRUCTION},
+                          {"role": "user", "content": render_batch_prompt(batch.posts)}],
+                model=self.actual_model,
+                temperature=0.1,
+                max_retries=0,
+            )
+        except Exception as exc:
+            self._handle_failure(batch, exc)
+            return
+        self._handle_success(batch, response)
+
+    def _resolve(self, post: BatchPost, result: dict[str, Any] | None,
+                 error: dict[str, Any] | None) -> None:
+        if result is not None:
+            self.outcome.results[post.ordinal] = result
+        if error is not None:
+            self.outcome.errors.append(error)
+        if self.on_resolved:
+            self.on_resolved(post, result, error, self.calls.get(post.ordinal, 0))
+
+    def _defer(self, posts: list[BatchPost], reason: str) -> None:
+        self.outcome.deferred.extend({"reddit_post_id": post.reddit_post_id, "reason": reason}
+                                     for post in posts)
+
+    def _queued_posts(self) -> list[BatchPost]:
+        posts = [post for queued in self.queue for post in queued.posts]
+        self.queue.clear()
+        return posts
+
+    def _stop(self, posts: list[BatchPost], reason: str) -> None:
+        """Defer *posts* plus everything still queued; deferral is not failure."""
+        self._defer(posts + self._queued_posts(), reason)
+        self.outcome.stop_reason = reason
+
+    def _handle_success(self, batch: QueuedBatch, response: BatchExtractionResponse) -> None:
+        resolution = resolve_batch_response(batch.posts, response)
+        for post in batch.posts:
+            if post.ordinal in resolution.results:
+                self._resolve(post, resolution.results[post.ordinal], None)
+        self.outcome.dropped_evidence += resolution.dropped_evidence
+        retry = [post for post in resolution.omitted if self.omissions.get(post.ordinal, 0) == 0]
+        given_up = [post for post in resolution.omitted if post not in retry]
+        print(f"  [request {self.outcome.request_count}] OK: {len(resolution.results)} result(s), "
+              f"{len(resolution.omitted)} omitted, {resolution.dropped_evidence} evidence dropped",
+              flush=True)
+        for post in retry:
+            self.omissions[post.ordinal] = 1
+        if retry:
+            self.queue.appendleft(QueuedBatch(retry))
+        self._defer(given_up, "omitted_by_model")
+
+    def _handle_failure(self, batch: QueuedBatch, exc: Exception) -> None:
+        kind, delay = classify_failure(exc)
+        print(f"  [request {self.outcome.request_count}] {kind}: {exc}", flush=True)
+        if kind == "fatal":
+            self._fail_fatal(batch, exc)
+        elif kind == "daily_quota":
+            self._stop(batch.posts, "daily_quota")
+        elif kind == "rate_limited":
+            self._rate_limited(batch, delay)
+        elif kind == "unavailable":
+            # A retry here would spend daily quota during a demand spike.
+            self._stop(batch.posts, "provider_unavailable")
+        elif len(batch.posts) > 1:
+            middle = len(batch.posts) // 2
+            self.queue.appendleft(QueuedBatch(batch.posts[middle:]))
+            self.queue.appendleft(QueuedBatch(batch.posts[:middle]))
+        else:
+            post = batch.posts[0]
+            self._resolve(post, None, self._error(post, exc, retryable=kind == "structural"))
+
+    def _error(self, post: BatchPost, exc: Exception, *, retryable: bool) -> dict[str, Any]:
+        return {"reddit_post_id": post.reddit_post_id, "error": str(exc),
+                "attempt_count": self.calls.get(post.ordinal, 0), "model": self.actual_model,
+                "retryable": retryable}
+
+    def _fail_fatal(self, batch: QueuedBatch, exc: Exception) -> None:
+        fatal = _fatal_provider_error(exc) or {"fatal": True}
+        for post in batch.posts:
+            error = self._error(post, exc, retryable=False)
+            error.update(fatal)
+            self._resolve(post, None, error)
+        self.outcome.pending.extend(self._queued_posts())
+        self.outcome.stop_reason = "fatal"
+
+    def _rate_limited(self, batch: QueuedBatch, delay: float | None) -> None:
+        wait = delay or DEFAULT_RATE_RETRY_SECONDS
+        if batch.rate_retry_used or wait > MAX_RATE_RETRY_SECONDS:
+            self._stop(batch.posts, "rate_limited")
+            return
+        print(f"  rate limited; retrying batch once in {wait:.1f}s", flush=True)
+        time.sleep(wait)
+        batch.rate_retry_used = True
+        self.queue.appendleft(batch)
+
+
+def _run_batches(batches: deque[QueuedBatch], *, client: Any, actual_model: str,
+                 max_requests: int, limiter: _RequestLimiter,
+                 on_resolved: OnResolved | None = None) -> RunOutcome:
+    """Run queued batches serially until done, out of budget, or stopped by the provider."""
+    return _BatchRun(batches, client=client, actual_model=actual_model, max_requests=max_requests,
+                     limiter=limiter, on_resolved=on_resolved).run()
 
 
 def _build_prompts(
@@ -538,7 +578,7 @@ def _build_prompts(
 ) -> list[dict[str, Any]]:
     """Build prompt entries for each post."""
     prompts: list[dict[str, Any]] = []
-    for post in posts:
+    for ordinal, post in enumerate(posts):
         post_id = post.get("reddit_post_id", "?")
         comments = flatten_comments(
             comments_by_post, post_id, max_comments=max_comments
@@ -548,6 +588,7 @@ def _build_prompts(
         )
         prompts.append(
             {
+                "ordinal": ordinal,
                 "reddit_post_id": post_id,
                 "title_length": len(post.get("title", "")),
                 "comment_count": len(comments),
@@ -558,281 +599,270 @@ def _build_prompts(
     return prompts
 
 
-def main(argv: list[str] | None = None) -> None:
+_BATCH_SCHEMA = BatchExtractionResponse.model_json_schema()
+_BATCH_SCHEMA_JSON = json.dumps(_BATCH_SCHEMA, sort_keys=True)
+
+
+@dataclass(frozen=True)
+class _Identity:
+    """Output-affecting provider identity, resolvable without an API key."""
+
+    provider: str
+    instructor_mode: str
+    actual_model: str
+    api_base: str | None
+
+
+def _validated_args(argv: list[str] | None) -> argparse.Namespace:
     args = build_parser().parse_args(argv)
-    selected_provider = _detect_provider(args.model)
-    _resolve_instructor_mode(selected_provider, args.model, args.mode)
-    if selected_provider == "google" and args.api_base is not None:
+    provider = _detect_provider(args.model)
+    _resolve_instructor_mode(provider, args.model, args.mode)
+    if provider == "google" and args.api_base is not None:
         raise SystemExit("[pipeline:extract] --api-base is only supported for OpenAI-compatible models.")
+    if args.batch_size < 1 or args.batch_max_chars < 1 or args.max_requests < 0:
+        raise SystemExit("[pipeline:extract] --batch-size, --batch-max-chars must be >= 1 "
+                         "and --max-requests >= 0")
+    return args
 
-    ensure_pipeline_dirs()
 
-    # Resolve input --------------------------------------------------------
-    input_path: Path
-    if args.input is not None:
-        input_path = Path(args.input)
-    else:
-        input_path = _latest_normalized()
-
+def _load_prompts(args: argparse.Namespace) -> tuple[Path, list[dict[str, Any]]]:
+    input_path = Path(args.input) if args.input is not None else _latest_normalized()
     norm = read_json_artifact(input_path)
     posts = norm.get("posts", [])
-    comments_by_post = norm.get("comments_by_post", {})
-
     if args.limit is not None:
         posts = posts[: args.limit]
-
     print(
         f"[pipeline:extract] Processing up to {len(posts)} posts from "
         f"{input_path.name} (dry-run={args.dry_run})"
     )
+    return input_path, _build_prompts(posts, norm.get("comments_by_post", {}), args.max_comments)
 
-    # Build prompts (common to both modes) ---------------------------------
-    prompts = _build_prompts(posts, comments_by_post, args.max_comments)
 
-    if args.dry_run:
-        slug = timestamp_slug()
-        if args.out is None:
-            out = working_dir() / f"extraction-dry-run-{slug}.json"
-        else:
-            out = Path(args.out)
+def _pack(prompts: list[dict[str, Any]], args: argparse.Namespace) -> list[list[BatchPost]]:
+    return pack_batches([batch_post_from_prompt(p) for p in prompts],
+                        max_posts=args.batch_size, max_chars=args.batch_max_chars)
 
-        artifact: dict[str, Any] = {
-            "status": "extraction_dry_run",
-            "source": "pipeline.extract",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "normalized_artifact": str(input_path),
-            "model": args.model,
-            "args": {
-                "dry_run": True,
-                "limit": args.limit,
-                "max_comments": args.max_comments,
-                "max_attempts": args.max_attempts,
-                "backoff_seconds": args.backoff_seconds,
-                "backoff_multiplier": args.backoff_multiplier,
-                "allow_errors": args.allow_errors,
-                "allow_empty": args.allow_empty,
-                "mode": args.mode,
-                "api_base": args.api_base,
-                "provider": {
-                    "provider": _detect_provider(args.model),
-                    "mode": _resolve_instructor_mode(_detect_provider(args.model), args.model, args.mode),
-                    "api_base_set": args.api_base is not None,
-                },
-            },
-            "posts_preview": [
-                {
-                    "reddit_post_id": p["reddit_post_id"],
-                    "title_length": p.get("title_length", 0),
-                    "comment_count": p["comment_count"],
-                    "prompt_system_chars": len(p.get("system_prompt", "")),
-                    "prompt_user_chars": len(p.get("user_prompt", "")),
-                    "prompt_system": p.get("system_prompt", ""),
-                    "prompt_user": p.get("user_prompt", ""),
-                }
-                for p in prompts
-            ],
-            "summary": {
-                "post_count": len(prompts),
-                "total_comment_count": sum(
-                    p["comment_count"] for p in prompts
-                ),
-            },
-        }
 
-        write_json_artifact(out, artifact)
+def _run_args(args: argparse.Namespace) -> dict[str, Any]:
+    return {"limit": args.limit, "max_comments": args.max_comments,
+            "batch_size": args.batch_size, "batch_max_chars": args.batch_max_chars,
+            "max_requests": args.max_requests, "rate_limit_rpm": args.rate_limit_rpm,
+            "allow_errors": args.allow_errors, "allow_empty": args.allow_empty,
+            "mode": args.mode, "api_base": args.api_base}
 
-        print(
-            f"[pipeline:extract] Dry-run complete: {len(prompts)} posts, "
-            f"{artifact['summary']['total_comment_count']} comments"
-        )
-        print(f"[pipeline:extract] Artifact written to {out}")
-        return
 
-    # ── Real extraction path ─────────────────────────────────────────────
+def _write_dry_run(args: argparse.Namespace, input_path: Path, prompts: list[dict[str, Any]]) -> None:
+    out = Path(args.out) if args.out is not None else working_dir() / f"extraction-dry-run-{timestamp_slug()}.json"
     provider = _detect_provider(args.model)
+    batches = _pack(prompts, args)
+    artifact: dict[str, Any] = {
+        "status": "extraction_dry_run",
+        "source": "pipeline.extract",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "normalized_artifact": str(input_path),
+        "model": args.model,
+        "args": {
+            "dry_run": True,
+            **_run_args(args),
+            "provider": {
+                "provider": provider,
+                "mode": _resolve_instructor_mode(provider, args.model, args.mode),
+                "api_base_set": args.api_base is not None,
+            },
+        },
+        "posts_preview": [
+            {
+                "reddit_post_id": p["reddit_post_id"],
+                "title_length": p.get("title_length", 0),
+                "comment_count": p["comment_count"],
+                "prompt_system_chars": len(p.get("system_prompt", "")),
+                "prompt_user_chars": len(p.get("user_prompt", "")),
+                "prompt_system": p.get("system_prompt", ""),
+                "prompt_user": p.get("user_prompt", ""),
+            }
+            for p in prompts
+        ],
+        "batches": [[post.reddit_post_id for post in batch] for batch in batches],
+        "summary": {
+            "post_count": len(prompts),
+            "total_comment_count": sum(p["comment_count"] for p in prompts),
+            "batch_count": len(batches),
+        },
+    }
+    write_json_artifact(out, artifact)
+    print(
+        f"[pipeline:extract] Dry-run complete: {len(prompts)} posts in {len(batches)} batch(es), "
+        f"{artifact['summary']['total_comment_count']} comments"
+    )
+    print(f"[pipeline:extract] Artifact written to {out}")
+
+
+def _resolve_identity(args: argparse.Namespace) -> _Identity:
+    provider = _detect_provider(args.model)
+    instructor_mode = _resolve_instructor_mode(provider, args.model, args.mode)
     print(f"[pipeline:extract] Provider: {provider}")
     print(f"[pipeline:extract] Model:    {args.model}")
-    instructor_mode = _resolve_instructor_mode(provider, args.model, args.mode)
     print(f"[pipeline:extract] Mode:     {instructor_mode}")
     if args.api_base:
         print(f"[pipeline:extract] API base: {args.api_base}")
+    api_base = (args.api_base or os.environ.get("OPENAI_BASE_URL")) if provider == "openai" else None
+    return _Identity(provider=provider, instructor_mode=instructor_mode,
+                     actual_model=args.model.removeprefix(f"{provider}/"), api_base=api_base)
 
-    # Resolve output-affecting identity without constructing a client. This is
-    # important for an all-hit snapshot run: it must not require an API key.
-    actual_model = args.model.removeprefix(f"{provider}/")
-    resolved_api_base = (args.api_base or os.environ.get("OPENAI_BASE_URL")) if provider == "openai" else None
 
-    # Operational tuning must not invalidate completed work; output-affecting
-    # provider/model/mode and prompt/schema inputs must.
-    schema_content = json.dumps(PostExtraction.model_json_schema(), sort_keys=True)
-    identity = {"model": actual_model, "requested_model": args.model,
-                "mode": instructor_mode, "provider": provider,
-                "api_base": resolved_api_base,
-                "prompt_version": EXTRACTION_PROMPT_VERSION,
-                "schema_version": EXTRACTION_SCHEMA_VERSION, "schema": schema_content}
-    run_id = hashlib.sha256((input_path.read_bytes().decode("utf-8") + json.dumps(identity, sort_keys=True)).encode()).hexdigest()[:20]
-    checkpoint = checkpoints_dir() / f"{run_id}.jsonl"
+def _prompt_hash(prompt: dict[str, Any]) -> str:
+    value = {"system": BATCH_SYSTEM_INSTRUCTION, "user": prompt["user_prompt"],
+             "schema_version": EXTRACTION_SCHEMA_VERSION, "schema": _BATCH_SCHEMA_JSON}
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def _acquire_checkpoint(args: argparse.Namespace, identity: _Identity, input_path: Path) -> tuple[Path, Any]:
+    """Return the checkpoint path and an exclusively locked handle for this run identity."""
+    # Operational tuning (batch size, budget, pacing) must not invalidate
+    # completed work; output-affecting provider/model/prompt/schema inputs must.
+    run_identity = {"model": identity.actual_model, "requested_model": args.model,
+                    "mode": identity.instructor_mode, "provider": identity.provider,
+                    "api_base": identity.api_base, "prompt_version": EXTRACTION_PROMPT_VERSION,
+                    "schema_version": EXTRACTION_SCHEMA_VERSION, "schema": _BATCH_SCHEMA_JSON}
+    run_id = hashlib.sha256((input_path.read_bytes().decode("utf-8")
+                             + json.dumps(run_identity, sort_keys=True)).encode()).hexdigest()[:20]
     lock_handle = (checkpoints_dir() / f"{run_id}.lock").open("a+", encoding="utf-8")
     try:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         lock_handle.close()
         raise SystemExit(f"[pipeline:extract] checkpoint run is already locked: {run_id}")
-    checkpoint_records: dict[int, dict[str, Any]] = {}
-    def prompt_hash(prompt: dict[str, Any]) -> str:
-        value = {"system": prompt.get("system_prompt", ""), "user": prompt.get("user_prompt", ""),
-                 "schema_version": EXTRACTION_SCHEMA_VERSION, "schema": schema_content}
-        return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
-    if checkpoint.exists():
-        for line in checkpoint.read_text(encoding="utf-8").splitlines():
-            try:
-                record = json.loads(line)
-                if record.get("prompt_hash") == prompt_hash(prompts[record["ordinal"]]):
-                    # Successful records and permanent terminal errors are
-                    # resumable; retryable errors must be attempted again.
-                    error = record.get("error")
-                    if isinstance(error, dict) and (
-                        error.get("retryable") or _account_error_record(error)
-                        or _malformed_model_json(error.get("error", ""))
-                    ):
-                        continue
-                    if record.get("result") is not None or isinstance(error, dict):
-                        checkpoint_records[record["ordinal"]] = record
-            except (ValueError, KeyError, IndexError, json.JSONDecodeError):
+    return checkpoints_dir() / f"{run_id}.jsonl", lock_handle
+
+
+def _load_checkpoint_records(checkpoint: Path, prompts: list[dict[str, Any]],
+                             prompt_hash: Callable[[dict[str, Any]], str]) -> dict[int, dict[str, Any]]:
+    """Resume successes and permanent errors; retryable and account errors run again."""
+    records: dict[int, dict[str, Any]] = {}
+    if not checkpoint.exists():
+        return records
+    for line in checkpoint.read_text(encoding="utf-8").splitlines():
+        try:
+            record = json.loads(line)
+            if record.get("prompt_hash") != prompt_hash(prompts[record["ordinal"]]):
                 continue
-    # Snapshot rows are validated before they become results. Invalid and
-    # expired rows are misses, never errors.
-    snapshot_rows = read_cache_snapshot(args.cache_snapshot) if args.cache_snapshot else []
-    hit_results: dict[int, dict[str, Any]] = {}
-    pending = []
-    for ordinal, prompt in enumerate(prompts):
-        prompt["ordinal"] = ordinal
+        except (ValueError, KeyError, IndexError, TypeError):
+            continue
+        error = record.get("error")
+        if isinstance(error, dict) and (error.get("retryable") or _account_error_record(error)):
+            continue
+        if record.get("result") is not None or isinstance(error, dict):
+            records[record["ordinal"]] = record
+    return records
+
+
+def _assign_cache_keys(prompts: list[dict[str, Any]], identity: _Identity, max_comments: int) -> None:
+    # Keys stay per post, so batch composition never changes them.
+    for prompt in prompts:
         prompt["_cache_key"] = extraction_cache_key(
-            prompt_input=prompt["prompt_input"], system_prompt=prompt["system_prompt"],
-            user_prompt=prompt["user_prompt"], schema=PostExtraction.model_json_schema(),
-            provider=provider, model=actual_model, api_base=resolved_api_base,
-            instructor_mode=instructor_mode, prompt_version=EXTRACTION_PROMPT_VERSION,
+            prompt_input=prompt["prompt_input"], system_prompt=BATCH_SYSTEM_INSTRUCTION,
+            user_prompt=prompt["user_prompt"], schema=_BATCH_SCHEMA,
+            provider=identity.provider, model=identity.actual_model, api_base=identity.api_base,
+            instructor_mode=identity.instructor_mode, prompt_version=EXTRACTION_PROMPT_VERSION,
             schema_version=EXTRACTION_SCHEMA_VERSION,
-            settings={"temperature": 0.1, "max_comments": args.max_comments})
-        hit = lookup_cache(snapshot_rows, prompt["_cache_key"],
-                           expected_post_id=prompt["reddit_post_id"])
+            settings={"temperature": 0.1, "max_comments": max_comments})
+
+
+def _partition(prompts: list[dict[str, Any]], snapshot_rows: list[dict[str, Any]],
+               checkpoint_records: dict[int, dict[str, Any]]
+               ) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
+    """Split prompts into validated cache hits and posts still needing extraction."""
+    hit_results: dict[int, dict[str, Any]] = {}
+    pending: list[dict[str, Any]] = []
+    for prompt in prompts:
+        ordinal = prompt["ordinal"]
+        # Invalid and expired snapshot rows are misses, never errors.
+        hit = lookup_cache(snapshot_rows, prompt["_cache_key"], expected_post_id=prompt["reddit_post_id"])
         if hit is not None:
             hit_results[ordinal] = hit
-            continue
-        if ordinal not in checkpoint_records:
+        elif ordinal not in checkpoint_records:
             pending.append(prompt)
-    checkpoint.parent.mkdir(parents=True, exist_ok=True)
-    checkpoint_handle = checkpoint.open("a", encoding="utf-8")
-    def save_checkpoint(i: int, prompt: dict[str, Any], result: Any, error: Any) -> None:
-        ordinal = prompt["ordinal"]
-        record = {"ordinal": ordinal, "reddit_post_id": prompt["reddit_post_id"],
-                  "prompt_hash": prompt_hash(prompt), "schema_version": EXTRACTION_SCHEMA_VERSION,
-                  "result": result, "error": error, "duration_seconds": 0, "provider_call_count": (error or {}).get("attempt_count", 1) if error else result.get("attempt_count", 1)}
-        checkpoint_handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-        checkpoint_handle.flush(); os.fsync(checkpoint_handle.fileno())
+    return hit_results, pending
 
-    print(f"[pipeline:extract] Cache: {len(hit_results)} hit(s), {len(pending)} miss(es)")
 
-    client = None
-    provider_audit: dict[str, Any] = {"provider": provider, "mode": instructor_mode,
-                                      "api_base": resolved_api_base,
-                                      "api_base_set": resolved_api_base is not None}
-    if pending:
-        client, actual_model, provider_audit = _build_extraction_client(
-            provider=provider, model=args.model, mode=args.mode, api_base=args.api_base)
-    print(f"[pipeline:extract] Extracting …")
+def _checkpoint_writer(handle: Any, prompts: list[dict[str, Any]]) -> OnResolved:
+    """Persist resolved posts only; deferred and pending posts are never written."""
+    def save(post: BatchPost, result: dict[str, Any] | None, error: dict[str, Any] | None,
+             calls: int) -> None:
+        record = {"ordinal": post.ordinal, "reddit_post_id": post.reddit_post_id,
+                  "prompt_hash": _prompt_hash(prompts[post.ordinal]),
+                  "schema_version": EXTRACTION_SCHEMA_VERSION, "result": result, "error": error,
+                  "duration_seconds": 0, "provider_call_count": calls}
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    return save
 
-    try:
-        results, errors = _run_extraction(
-            pending, sleep_seconds=args.sleep_seconds, max_attempts=args.max_attempts,
-            backoff_seconds=args.backoff_seconds, backoff_multiplier=args.backoff_multiplier,
-            client=client, actual_model=actual_model, provider=provider,
-            concurrency=args.concurrency, rate_limit_rpm=args.rate_limit_rpm,
-            on_complete=save_checkpoint,
-        )
-    finally:
-        checkpoint_handle.close()
-        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-        lock_handle.close()
+
+def _merge_results(prompts: list[dict[str, Any]], hit_results: dict[int, dict[str, Any]],
+                   checkpoint_records: dict[int, dict[str, Any]], outcome: RunOutcome
+                   ) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
+    """Combine cache hits, resumed checkpoints, and this run, keyed by prompt ordinal."""
     all_results: dict[int, dict[str, Any]] = dict(hit_results)
     for ordinal, record in checkpoint_records.items():
-        checkpoint_result = record.get("result")
-        if (checkpoint_result is not None and
-                checkpoint_result.get("reddit_post_id") == prompts[ordinal]["reddit_post_id"]):
-            all_results[ordinal] = checkpoint_result
-    # Results are keyed by prompt ordinal, so a failed middle request can never
-    # shift a later response onto the wrong post.
-    for ordinal, result in results.items():
-        all_results[pending[ordinal - 1]["ordinal"]] = result
-    all_errors = [r["error"] for ordinal, r in checkpoint_records.items()
-                  if ordinal not in all_results and r.get("error") is not None] + errors
-    results = [all_results[i] for i in range(len(prompts)) if i in all_results]
-    errors = all_errors
+        result = record.get("result")
+        if result is not None and result.get("reddit_post_id") == prompts[ordinal]["reddit_post_id"]:
+            all_results[ordinal] = result
+    all_results.update(outcome.results)
+    errors = [r["error"] for ordinal, r in checkpoint_records.items()
+              if ordinal not in all_results and r.get("error") is not None] + outcome.errors
+    return all_results, errors
 
+
+def _build_cache_records(prompts: list[dict[str, Any]], all_results: dict[int, dict[str, Any]],
+                         hit_results: dict[int, dict[str, Any]], identity: _Identity,
+                         input_path: Path) -> list[dict[str, Any]]:
+    source_checksum = hashlib.sha256(input_path.read_bytes()).hexdigest()
     cache_records: list[dict[str, Any]] = []
-    for ordinal, result in all_results.items():
+    for ordinal, result in sorted(all_results.items()):
         if ordinal in hit_results:
             continue
         valid = PostExtraction.model_validate(result).model_dump()
-        outcome = "extracted"
         prompt_record = prompts[ordinal]
         content_hash = hashlib.sha256(canonical_json(prompt_record["prompt_input"]).encode()).hexdigest()
-        rendered_hash = hashlib.sha256(canonical_json({"system": prompt_record["system_prompt"], "user": prompt_record["user_prompt"]}).encode()).hexdigest()
+        rendered_hash = hashlib.sha256(canonical_json(
+            {"system": BATCH_SYSTEM_INSTRUCTION, "user": prompt_record["user_prompt"]}).encode()).hexdigest()
         cache_records.append(make_cache_record(
             key=prompt_record["_cache_key"], post_id=prompt_record["reddit_post_id"],
-            payload=valid, outcome=outcome, content_hash=content_hash,
+            payload=valid, outcome="extracted", content_hash=content_hash,
             prompt_hash=rendered_hash, prompt_version=EXTRACTION_PROMPT_VERSION,
-            provider=provider, model=actual_model, api_base=resolved_api_base,
-            instructor_mode=instructor_mode,
-            source_normalized_checksum=hashlib.sha256(input_path.read_bytes()).hexdigest()))
+            provider=identity.provider, model=identity.actual_model, api_base=identity.api_base,
+            instructor_mode=identity.instructor_mode, source_normalized_checksum=source_checksum))
+    return cache_records
 
-    # Count total recommendations across successes
-    recommendation_count = sum(
-        len(r.get("recommendations", [])) for r in results
-    )
 
-    slug = timestamp_slug()
-    if args.out is None:
-        out = working_dir() / f"extraction-{slug}.json"
-    else:
-        out = Path(args.out)
-
-    # ── Failed-extraction safeguard ──────────────────────────────────
-    success_count = len(results)
-    error_count = len(errors)
-    fatal_error = next((error for error in errors if error.get("fatal")), None)
-    is_failed = error_count > 0
-
-    if fatal_error or (is_failed and not (args.allow_errors or args.allow_empty)):
-        artifact_status = "failed"
-    else:
-        artifact_status = "extracted"
-
-    extraction_artifact: dict[str, Any] = {
-        "status": artifact_status,
+def _build_artifact(args: argparse.Namespace, input_path: Path, prompts: list[dict[str, Any]],
+                    provider_audit: dict[str, Any], all_results: dict[int, dict[str, Any]],
+                    errors: list[dict[str, Any]], outcome: RunOutcome, hit_count: int,
+                    cache_records: list[dict[str, Any]]) -> dict[str, Any]:
+    results = [all_results[i] for i in range(len(prompts)) if i in all_results]
+    success_count, error_count, deferred_count = len(results), len(errors), len(outcome.deferred)
+    fatal = any(error.get("fatal") for error in errors)
+    failed = fatal or (error_count > 0 and not (args.allow_errors or args.allow_empty))
+    return {
+        "status": "failed" if failed else "extracted",
         "source": "pipeline.extract",
         "extracted_at": datetime.now(timezone.utc).isoformat(),
         "normalized_artifact": str(input_path),
         "model": args.model,
         "args": {
             "dry_run": False,
-            "limit": args.limit,
-            "max_comments": args.max_comments,
-            "sleep_seconds": args.sleep_seconds,
-            "concurrency": args.concurrency,
-            "rate_limit_rpm": args.rate_limit_rpm,
-            "max_attempts": args.max_attempts,
-            "backoff_seconds": args.backoff_seconds,
-            "backoff_multiplier": args.backoff_multiplier,
-            "allow_empty": args.allow_empty,
-            "mode": args.mode,
-            "api_base": args.api_base,
+            **_run_args(args),
             "provider": provider_audit,
             "prompt_version": EXTRACTION_PROMPT_VERSION,
             "schema_version": EXTRACTION_SCHEMA_VERSION,
         },
         "results": results,
         "errors": errors,
+        # Deferred posts were not attempted to completion (quota, overload,
+        # budget); they are not failures and stay eligible for a later run.
+        "deferred": outcome.deferred,
+        "stop_reason": outcome.stop_reason,
         # Top-level contract for the persistence lane: observations are
         # complete records, while summary contains only aggregate counters.
         "cache_records": cache_records,
@@ -840,34 +870,93 @@ def main(argv: list[str] | None = None) -> None:
             "post_count": len(prompts),
             "success_count": success_count,
             "error_count": error_count,
+            "deferred_count": deferred_count,
             "target_count": len(prompts),
             "completed_count": success_count + error_count,
-            "pending_count": max(0, len(prompts) - success_count - error_count),
-            "recommendation_count": recommendation_count,
-            "cache_hits": len(hit_results),
-            "cache_misses": len(prompts) - len(hit_results),
+            "pending_count": max(0, len(prompts) - success_count - error_count - deferred_count),
+            "request_count": outcome.request_count,
+            "dropped_evidence_count": outcome.dropped_evidence,
+            "recommendation_count": sum(len(r.get("recommendations", [])) for r in results),
+            "cache_hits": hit_count,
+            "cache_misses": len(prompts) - hit_count,
             "cache_writes": len(cache_records),
         },
     }
 
-    write_json_artifact(out, extraction_artifact)
 
-    if artifact_status == "failed":
+def _finish(artifact: dict[str, Any], out: Path) -> None:
+    summary = artifact["summary"]
+    if artifact["status"] == "failed":
+        fatal_error = next((error for error in artifact["errors"] if error.get("fatal")), None)
         if fatal_error:
             print(f"[pipeline:extract] FAILED: {fatal_error['error']}")
         else:
             print(
-                f"[pipeline:extract] FAILED: {success_count} successes, {error_count} errors. "
-                f"Use --allow-errors to override."
+                f"[pipeline:extract] FAILED: {summary['success_count']} successes, "
+                f"{summary['error_count']} errors. Use --allow-errors to override."
             )
         print(f"[pipeline:extract] Artifact written to {out}")
         sys.exit(1)
-
+    deferred = summary["deferred_count"]
     print(
-        f"[pipeline:extract] Done: {success_count} success, "
-        f"{error_count} errors, {recommendation_count} recommendations"
+        f"[pipeline:extract] Done: {summary['success_count']} success, {summary['error_count']} errors, "
+        f"{deferred} deferred, {summary['request_count']} provider request(s), "
+        f"{summary['recommendation_count']} recommendations"
     )
+    if artifact["stop_reason"]:
+        print(f"[pipeline:extract] Stopped early: {artifact['stop_reason']}; "
+              f"{deferred} post(s) stay eligible for a later run")
     print(f"[pipeline:extract] Artifact written to {out}")
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = _validated_args(argv)
+    ensure_pipeline_dirs()
+    input_path, prompts = _load_prompts(args)
+    if args.dry_run:
+        _write_dry_run(args, input_path, prompts)
+        return
+
+    # Resolve identity without constructing a client: an all-hit snapshot run
+    # and a --max-requests 0 probe must not require an API key.
+    identity = _resolve_identity(args)
+    _assign_cache_keys(prompts, identity, args.max_comments)
+    checkpoint, lock_handle = _acquire_checkpoint(args, identity, input_path)
+    try:
+        checkpoint_records = _load_checkpoint_records(checkpoint, prompts, _prompt_hash)
+        snapshot_rows = read_cache_snapshot(args.cache_snapshot) if args.cache_snapshot else []
+        hit_results, pending = _partition(prompts, snapshot_rows, checkpoint_records)
+        print(f"[pipeline:extract] Cache: {len(hit_results)} hit(s), {len(pending)} miss(es)")
+
+        client = None
+        actual_model = identity.actual_model
+        provider_audit: dict[str, Any] = {"provider": identity.provider, "mode": identity.instructor_mode,
+                                          "api_base": identity.api_base,
+                                          "api_base_set": identity.api_base is not None}
+        if pending and args.max_requests > 0:
+            client, actual_model, provider_audit = _build_extraction_client(
+                provider=identity.provider, model=args.model, mode=args.mode, api_base=args.api_base)
+        batches = _pack(pending, args)
+        print(f"[pipeline:extract] Extracting {len(pending)} post(s) in {len(batches)} batch(es), "
+              f"at most {args.max_requests} provider request(s) …")
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        with checkpoint.open("a", encoding="utf-8") as checkpoint_handle:
+            outcome = _run_batches(
+                deque(QueuedBatch(batch) for batch in batches), client=client,
+                actual_model=actual_model, max_requests=args.max_requests,
+                limiter=_RequestLimiter(args.rate_limit_rpm),
+                on_resolved=_checkpoint_writer(checkpoint_handle, prompts))
+    finally:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+        lock_handle.close()
+
+    all_results, errors = _merge_results(prompts, hit_results, checkpoint_records, outcome)
+    cache_records = _build_cache_records(prompts, all_results, hit_results, identity, input_path)
+    artifact = _build_artifact(args, input_path, prompts, provider_audit, all_results, errors,
+                               outcome, len(hit_results), cache_records)
+    out = Path(args.out) if args.out is not None else working_dir() / f"extraction-{timestamp_slug()}.json"
+    write_json_artifact(out, artifact)
+    _finish(artifact, out)
 
 
 if __name__ == "__main__":
