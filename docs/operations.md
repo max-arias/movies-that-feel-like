@@ -209,8 +209,8 @@ displayability and counts from them.
 
 ## Configuration
 
-Configure these GitHub Actions values in the repository's **production
-environment** settings:
+Configure these GitHub Actions secrets in the repository settings or its
+**production environment** settings:
 
 - Secret `CLOUDFLARE_API_TOKEN`. It is used both to apply migrations and export
   the corpus and to upload the Worker, so it needs **Account → D1 → Edit** and
@@ -218,7 +218,8 @@ environment** settings:
   also needs Workers KV Edit, because the `SESSION` namespace is uploaded with
   the script. Least privilege means not granting anything the two workflows do
   not use.
-- Variable `CLOUDFLARE_ACCOUNT_ID`.
+- Secret `CLOUDFLARE_ACCOUNT_ID`. Both workflows read it from `secrets`, not
+  `vars`, matching the existing repository configuration.
 - Secrets `GEMINI_API_KEY`, `TMDB_ACCESS_TOKEN`, `TWITCH_CLIENT_ID`, and
   `TWITCH_CLIENT_SECRET` (Twitch is required because game enrichment is active).
 
@@ -226,6 +227,10 @@ The workflows use Node 22, Python 3.11, Bun with `bun install --frozen-lockfile`
 `uv sync --locked`, npm pipeline commands, and `apps/astro/wrangler.jsonc` for
 the database identity. Secrets are supplied only as environment variables; do
 not print them or put them in artifacts.
+
+Both workflows explicitly use the Bash shell, so GitHub Actions enables
+`-e -o pipefail`. A failed Wrangler command stops its step even when its JSON
+output is piped through `jq`, `tee`, or `sort`.
 
 Extraction runs on Google Gemini through the native Google GenAI SDK and
 Instructor. Set `GEMINI_API_KEY` as a repository secret or in the `production`
