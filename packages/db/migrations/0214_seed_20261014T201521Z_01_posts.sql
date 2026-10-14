@@ -1,0 +1,35 @@
+-- 0214_seed_20261014T201521Z_01_posts.sql: data seed from pipeline:load run.
+-- Generated:  2026-10-14T20:15:51.393569+00:00
+-- Run started: 2026-10-14T20:15:21.762178+00:00
+-- Source: data/working/load manifest from this run.
+--
+-- Idempotent: every row is an upsert keyed by the table's
+-- natural unique constraint, and every child resolves its
+-- parents through that same key.  Row ids are never copied —
+-- the destination allocates them — so re-applying refreshes the
+-- row it belongs to instead of colliding with an id D1 already
+-- owns.  Wrangler's migration tracking normally prevents
+-- re-apply; the upsert is defense in depth for partial /
+-- interrupted re-runs, and a conflict target the destination
+-- cannot satisfy aborts the apply instead of dropping rows.
+--
+-- Chunk: 01_posts (1/5)
+-- Tables: imported_vibe_posts.
+-- Pipeline-state tables (processing_runs, pipeline_artifacts)
+-- are intentionally excluded — they're per-run bookkeeping.
+
+INSERT INTO "imported_vibe_posts" ("reddit_post_id", "title", "cleaned_title", "selftext", "author", "created_utc", "permalink", "url", "subreddit", "vibe_summary", "status", "error_info", "processing_run_id", "created_at", "updated_at")
+VALUES ('1x4zteo', 'best disturbing/mindfuck movie?', 'best disturbing/mindfuck movie?', '', 'momosaftersex', 1791905547, '/r/MoviesThatFeelLike/comments/1x4zteo/best_disturbingmindfuck_movie/', '/r/MovieSuggestions/comments/1x4zt0z/best_disturbingmindfuck_movie/', 'MoviesThatFeelLike', 'Extreme, visceral psychological horror and deeply disturbing shock cinema.', 'skipped', 'no usable images', NULL, '2026-10-14 20:15:51', '2026-10-14 20:15:51')
+ON CONFLICT(reddit_post_id) DO UPDATE SET "title"=excluded."title", "cleaned_title"=excluded."cleaned_title", "selftext"=excluded."selftext", "author"=excluded."author", "created_utc"=excluded."created_utc", "permalink"=excluded."permalink", "url"=excluded."url", "subreddit"=excluded."subreddit", "vibe_summary"=excluded."vibe_summary", "status"=excluded."status", "error_info"=excluded."error_info", "processing_run_id"=excluded."processing_run_id", "updated_at"=excluded."updated_at";
+INSERT INTO "imported_vibe_posts" ("reddit_post_id", "title", "cleaned_title", "selftext", "author", "created_utc", "permalink", "url", "subreddit", "vibe_summary", "status", "error_info", "processing_run_id", "created_at", "updated_at")
+VALUES ('1x52pl8', '70s high school, history class, and cannabis', '70s high school, history class, and cannabis', '', 'Basic_Frosting2328', 1791911959, '/r/MoviesThatFeelLike/comments/1x52pl8/70s_high_school_history_class_and_cannabis/', 'https://i.redd.it/l8t6j7z5q9vh1.jpeg', 'MoviesThatFeelLike', 'Nostalgic, haze-filled 1970s teenage slacker and coming-of-age atmosphere.', 'publishable', NULL, NULL, '2026-10-14 20:15:51', '2026-10-14 20:15:51')
+ON CONFLICT(reddit_post_id) DO UPDATE SET "title"=excluded."title", "cleaned_title"=excluded."cleaned_title", "selftext"=excluded."selftext", "author"=excluded."author", "created_utc"=excluded."created_utc", "permalink"=excluded."permalink", "url"=excluded."url", "subreddit"=excluded."subreddit", "vibe_summary"=excluded."vibe_summary", "status"=excluded."status", "error_info"=excluded."error_info", "processing_run_id"=excluded."processing_run_id", "updated_at"=excluded."updated_at";
+INSERT INTO "imported_vibe_posts" ("reddit_post_id", "title", "cleaned_title", "selftext", "author", "created_utc", "permalink", "url", "subreddit", "vibe_summary", "status", "error_info", "processing_run_id", "created_at", "updated_at")
+VALUES ('1x54q11', 'My favorite comfort movies that works as free therapy', 'My favorite comfort movies that works as free therapy', '', 'Ok-Fan-4000', 1791916334, '/r/MoviesThatFeelLike/comments/1x54q11/my_favorite_comfort_movies_that_works_as_free/', 'https://i.redd.it/itg19ic6x1vh1.jpeg', 'MoviesThatFeelLike', 'Gentle, cathartic, and emotionally restorative comfort cinema.', 'publishable', NULL, NULL, '2026-10-14 20:15:51', '2026-10-14 20:15:51')
+ON CONFLICT(reddit_post_id) DO UPDATE SET "title"=excluded."title", "cleaned_title"=excluded."cleaned_title", "selftext"=excluded."selftext", "author"=excluded."author", "created_utc"=excluded."created_utc", "permalink"=excluded."permalink", "url"=excluded."url", "subreddit"=excluded."subreddit", "vibe_summary"=excluded."vibe_summary", "status"=excluded."status", "error_info"=excluded."error_info", "processing_run_id"=excluded."processing_run_id", "updated_at"=excluded."updated_at";
+INSERT INTO "imported_vibe_posts" ("reddit_post_id", "title", "cleaned_title", "selftext", "author", "created_utc", "permalink", "url", "subreddit", "vibe_summary", "status", "error_info", "processing_run_id", "created_at", "updated_at")
+VALUES ('1x5767h', 'Movies & TV show like Eagle Eye 2008', 'Movies & TV show like Eagle Eye 2008', '', 'CommonWar7535', 1791921818, '/r/MoviesThatFeelLike/comments/1x5767h/movies_tv_show_like_eagle_eye_2008/', 'https://i.redd.it/reekrvckjavh1.jpeg', 'MoviesThatFeelLike', 'High-octane technological paranoia and intense surveillance-state suspense.', 'publishable', NULL, NULL, '2026-10-14 20:15:51', '2026-10-14 20:15:51')
+ON CONFLICT(reddit_post_id) DO UPDATE SET "title"=excluded."title", "cleaned_title"=excluded."cleaned_title", "selftext"=excluded."selftext", "author"=excluded."author", "created_utc"=excluded."created_utc", "permalink"=excluded."permalink", "url"=excluded."url", "subreddit"=excluded."subreddit", "vibe_summary"=excluded."vibe_summary", "status"=excluded."status", "error_info"=excluded."error_info", "processing_run_id"=excluded."processing_run_id", "updated_at"=excluded."updated_at";
+INSERT INTO "imported_vibe_posts" ("reddit_post_id", "title", "cleaned_title", "selftext", "author", "created_utc", "permalink", "url", "subreddit", "vibe_summary", "status", "error_info", "processing_run_id", "created_at", "updated_at")
+VALUES ('1x57y66', 'To the people who’ve read it I want a movie in which the protagonist goes through very similar experience to Jude in the book', 'To the people who’ve read it I want a movie in which the protagonist goes through very similar experience to Jude in the book', '', 'OBIWAN22334', 1791923623, '/r/MoviesThatFeelLike/comments/1x57y66/to_the_people_whove_read_it_i_want_a_movie_in/', 'https://i.redd.it/oboz7cfxoavh1.jpeg', 'MoviesThatFeelLike', 'Deeply melancholic and emotionally traumatic character-driven drama.', 'skipped', 'no enriched recommendation matches', NULL, '2026-10-14 20:15:51', '2026-10-14 20:15:51')
+ON CONFLICT(reddit_post_id) DO UPDATE SET "title"=excluded."title", "cleaned_title"=excluded."cleaned_title", "selftext"=excluded."selftext", "author"=excluded."author", "created_utc"=excluded."created_utc", "permalink"=excluded."permalink", "url"=excluded."url", "subreddit"=excluded."subreddit", "vibe_summary"=excluded."vibe_summary", "status"=excluded."status", "error_info"=excluded."error_info", "processing_run_id"=excluded."processing_run_id", "updated_at"=excluded."updated_at";
