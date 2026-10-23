@@ -1,0 +1,21 @@
+-- 0311_seed_20261023T231553Z_03_evidence.sql: data seed from pipeline:load run.
+-- Generated:  2026-10-23T23:16:28.392489+00:00
+-- Run started: 2026-10-23T23:15:53.157852+00:00
+-- Source: data/working/load manifest from this run.
+--
+-- Idempotent: every row is an upsert keyed by the table's
+-- natural unique constraint, and every child resolves its
+-- parents through that same key.  Row ids are never copied —
+-- the destination allocates them — so re-applying refreshes the
+-- row it belongs to instead of colliding with an id D1 already
+-- owns.  Wrangler's migration tracking normally prevents
+-- re-apply; the upsert is defense in depth for partial /
+-- interrupted re-runs, and a conflict target the destination
+-- cannot satisfy aborts the apply instead of dropping rows.
+--
+-- Chunk: 03_evidence (3/5)
+-- Tables: recommendation_evidence.
+-- Pipeline-state tables (processing_runs, pipeline_artifacts)
+-- are intentionally excluded — they're per-run bookkeeping.
+
+
