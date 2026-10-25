@@ -1,0 +1,21 @@
+-- 0325_seed_20261025T045744Z_02_recommendations.sql: data seed from pipeline:load run.
+-- Generated:  2026-10-25T04:58:10.244407+00:00
+-- Run started: 2026-10-25T04:57:44.646201+00:00
+-- Source: data/working/load manifest from this run.
+--
+-- Idempotent: every row is an upsert keyed by the table's
+-- natural unique constraint, and every child resolves its
+-- parents through that same key.  Row ids are never copied —
+-- the destination allocates them — so re-applying refreshes the
+-- row it belongs to instead of colliding with an id D1 already
+-- owns.  Wrangler's migration tracking normally prevents
+-- re-apply; the upsert is defense in depth for partial /
+-- interrupted re-runs, and a conflict target the destination
+-- cannot satisfy aborts the apply instead of dropping rows.
+--
+-- Chunk: 02_recommendations (2/5)
+-- Tables: recommendations.
+-- Pipeline-state tables (processing_runs, pipeline_artifacts)
+-- are intentionally excluded — they're per-run bookkeeping.
+
+
