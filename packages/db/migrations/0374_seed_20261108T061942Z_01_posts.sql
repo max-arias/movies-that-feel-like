@@ -1,0 +1,37 @@
+-- 0374_seed_20261108T061942Z_01_posts.sql: data seed from pipeline:load run.
+-- Generated:  2026-11-08T06:20:12.448730+00:00
+-- Run started: 2026-11-08T06:19:42.109080+00:00
+-- Source: data/working/load manifest from this run.
+--
+-- Idempotent: every row is an upsert keyed by the table's
+-- natural unique constraint, and every child resolves its
+-- parents through that same key.  Row ids are never copied —
+-- the destination allocates them — so re-applying refreshes the
+-- row it belongs to instead of colliding with an id D1 already
+-- owns.  Wrangler's migration tracking normally prevents
+-- re-apply; the upsert is defense in depth for partial /
+-- interrupted re-runs, and a conflict target the destination
+-- cannot satisfy aborts the apply instead of dropping rows.
+--
+-- Chunk: 01_posts (1/5)
+-- Tables: imported_vibe_posts.
+-- Pipeline-state tables (processing_runs, pipeline_artifacts)
+-- are intentionally excluded — they're per-run bookkeeping.
+
+INSERT INTO "imported_vibe_posts" ("reddit_post_id", "title", "cleaned_title", "selftext", "author", "created_utc", "permalink", "url", "subreddit", "vibe_summary", "status", "error_info", "processing_run_id", "created_at", "updated_at")
+VALUES ('1xqiut9', 'Need a movie or a show that feels like this', 'Need a movie or a show that feels like this', 'I saw this video recently and I need to watch something like this it doesn’t matter what it is I just need something with this vibe thanks', 'Alternative_Tale7867', 1794090832, '/r/MoviesThatFeelLike/comments/1xqiut9/need_a_movie_or_a_show_that_feels_like_this/', 'https://www.instagram.com/reel/Dcf87eDsz5Q/?srtk=ejZzbHk4aHlndGVs', 'MoviesThatFeelLike', 'An enigmatic and intriguing cinematic aesthetic evoking a specific elusive visual mood.', 'skipped', 'no usable images; no enriched recommendation matches', NULL, '2026-11-08 06:20:12', '2026-11-08 06:20:12')
+ON CONFLICT(reddit_post_id) DO UPDATE SET "title"=excluded."title", "cleaned_title"=excluded."cleaned_title", "selftext"=excluded."selftext", "author"=excluded."author", "created_utc"=excluded."created_utc", "permalink"=excluded."permalink", "url"=excluded."url", "subreddit"=excluded."subreddit", "vibe_summary"=excluded."vibe_summary", "status"=excluded."status", "error_info"=excluded."error_info", "processing_run_id"=excluded."processing_run_id", "updated_at"=excluded."updated_at";
+INSERT INTO "imported_vibe_posts" ("reddit_post_id", "title", "cleaned_title", "selftext", "author", "created_utc", "permalink", "url", "subreddit", "vibe_summary", "status", "error_info", "processing_run_id", "created_at", "updated_at")
+VALUES ('1xqj0u6', 'Need a movie or web series show or anything that feels like this', 'Need a movie or web series show or anything that feels like this', 'people kept men adult swim and I do understand that it has that vibe but I’m not aware of something that’s similar 
+
+[Link to the video ](https://www.instagram.com/reel/Dcf87eDsz5Q)', 'Alternative_Tale7867', 1794091308, '/r/MoviesThatFeelLike/comments/1xqj0u6/need_a_movie_or_web_series_show_or_anything_that/', 'https://www.reddit.com/r/MoviesThatFeelLike/comments/1xqj0u6/need_a_movie_or_web_series_show_or_anything_that/', 'MoviesThatFeelLike', 'Surreal, offbeat Adult Swim-style energy marked by absurd, late-night experimental television humor.', 'skipped', 'no usable images; no enriched recommendation matches', NULL, '2026-11-08 06:20:12', '2026-11-08 06:20:12')
+ON CONFLICT(reddit_post_id) DO UPDATE SET "title"=excluded."title", "cleaned_title"=excluded."cleaned_title", "selftext"=excluded."selftext", "author"=excluded."author", "created_utc"=excluded."created_utc", "permalink"=excluded."permalink", "url"=excluded."url", "subreddit"=excluded."subreddit", "vibe_summary"=excluded."vibe_summary", "status"=excluded."status", "error_info"=excluded."error_info", "processing_run_id"=excluded."processing_run_id", "updated_at"=excluded."updated_at";
+INSERT INTO "imported_vibe_posts" ("reddit_post_id", "title", "cleaned_title", "selftext", "author", "created_utc", "permalink", "url", "subreddit", "vibe_summary", "status", "error_info", "processing_run_id", "created_at", "updated_at")
+VALUES ('1xqjlkj', 'Movies that feel like this', 'Movies that feel like this', '', 'mr-myrel', 1794092969, '/r/MoviesThatFeelLike/comments/1xqjlkj/movies_that_feel_like_this/', 'https://i.redd.it/q8e8qzdiv90i1.jpeg', 'MoviesThatFeelLike', 'Nostalgic, spooky suburban Halloween atmosphere blending cozy autumn vibes with eerie supernatural threats.', 'publishable', NULL, NULL, '2026-11-08 06:20:12', '2026-11-08 06:20:12')
+ON CONFLICT(reddit_post_id) DO UPDATE SET "title"=excluded."title", "cleaned_title"=excluded."cleaned_title", "selftext"=excluded."selftext", "author"=excluded."author", "created_utc"=excluded."created_utc", "permalink"=excluded."permalink", "url"=excluded."url", "subreddit"=excluded."subreddit", "vibe_summary"=excluded."vibe_summary", "status"=excluded."status", "error_info"=excluded."error_info", "processing_run_id"=excluded."processing_run_id", "updated_at"=excluded."updated_at";
+INSERT INTO "imported_vibe_posts" ("reddit_post_id", "title", "cleaned_title", "selftext", "author", "created_utc", "permalink", "url", "subreddit", "vibe_summary", "status", "error_info", "processing_run_id", "created_at", "updated_at")
+VALUES ('1xqk0za', 'Looking for Japanese music/fashion films', 'Looking for Japanese music/fashion films', '', 'lilpeach15', 1794094193, '/r/MoviesThatFeelLike/comments/1xqk0za/looking_for_japanese_musicfashion_films/', 'https://i.redd.it/qq6jo383z90i1.jpeg', 'MoviesThatFeelLike', 'A stylish search for aesthetically driven Japanese cinema exploring music subcultures and high fashion.', 'skipped', 'no enriched recommendation matches', NULL, '2026-11-08 06:20:12', '2026-11-08 06:20:12')
+ON CONFLICT(reddit_post_id) DO UPDATE SET "title"=excluded."title", "cleaned_title"=excluded."cleaned_title", "selftext"=excluded."selftext", "author"=excluded."author", "created_utc"=excluded."created_utc", "permalink"=excluded."permalink", "url"=excluded."url", "subreddit"=excluded."subreddit", "vibe_summary"=excluded."vibe_summary", "status"=excluded."status", "error_info"=excluded."error_info", "processing_run_id"=excluded."processing_run_id", "updated_at"=excluded."updated_at";
+INSERT INTO "imported_vibe_posts" ("reddit_post_id", "title", "cleaned_title", "selftext", "author", "created_utc", "permalink", "url", "subreddit", "vibe_summary", "status", "error_info", "processing_run_id", "created_at", "updated_at")
+VALUES ('1xqkdqd', 'Feminine, glamour vintage movies', 'Feminine, glamour vintage movies', 'Can be both live action and animation, bonus point if it’s a foreign movie', 'RickGrimesTheOGz', 1794095238, '/r/MoviesThatFeelLike/comments/1xqkdqd/feminine_glamour_vintage_movies/', 'https://www.reddit.com/gallery/1xqkdqd', 'MoviesThatFeelLike', 'Lavish, feminine mid-century glamour defined by exquisite couture and theatrical classic romance.', 'publishable', NULL, NULL, '2026-11-08 06:20:12', '2026-11-08 06:20:12')
+ON CONFLICT(reddit_post_id) DO UPDATE SET "title"=excluded."title", "cleaned_title"=excluded."cleaned_title", "selftext"=excluded."selftext", "author"=excluded."author", "created_utc"=excluded."created_utc", "permalink"=excluded."permalink", "url"=excluded."url", "subreddit"=excluded."subreddit", "vibe_summary"=excluded."vibe_summary", "status"=excluded."status", "error_info"=excluded."error_info", "processing_run_id"=excluded."processing_run_id", "updated_at"=excluded."updated_at";
