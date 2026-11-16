@@ -3,12 +3,15 @@ pipeline.extract — LLM extraction of recommendations and vibe summaries
 from normalized posts and their comment trees.
 
 Dry-run mode (``--dry-run``) builds prompts without calling any LLM.
-Real mode defaults to **Gemini** — model ``google/gemini-3.8-flash`` with
-``GEMINI_API_KEY`` and the native Google GenAI SDK.
+Real mode defaults to **OpenCode Go** — model ``deepseek-v4.1-flash`` on the
+Go OpenAI-compatible endpoint with ``OPENCODE_GO_API_KEY``. Go requires a
+client user agent and an ``x-opencode-session`` header (``opencode_go_headers``).
 
-An explicit ``openai/…`` or bare model id selects **OpenAI-compatible**
-extraction with ``OPENAI_API_KEY`` and optional ``--api-base`` or
-``OPENAI_BASE_URL``. There is no automatic provider fallback.
+Any ``openai/…`` or bare model id is OpenAI-compatible: with an explicit
+``--api-base`` / ``OPENAI_BASE_URL`` it uses ``OPENAI_API_KEY``; otherwise it
+uses the Go endpoint when ``OPENCODE_GO_API_KEY`` is set. ``google/…`` selects
+Gemini with ``GEMINI_API_KEY`` and the native Google GenAI SDK. There is no
+automatic provider fallback.
 """
 
 from __future__ import annotations
@@ -38,7 +41,14 @@ from pipeline.models import BatchExtractionResponse, PostExtraction
 from pipeline.paths import checkpoints_dir, ensure_pipeline_dirs, normalized_dir, working_dir
 
 EXTRACTION_SCHEMA_VERSION = "post-extraction-v3"
-DEFAULT_EXTRACTION_MODEL = "google/gemini-3.8-flash"
+DEFAULT_EXTRACTION_MODEL = "deepseek-v4.1-flash"
+
+# OpenCode Go's documented OpenAI-compatible endpoint (opencode.ai/docs/go). Go
+# rejects traffic that does not identify itself: it asks clients for their own
+# user agent and a stable session id per conversation (HTTP 400
+# ``MissingSessionID`` without it). Both come from ``opencode_go_headers``.
+OPENCODE_GO_BASE_URL = "https://opencode.ai/inference/go/openai/v1"
+OPENCODE_GO_USER_AGENT = "movies-that-feel-like-pipeline/1.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -47,8 +57,9 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Environment:\n"
-            "  GEMINI_API_KEY          API key for the default Gemini provider.\n"
-            "  OPENAI_API_KEY          API key for explicit OpenAI-compatible models.\n"
+            "  OPENCODE_GO_API_KEY     API key for the default OpenCode Go endpoint.\n"
+            "  GEMINI_API_KEY          API key for explicit google/… models.\n"
+            "  OPENAI_API_KEY          API key for an explicit OpenAI-compatible base URL.\n"
             "  OPENAI_BASE_URL         Override base URL for OpenAI-compatible.\n"
             "\nBatching and quota:\n"
             "  Posts are packed into multi-post requests (--batch-size, --batch-max-chars).\n"
@@ -59,8 +70,11 @@ def build_parser() -> argparse.ArgumentParser:
             "  # Dry-run — no API key needed\n"
             "  pipeline:extract --dry-run --limit 1\n"
             "\n"
-            "  # Gemini extraction (default model)\n"
-            "  GEMINI_API_KEY=... pipeline:extract --limit 5 --max-requests 1\n"
+            "  # OpenCode Go extraction (default model)\n"
+            "  OPENCODE_GO_API_KEY=... pipeline:extract --limit 5 --max-requests 1\n"
+            "\n"
+            "  # Gemini extraction\n"
+            "  GEMINI_API_KEY=... pipeline:extract --model google/gemini-3.8-flash\n"
             "\n"
             "  # Explicit OpenAI-compatible extraction\n"
             "  OPENAI_API_KEY=... pipeline:extract --model openai/gpt-4.1-mini\n"
@@ -119,8 +133,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--api-base",
         default=None,
         help=(
-            "Custom OpenAI-compatible base URL (otherwise OPENAI_BASE_URL "
-            "or the SDK default). Not supported for Gemini."
+            "Custom OpenAI-compatible base URL (otherwise OPENAI_BASE_URL, "
+            "then the OpenCode Go endpoint when OPENCODE_GO_API_KEY is set). "
+            "Not supported for Gemini."
         ),
     )
     parser.add_argument("--batch-size", type=int, default=5,
@@ -176,15 +191,54 @@ def _resolve_openai_config(
     """
     actual_model = model.removeprefix("openai/")
 
-    api_key = os.environ.get("OPENAI_API_KEY")
-    resolved_base = api_base or os.environ.get("OPENAI_BASE_URL")
+    resolved_base = resolve_openai_base(api_base)
+    if _is_opencode_go(resolved_base):
+        key_name = "OPENCODE_GO_API_KEY"
+    else:
+        key_name = "OPENAI_API_KEY"
+    api_key = os.environ.get(key_name)
     if not api_key:
         raise SystemExit(
-            "[pipeline:extract] OPENAI_API_KEY must be set for OpenAI-compatible models. "
+            f"[pipeline:extract] {key_name} must be set for OpenAI-compatible models. "
             "Use --dry-run to preview prompts without a key."
         )
 
     return actual_model, api_key, resolved_base
+
+
+def resolve_openai_base(api_base: str | None) -> str | None:
+    """Return the OpenAI-compatible base URL for this run.
+
+    Precedence: explicit ``--api-base``, then ``OPENAI_BASE_URL``, then the
+    OpenCode Go endpoint when ``OPENCODE_GO_API_KEY`` is set and no
+    ``OPENAI_API_KEY`` asks for the SDK default instead.
+    """
+    explicit = api_base or os.environ.get("OPENAI_BASE_URL")
+    if explicit:
+        return explicit
+    if os.environ.get("OPENCODE_GO_API_KEY") and not os.environ.get("OPENAI_API_KEY"):
+        return OPENCODE_GO_BASE_URL
+    return None
+
+
+def _is_opencode_go(base_url: str | None) -> bool:
+    return bool(base_url) and base_url.rstrip("/").startswith(OPENCODE_GO_BASE_URL)
+
+
+def opencode_go_headers(base_url: str | None, session_id: str) -> dict[str, str]:
+    """Return the request headers the OpenCode Go endpoint requires.
+
+    Go routes a conversation to the backend that already holds its prompt
+    cache, so it rejects a request without ``x-opencode-session`` and asks
+    clients to send their own user agent rather than a generic SDK name. Every
+    call in one run shares a session id, keeping a run on one backend.
+
+    Other endpoints get an empty mapping, so requests to any other
+    OpenAI-compatible provider are left untouched.
+    """
+    if not _is_opencode_go(base_url):
+        return {}
+    return {"user-agent": OPENCODE_GO_USER_AGENT, "x-opencode-session": session_id}
 
 
 def _build_extraction_client(
@@ -192,6 +246,7 @@ def _build_extraction_client(
     model: str,
     mode: str | None,
     api_base: str | None,
+    session_id: str = "mtfl-extract",
 ) -> tuple[Any, str, dict[str, Any]]:
     """Build an Instructor client for *provider*.
 
@@ -240,6 +295,7 @@ def _build_extraction_client(
     openai_client = OpenAI(
         api_key=api_key, base_url=resolved_base,
         timeout=httpx.Timeout(180.0, connect=10.0), max_retries=0,
+        default_headers=opencode_go_headers(resolved_base, session_id),
     )
 
     instr_mode = {
@@ -705,7 +761,9 @@ def _resolve_identity(args: argparse.Namespace) -> _Identity:
     print(f"[pipeline:extract] Mode:     {instructor_mode}")
     if args.api_base:
         print(f"[pipeline:extract] API base: {args.api_base}")
-    api_base = (args.api_base or os.environ.get("OPENAI_BASE_URL")) if provider == "openai" else None
+    api_base = resolve_openai_base(args.api_base) if provider == "openai" else None
+    if api_base and not args.api_base:
+        print(f"[pipeline:extract] API base: {api_base}")
     return _Identity(provider=provider, instructor_mode=instructor_mode,
                      actual_model=args.model.removeprefix(f"{provider}/"), api_base=api_base)
 
@@ -935,7 +993,8 @@ def main(argv: list[str] | None = None) -> None:
                                           "api_base_set": identity.api_base is not None}
         if pending and args.max_requests > 0:
             client, actual_model, provider_audit = _build_extraction_client(
-                provider=identity.provider, model=args.model, mode=args.mode, api_base=args.api_base)
+                provider=identity.provider, model=args.model, mode=args.mode, api_base=args.api_base,
+                session_id=f"mtfl-extract-{checkpoint.stem}")
         batches = _pack(pending, args)
         print(f"[pipeline:extract] Extracting {len(pending)} post(s) in {len(batches)} batch(es), "
               f"at most {args.max_requests} provider request(s) …")

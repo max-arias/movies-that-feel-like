@@ -220,7 +220,7 @@ Configure these GitHub Actions secrets in the repository settings or its
   not use.
 - Secret `CLOUDFLARE_ACCOUNT_ID`. Both workflows read it from `secrets`, not
   `vars`, matching the existing repository configuration.
-- Secrets `GEMINI_API_KEY`, `TMDB_ACCESS_TOKEN`, `TWITCH_CLIENT_ID`, and
+- Secrets `OPENCODE_GO_API_KEY`, `TMDB_ACCESS_TOKEN`, `TWITCH_CLIENT_ID`, and
   `TWITCH_CLIENT_SECRET` (Twitch is required because game enrichment is active).
 
 The workflows use Node 22, Python 3.11, Bun with `bun install --frozen-lockfile`,
@@ -232,22 +232,28 @@ Both workflows explicitly use the Bash shell, so GitHub Actions enables
 `-e -o pipefail`. A failed Wrangler command stops its step even when its JSON
 output is piped through `jq`, `tee`, or `sort`.
 
-Extraction runs on Google Gemini through the native Google GenAI SDK and
-Instructor. Set `GEMINI_API_KEY` as a repository secret or in the `production`
+Extraction runs on [OpenCode Go](https://opencode.ai/docs/go/) through its
+OpenAI-compatible endpoint, the OpenAI SDK and Instructor (the key is sent as
+`Authorization: Bearer …`). Use the API key of the Go-subscribed personal
+workspace: OpenCode documents Go and Go Plus as single-member plans and says
+service accounts are not covered by Go Teams, so a service-account key
+(`oc_sk_…`, Settings › Service accounts) is billed against its own budget, not
+the Go plan, unless the Console shows otherwise. Set
+`OPENCODE_GO_API_KEY` as a repository secret or in the `production`
 environment. The model is `EXTRACTION_MODEL` at the top of
-`.github/workflows/import-reddit.yml` (currently `google/gemini-3.8-flash`).
-Both extraction and the cache round-trip probe use the same model and
-structured-output mode so their cache identities match. Provider, model, mode,
-and endpoint are part of the cache key; the Gemini cutover starts from a cold
-extraction cache without reusing OpenCode results.
+`.github/workflows/import-reddit.yml` (currently `deepseek-v4.1-flash`, JSON
+mode; `tools` mode is rejected while the model is thinking). Go rejects
+requests without a client user agent and an `x-opencode-session` header;
+`pipeline.extract` sends both, with one session id per run. Both extraction
+and the cache round-trip probe use the same model and structured-output mode
+so their cache identities match. Provider, model, mode, and endpoint are part
+of the cache key; the cutover from Gemini starts from a cold extraction cache.
 
-The workflow starts at most 5 extraction requests per minute with one worker.
-Keep the Google project on the Free tier if no paid usage is wanted; there is
-no automatic provider fallback. Check
-[AI Studio's actual model quotas](https://aistudio.google.com/rate-limit)
-before a 100-post run: pacing does not bypass daily or token quotas. Reduce the
-run's `limit` or pacing if necessary. Google documents free-tier input/output
-and data-use terms in its [pricing page](https://ai.google.dev/gemini-api/docs/pricing).
+The workflow starts at most 20 extraction requests per minute with one worker
+and at most 30 requests per run. Go meters spend per model: 20% of the monthly
+limit per 5 hours, 50% per week, 100% per month. deepseek-v4.1-flash costs
+double on weekdays 01:00-04:00 and 06:00-10:00 UTC, so the cron avoids those
+hours. There is no automatic provider fallback.
 
 ## Production import
 
@@ -378,12 +384,13 @@ or a bounded `limit` and a higher `max_pages` for a controlled backfill.
    variable, database access, and `apps/astro/wrangler.jsonc` database identity.
 2. **Fetch/normalize:** inspect Arctic Shift availability and the run's raw
    artifact; confirm the exclusion query completed before normalization.
-3. **Extract/enrich:** verify the Gemini, TMDB, and Twitch credentials. For
-   extraction HTTP 401/403, verify `GEMINI_API_KEY`, its Google project, and
-   model access. For HTTP 429 `RESOURCE_EXHAUSTED`, inspect
-   [AI Studio quotas](https://aistudio.google.com/rate-limit): per-minute limits
-   may clear after waiting, while daily exhaustion needs a quota reset or a
-   smaller import. Transient quota/server failures have bounded retries.
+3. **Extract/enrich:** verify the OpenCode Go, TMDB, and Twitch credentials.
+   For extraction HTTP 401/403, verify `OPENCODE_GO_API_KEY` and the Go
+   subscription. HTTP 400 `MissingSessionID` means the Go headers were not
+   sent. For HTTP 429, check the model's 5-hour/weekly usage in the OpenCode
+   console: a 5-hour window clears on its own, while weekly or monthly
+   exhaustion needs a reset or a smaller import. Transient limit/server
+   failures have bounded retries and defer the remaining posts.
    Restore provider access before rerunning; do not enable empty-extraction
    loading or silently switch to a paid provider. Any enrichment artifact
    error also fails the workflow before load, so fix credentials and retry

@@ -245,7 +245,7 @@ def main(argv: list[str] | None = None) -> None:
             ).fetchall()
         if args.workers < 1 or args.timeout_seconds <= 0:
             raise ValueError("workers must be at least 1 and timeout-seconds must be positive")
-        from pipeline.extract import _detect_provider, _resolve_openai_config
+        from pipeline.extract import _detect_provider, _resolve_openai_config, opencode_go_headers
 
         provider = _detect_provider(args.model)
         if provider == "google":
@@ -270,6 +270,9 @@ def main(argv: list[str] | None = None) -> None:
             import httpx
 
             model, api_key, base_url = _resolve_openai_config(args.model, args.api_base)
+            # One Go session per rewrite run, as for an extraction run.
+            headers = opencode_go_headers(
+                base_url, f"mtfl-rewrite-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}")
 
             def client_factory() -> Any:
                 return OpenAI(
@@ -277,6 +280,7 @@ def main(argv: list[str] | None = None) -> None:
                     base_url=base_url,
                     timeout=httpx.Timeout(args.timeout_seconds, connect=min(10.0, args.timeout_seconds)),
                     max_retries=0,
+                    default_headers=headers,
                 )
 
         def report(done: int, total: int, post_id: str) -> None:

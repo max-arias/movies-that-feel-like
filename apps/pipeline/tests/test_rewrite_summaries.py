@@ -231,7 +231,8 @@ class RewriteSummaryTests(unittest.TestCase):
             with patch.dict(os.environ, {"GEMINI_API_KEY": "gemini-test-key"}, clear=True):
                 with patch("google.genai.Client", return_value=client):
                     with self.assertRaises(SystemExit) as failure:
-                        main(["--db", str(db), "--migrations-dir", str(migrations), "--workers", "1"])
+                        main(["--db", str(db), "--migrations-dir", str(migrations), "--workers", "1",
+                              "--model", "google/gemini-3.8-flash"])
             self.assertEqual(failure.exception.code, 1)
             self.assertEqual(list(migrations.iterdir()), [])
 
@@ -244,7 +245,8 @@ class RewriteSummaryTests(unittest.TestCase):
             with patch.dict(os.environ, {"OPENAI_API_KEY": "openai-test-key"}, clear=True):
                 with patch("google.genai.Client") as google_factory, patch("openai.OpenAI") as openai_factory:
                     with self.assertRaises(SystemExit):
-                        main(["--db", str(db), "--migrations-dir", str(migrations)])
+                        main(["--db", str(db), "--migrations-dir", str(migrations),
+                              "--model", "google/gemini-3.8-flash"])
             google_factory.assert_not_called()
             openai_factory.assert_not_called()
             self.assertEqual(list(migrations.iterdir()), [])

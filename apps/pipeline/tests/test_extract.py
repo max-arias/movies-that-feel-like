@@ -10,8 +10,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from pipeline.extract import (QueuedBatch, _RequestLimiter, _fatal_provider_error,
-                              _resolve_openai_config, _run_batches, classify_failure, main)
+from pipeline.extract import (OPENCODE_GO_BASE_URL, QueuedBatch, _RequestLimiter, _fatal_provider_error,
+                              _resolve_openai_config, _run_batches, classify_failure, main,
+                              opencode_go_headers)
 from pipeline.extraction_batches import BatchPost, batch_post_from_prompt, pack_batches
 from pipeline.extraction_input import build_extraction_prompt
 from pipeline.models import BatchExtractionResponse
@@ -33,6 +34,15 @@ class ExplicitOpenAIConfigTests(unittest.TestCase):
                 _resolve_openai_config("custom-model", None),
                 ("custom-model", "test-openai-key", "https://environment.example/v1"),
             )
+
+    def test_go_key_routes_to_go_with_identifying_headers_only_there(self):
+        with patch.dict(os.environ, {"OPENCODE_GO_API_KEY": "test-go-key"}, clear=True):
+            model, key, base = _resolve_openai_config("deepseek-v4.1-flash", None)
+            self.assertEqual((model, key, base), ("deepseek-v4.1-flash", "test-go-key", OPENCODE_GO_BASE_URL))
+            headers = opencode_go_headers(base, "run-1")
+            self.assertEqual(headers["x-opencode-session"], "run-1")
+            self.assertTrue(headers["user-agent"])
+        self.assertEqual(opencode_go_headers("https://other.example/v1", "run-1"), {})
 
     def test_google_key_cannot_authorize_an_explicit_openai_model(self):
         with patch.dict(os.environ, {"GEMINI_API_KEY": "test-google-key"}, clear=True):

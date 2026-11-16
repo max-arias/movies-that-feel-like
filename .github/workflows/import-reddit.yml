@@ -2,9 +2,9 @@ name: Import Reddit posts
 
 on:
   schedule:
-    # Gemini free tier: 20 requests/day ÷ 5 per run = 4 full runs per day; later
-    # runs no-op once Gemini reports the daily quota exhausted.
-    - cron: '17 */4 * * *'
+    # Six runs a day, all outside OpenCode Go's weekday 2x price windows for
+    # deepseek-v4.1-flash (01:00-04:00 and 06:00-10:00 UTC).
+    - cron: '17 0,4,11,14,18,22 * * *'
   workflow_dispatch:
     inputs:
       limit:
@@ -33,13 +33,14 @@ defaults:
 env:
   # Both extraction passes must share the model and output-affecting settings
   # so the cache-round-trip probe can reuse this run's extractions.
-  EXTRACTION_MODEL: google/gemini-3.8-flash
-  # Free-tier budget: every provider attempt, retries included, counts toward
-  # Gemini's daily request quota, so each run is capped at EXTRACTION_MAX_REQUESTS.
-  EXTRACTION_RATE_LIMIT_RPM: '5'
+  EXTRACTION_MODEL: deepseek-v4.1-flash
+  # OpenCode Go meters dollars per model (5h: 20%, week: 50%, month: 100% of the
+  # plan's monthly limit). A 5-post batch costs well under a cent, so the cap
+  # only bounds a runaway run; retries count toward it.
+  EXTRACTION_RATE_LIMIT_RPM: '20'
   EXTRACTION_BATCH_SIZE: '5'
   EXTRACTION_BATCH_MAX_CHARS: '80000'
-  EXTRACTION_MAX_REQUESTS: '5'
+  EXTRACTION_MAX_REQUESTS: '30'
 
 jobs:
   import:
@@ -157,7 +158,7 @@ jobs:
       - name: Extract recommendations and persist extraction cache
         if: steps.normalize.outputs.post-count != '0'
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
         run: |
           set -euo pipefail
           npm run pipeline:extract -- --input "$NORMALIZED_ARTIFACT" --out "$EXTRACTION_ARTIFACT" \
@@ -300,7 +301,7 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
           TMDB_ACCESS_TOKEN: ${{ secrets.TMDB_ACCESS_TOKEN }}
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}

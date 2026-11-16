@@ -10,7 +10,7 @@ The first version is intentionally read-only: users browse imported Reddit data 
 
 - Imports posts, images, and comments from `r/MoviesThatFeelLike`.
 - Keeps raw/intermediate artifacts locally so pipeline stages can be retried without refetching.
-- Extracts concrete movie/series recommendations from Reddit comments with Google Gemini (`gemini-3.8-flash`).
+- Extracts concrete movie/series recommendations from Reddit comments with an LLM on OpenCode Go (`deepseek-v4.1-flash`).
 - Generates a short text-only vibe summary and tags from the post title/text/comments.
 - Resolves recommendations to canonical TMDB movie/TV records.
 - Links posts together through shared canonical recommendations.
@@ -53,7 +53,7 @@ See `CONTEXT.md` for the glossary.
 - Tailwind CSS 4 + daisyUI 5
 - Python pipeline managed with `uv`
 - Arctic Shift / `arcshiftwrap` for Reddit archive data
-- Instructor + Pydantic + Google GenAI for structured extraction (`google/gemini-3.8-flash`)
+- Instructor + Pydantic + the OpenAI SDK against OpenCode Go for structured extraction (`deepseek-v4.1-flash`)
 - TMDB API for media enrichment
 
 ## Required local environment
@@ -61,7 +61,7 @@ See `CONTEXT.md` for the glossary.
 The pipeline expects these env vars when running the extraction/enrichment stages:
 
 ```bash
-GEMINI_API_KEY=...
+OPENCODE_GO_API_KEY=...
 TMDB_ACCESS_TOKEN=...
 ```
 
@@ -142,21 +142,25 @@ npm run seed
 npm run dev
 ```
 
-Extraction uses Google Gemini through the native Google GenAI SDK and
+Extraction uses OpenCode Go's OpenAI-compatible endpoint
+(`https://opencode.ai/inference/go/openai/v1`) through the OpenAI SDK and
 Instructor. Both the pipeline default and scheduled import use
-`google/gemini-3.8-flash` (`EXTRACTION_MODEL` in
-`.github/workflows/import-reddit.yml`). Set `GEMINI_API_KEY` before running
-`pipeline:extract`. Gemini defaults to structured JSON output; `--mode tools`
-is also supported. The provider, model, mode, and endpoint are part of each
-cache key, so changing providers or models starts from a cold cache.
+`deepseek-v4.1-flash` (`EXTRACTION_MODEL` in
+`.github/workflows/import-reddit.yml`) in JSON mode. Set `OPENCODE_GO_API_KEY`
+before running `pipeline:extract`. Go rejects requests without a client user
+agent and an `x-opencode-session` header; `pipeline.extract` sends both. The
+provider, model, mode, and endpoint are part of each cache key, so changing
+providers or models starts from a cold cache.
 
 Extraction is serial and batched: up to 5 posts and 80,000 summed prompt
-characters per request, at most 5 provider attempts per run, paced at 5 RPM.
+characters per request, at most 5 provider attempts per run by default
+(the scheduled import allows 30), paced at 5 RPM by default (import: 20).
 Tune with `--batch-size`, `--batch-max-chars`, `--max-requests`, and
 `--rate-limit-rpm`. Failed attempts and retries count against the budget.
-The scheduled import runs every four hours and fetches up to 30 posts.
-The measured free-tier quota is 20 requests/day for this project/model;
-check Google AI Studio for current daily and token quotas.
+The scheduled import runs six times a day, outside Go's weekday 2x price
+windows (01:00-04:00 and 06:00-10:00 UTC), and fetches up to 30 posts.
+OpenCode Go limits spend per model: 20% of the monthly limit per 5 hours, 50%
+per week; see https://opencode.ai/docs/go/.
 
 Daily quota exhaustion, provider overload, and the request budget defer posts
 instead of failing them. A short per-minute limit retries the batch once;
@@ -173,10 +177,11 @@ and unattempted posts remain pending. Batch composition does not change
 per-post cache keys. A `--max-requests 0` cache probe makes no provider requests
 and needs no API key; cache misses are deferred for a later run.
 
-Explicit OpenAI-compatible models remain available with `--model openai/<id>`,
-`OPENAI_API_KEY`, and optionally `--api-base` or `OPENAI_BASE_URL`. There is no
-automatic fallback to a paid provider. The summary-rewrite CLI uses Gemini by
-default too, and emits a migration only after every requested rewrite succeeds.
+Other OpenAI-compatible endpoints work with `--api-base` or `OPENAI_BASE_URL`
+plus `OPENAI_API_KEY`; Gemini remains available with `--model google/<id>` and
+`GEMINI_API_KEY`. There is no automatic provider fallback. The summary-rewrite
+CLI uses the same default model on Go, and emits a migration only after every
+requested rewrite succeeds.
 
 Image reachability is maintained separately from extraction. Reddit answers a
 deleted gallery image with a 1048-byte placeholder PNG, so a dead image still
