@@ -258,8 +258,15 @@ jobs:
           snapshot="$RUNNER_TEMP/d1-corpus-$SITE.sql"
           # Data only: the build applies the tracked migrations itself, which keeps
           # the schema (and its summary triggers) owned by the migrations directory.
-          npx wrangler d1 export "$D1_DATABASE" --remote --no-schema --skip-confirmation \
-            --config "$WRANGLER_CONFIG" --output "$snapshot"
+          # Wrangler prints a presigned download URL for the whole export, and
+          # this repo's logs are public: keep its output out of the log, and
+          # print it with URLs redacted only when the export fails.
+          if ! npx wrangler d1 export "$D1_DATABASE" --remote --no-schema --skip-confirmation \
+              --config "$WRANGLER_CONFIG" --output "$snapshot" > "$RUNNER_TEMP/d1-export.log" 2>&1; then
+            sed -E 's#https?://[^[:space:]]+#<url redacted>#g' "$RUNNER_TEMP/d1-export.log" >&2
+            exit 1
+          fi
+          rm -f "$RUNNER_TEMP/d1-export.log"
           test -s "$snapshot"
           echo "D1_SNAPSHOT=$snapshot" >> "$GITHUB_ENV"
           echo "Exported corpus: $(wc -c < "$snapshot") bytes, sha256 $(sha256sum "$snapshot" | cut -d' ' -f1)"
