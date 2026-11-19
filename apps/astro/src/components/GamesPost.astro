@@ -6,6 +6,7 @@
 // thumbnails, autoplay and lightbox through the same data attributes the
 // movies hero uses.
 
+import GamesStandIn from "./GamesStandIn.astro";
 import type { PostDetail, Recommendation } from "../lib/db/queries";
 import { feedHref } from "../lib/feed-paths";
 import { site } from "../site";
@@ -46,7 +47,8 @@ const focus = "focus-visible:outline-2 focus-visible:outline-signal focus-visibl
 ---
 
 <section class="relative mx-games-gutter mt-6 h-games-detail-hero overflow-hidden rounded-2xl bg-night-card" aria-label="Post hero" data-hero-frame>
-  <div class="absolute inset-0" data-hero-gallery transition:name={`post-image-${post.redditPostId}`} aria-label={`Image gallery. ${totalImages} image${totalImages === 1 ? "" : "s"}.`}>
+  <div class="absolute inset-0" data-hero-gallery transition:name={`post-image-${post.redditPostId}`} aria-label={totalImages > 0 ? `Image gallery. ${totalImages} image${totalImages === 1 ? "" : "s"}.` : undefined}>
+    {totalImages === 0 && <GamesStandIn art={post.standInArt} label={reference?.title ?? post.title} size="hero" />}
     {galleryImages.map((img, i) => (
       <div class="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-1600 ease-in-out motion-reduce:transition-none data-[active=true]:pointer-events-auto data-[active=true]:opacity-100" data-hero-slide data-active={i === 0 ? "true" : "false"} inert={i !== 0}>
         <button type="button" class:list={["relative block h-full w-full cursor-zoom-in overflow-hidden", focus]} data-open-lightbox={i} aria-label={`Open image ${i + 1} of ${totalImages} at full size`}>
@@ -57,7 +59,7 @@ const focus = "focus-visible:outline-2 focus-visible:outline-signal focus-visibl
     ))}
   </div>
   <div class="games-hero-shade pointer-events-none absolute inset-0" aria-hidden="true"></div>
-  {referenceArt && reference && <p class="pointer-events-none absolute top-3 right-4 text-xs text-night-ink/80" data-art-credit hidden>Artwork: {reference.title} · IGDB</p>}
+  {totalImages > 0 && referenceArt && reference && <p class="pointer-events-none absolute top-3 right-4 text-xs text-night-ink/80" data-art-credit hidden>Artwork: {reference.title} · IGDB</p>}
   <div class="pointer-events-none absolute inset-x-0 bottom-8 grid justify-items-center gap-3 px-6 text-center">
     {post.tags[0] && <a href={feedHref(post.tags[0])} class:list={["pointer-events-auto max-w-11/12 rounded-full bg-night-ink px-6 pt-2.5 pb-3.5 font-pixel text-pill font-bold uppercase text-night transition-colors duration-200 hover:bg-signal", focus]}>{post.tags[0]}</a>}
     <h1 class="max-w-2xl text-hero-summary font-semibold text-balance text-night-ink" transition:name={`post-vibe-${post.redditPostId}`}>{post.vibeSummary ?? post.title}</h1>

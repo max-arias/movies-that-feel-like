@@ -13,7 +13,8 @@ const postId = Astro.params.id;
 const post = postId ? await loadPost(getDb(), postId) : null;
 
 // A post whose images Reddit has deleted is no longer a page: it is treated as
-// not found rather than served as a hero-less shell.
+// not found rather than served as a hero-less shell. Games instead serves an
+// imageless post with a stand-in hero (GamesPost) and an empty, unused lightbox.
 if (!post) Astro.response.status = 404;
 
 const modalSlideId = (i: number) => `modal-slide${i + 1}`;
