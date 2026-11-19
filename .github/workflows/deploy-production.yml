@@ -189,9 +189,20 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           git ls-files "$MIGRATIONS_DIR/*.sql" | while IFS= read -r path; do basename "$path"; done | sort -u > /tmp/local-migrations
-          npx wrangler d1 execute "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG" \
-            --command 'SELECT name FROM d1_migrations ORDER BY name' --json \
-            | jq -r '.[0].results[]?.name' | sort -u > /tmp/remote-migrations
+          # A database no migration has touched yet has no d1_migrations table:
+          # that reads as an empty ledger. Any other error still fails the job.
+          if ledger=$(npx wrangler d1 execute "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG" \
+                --command 'SELECT name FROM d1_migrations ORDER BY name' --json 2>/tmp/ledger-stderr) \
+             && jq -e 'type == "array"' <<<"$ledger" >/dev/null; then
+            jq -r '.[0].results[]?.name' <<<"$ledger" | sort -u > /tmp/remote-migrations
+          elif { printf '%s\n' "$ledger"; cat /tmp/ledger-stderr; } | grep -q 'no such table: d1_migrations'; then
+            echo "No d1_migrations table in $D1_DATABASE yet: treating it as a fresh database."
+            : > /tmp/remote-migrations
+          else
+            echo "$ledger" >&2
+            cat /tmp/ledger-stderr >&2
+            exit 1
+          fi
           comm -23 /tmp/local-migrations /tmp/remote-migrations > /tmp/pending-migrations
           comm -13 /tmp/local-migrations /tmp/remote-migrations > /tmp/unknown-remote-migrations
           # Production ahead of the repository means a release was applied but its
