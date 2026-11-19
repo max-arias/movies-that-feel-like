@@ -48,16 +48,27 @@ const REPO_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
  * site's D1 binding in its Wrangler config: Wrangler applies the migrations from
  * the config, and this script checks the restored ledger against the directory.
  */
+const LIVE_IMAGE = `EXISTS (
+          SELECT 1 FROM imported_post_images i
+           WHERE i.imported_vibe_post_id = p.id AND i.deleted_at IS NULL
+        )`;
 const SITES = {
   movies: {
     wranglerConfig: join("apps", "astro", "wrangler.jsonc"),
     db: "movies-that-feel-like",
     migrationsDir: join("packages", "db", "migrations"),
+    // Mirrors the site's display trigger: a post with a live image.
+    displayablePredicate: LIVE_IMAGE,
   },
   games: {
     wranglerConfig: join("apps", "astro", "wrangler.games.jsonc"),
     db: "games-that-feel-like",
     migrationsDir: join("packages", "db", "migrations-games"),
+    // Games also shows text posts that own no image at all
+    // (migrations-games/0003_text_posts_displayable.sql).
+    displayablePredicate: `${LIVE_IMAGE} OR NOT EXISTS (
+          SELECT 1 FROM imported_post_images i WHERE i.imported_vibe_post_id = p.id
+        )`,
   },
 };
 /** Repo-relative Wrangler config of the site being built; set once in main(). */
@@ -282,7 +293,7 @@ function clearApplicationData(db, stateDir, dumpCarriesMigrationLedger) {
  * and this check must move together — the check fails loudly rather than
  * deploying pages built from counts that no longer mean what the code thinks.
  */
-function verifyRestoredCorpus(db, stateDir, triggers) {
+function verifyRestoredCorpus(db, stateDir, triggers, displayablePredicate) {
   const posts = queryNumber(db, stateDir, "SELECT COUNT(*) AS n FROM imported_vibe_posts");
   if (posts === 0) {
     fatal(
@@ -303,17 +314,12 @@ function verifyRestoredCorpus(db, stateDir, triggers) {
     db,
     stateDir,
     `SELECT COUNT(*) AS n FROM imported_vibe_posts p
-      WHERE p.is_displayable <> (
-        CASE WHEN EXISTS (
-          SELECT 1 FROM imported_post_images i
-           WHERE i.imported_vibe_post_id = p.id AND i.deleted_at IS NULL
-        ) THEN 1 ELSE 0 END
-      )`,
+      WHERE p.is_displayable <> (CASE WHEN ${displayablePredicate} THEN 1 ELSE 0 END)`,
   );
   if (displayabilityMismatches !== 0) {
     fatal(
       `${displayabilityMismatches} restored posts disagree with the displayability predicate ` +
-        "(an image with deleted_at IS NULL). The snapshot's derived column is not consistent " +
+        "for this site. The snapshot's derived column is not consistent " +
         "with its rows; check the migration that maintains it.",
     );
   }
@@ -524,7 +530,7 @@ function main() {
   }
 
   step("Verifying the restored corpus");
-  verifyRestoredCorpus(db, stateDir, triggers);
+  verifyRestoredCorpus(db, stateDir, triggers, site.displayablePredicate);
 
   const tracked = readdirSync(migrationsDir)
     .filter((name) => name.endsWith(".sql"))
