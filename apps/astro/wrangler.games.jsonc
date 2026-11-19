@@ -1,10 +1,8 @@
 // Games That Feel Like: the same Astro app built with `SITE=games`, deployed as
 // its own Worker over its own D1 database. Mirrors `wrangler.jsonc`.
 //
-// Placeholder ids: the D1 database and KV namespace do not exist yet. Create them
-// (docs/operations.md, "Setting up the games site") and replace both
-// PLACEHOLDER-… values with the ids Wrangler prints. Until then the deploy and
-// import workflows skip the games site with a notice instead of failing.
+// The D1 database and SESSION KV namespace were created on 2026-11-19
+// (docs/operations.md, "Setting up the games site").
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "games-that-feel-like",
@@ -14,14 +12,14 @@
   "kv_namespaces": [
     {
       "binding": "SESSION",
-      "id": "PLACEHOLDER-games-session-kv-id"
+      "id": "a813ae25e6394a76a08b21fa1b71de2c"
     }
   ],
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "games-that-feel-like",
-      "database_id": "PLACEHOLDER-games-d1-database-id",
+      "database_id": "dff3e0f1-6bc6-4888-8c0d-fea4e827ddf3",
       "migrations_dir": "../../packages/db/migrations-games"
     }
   ],

@@ -476,18 +476,14 @@ To bring it up (with a Cloudflare login or the account's API token; these touch
 production):
 
 ```sh
-# 1. Create the D1 database; copy the printed database_id.
-npx wrangler d1 create games-that-feel-like
+# Done on 2026-11-19 with Cloudflare's `cf` CLI (`npm i -g cf`, `cf auth login`):
+# 1. Create the D1 database; copy the printed uuid.
+cf d1 create --name games-that-feel-like
 
 # 2. Create the SESSION KV namespace; copy the printed id.
-npx wrangler kv namespace create games-that-feel-like-session
+cf kv namespaces create --title games-that-feel-like-session
 
-# 3. Put both ids into apps/astro/wrangler.games.jsonc, replacing
-#    PLACEHOLDER-games-d1-database-id and PLACEHOLDER-games-session-kv-id.
-
-# 4. Optional: apply the schema now (the first deploy also does this).
-npx wrangler d1 migrations apply games-that-feel-like --remote \
-  --config apps/astro/wrangler.games.jsonc
+# 3. Put both ids into apps/astro/wrangler.games.jsonc.
 ```
 
 Commit and push step 3 to `main`. That push touches `apps/astro/**`, so it
