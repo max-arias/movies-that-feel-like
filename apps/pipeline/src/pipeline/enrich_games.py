@@ -48,7 +48,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time as time_module
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any
 
@@ -172,10 +174,15 @@ async def _igdb_headers_async() -> dict[str, str]:
 
 # artworks/screenshots give a wide backdrop; total_rating is IGDB's 0-100
 # critic+user score, stored /10 to match the shared vote_average scale.
+# alternative_names / version_parent feed _best_match's ranking only.
 _SEARCH_FIELDS = (
     "name, first_release_date, cover.url, platforms.name, slug, summary, game_type, "
-    "artworks.image_id, screenshots.image_id, total_rating, total_rating_count"
+    "artworks.image_id, screenshots.image_id, total_rating, total_rating_count, "
+    "alternative_names.name, version_parent"
 )
+# IGDB's relevance order puts spin-offs and editions ahead of the canonical
+# entry often enough that 5 results missed it; _best_match re-ranks anyway.
+_SEARCH_LIMIT = 20
 
 
 def _backdrop_url(result: dict[str, Any]) -> str | None:
@@ -215,7 +222,7 @@ def _search_games(
     body = (
         f'search "{query}";\n'
         f"fields {_SEARCH_FIELDS};\n"
-        f"limit 5;\n"
+        f"limit {_SEARCH_LIMIT};\n"
     )
 
     headers = _igdb_headers()
@@ -251,7 +258,7 @@ async def _search_games_async(
     body = (
         f'search "{query}";\n'
         f"fields {_SEARCH_FIELDS};\n"
-        f"limit 5;\n"
+        f"limit {_SEARCH_LIMIT};\n"
     )
 
     headers = await _igdb_headers_async()
@@ -282,27 +289,126 @@ def _best_match(
 ) -> dict[str, Any] | None:
     """Pick the best IGDB search result for a game candidate.
 
-    Strategy
-    --------
-    1. Filter to results where ``game_type == 0`` (main_game).
-       (``game_type`` is the modern IGDB v4 field; the legacy ``category``
-       field is deprecated and returns ``null``.)
-    2. If the candidate has a ``year``, prefer results whose
-       ``first_release_date`` timestamp falls in the same year.
-    3. Fall back to the first main_game result.
+    Results are ranked by, in order:
+
+    1. Title match on normalized names (:func:`_normalize_title`): the
+       ``name`` equals the query, then an ``alternative_names`` entry equals
+       it, then one contains the other.  An exact title beats a spin-off
+       whose name merely contains it ("Elden Ring" over "Elden Ring
+       Nightreign").
+    2. ``game_type`` (the IGDB v4 field; ``category`` is deprecated): main
+       game, remake, remaster and expanded game first, then expansions, then
+       DLC, bundles, ports, mods, episodes, packs, updates, seasons, forks.
+    3. Not an edition of another game (no ``version_parent``).
+    4. ``first_release_date`` year equal to the candidate's year, then
+       within one year of it (only when the candidate has a year).
+    5. Has a cover, then has artworks or screenshots.
+    6. Higher ``total_rating_count``, then IGDB's own search order.
+
+    Results with no title relation are kept only if they are a preferred
+    ``game_type``; if nothing qualifies, returns ``None``.
     """
-    main_games = [r for r in results if r.get("game_type") == 0]
-    if not main_games:
-        return None
-
+    query = _normalize_title(candidate.get("title"))
     cand_year = candidate.get("year")
-    if cand_year:
-        for r in main_games:
-            ts = r.get("first_release_date")
-            if ts and _ts_to_year(ts) == cand_year:
-                return r
 
-    return main_games[0]
+    best: dict[str, Any] | None = None
+    best_key: tuple | None = None
+    for index, result in enumerate(results):
+        if not isinstance(result, dict) or "id" not in result:
+            continue
+        title_rank = _title_rank(query, result)
+        type_rank = _GAME_TYPE_RANK.get(result.get("game_type"), 0)
+        if title_rank == 0 and type_rank < _PREFERRED_TYPE_RANK:
+            continue
+        key = (
+            title_rank,
+            type_rank,
+            not result.get("version_parent"),
+            _year_rank(cand_year, result.get("first_release_date")),
+            bool(_cover_url(result.get("cover"))),
+            _backdrop_url(result) is not None,
+            _rating_count(result),
+            -index,
+        )
+        if best_key is None or key > best_key:
+            best, best_key = result, key
+    return best
+
+
+# IGDB game_types ids (same values as the deprecated ``category`` enum):
+# 0 main_game, 1 dlc_addon, 2 expansion, 3 bundle, 4 standalone_expansion,
+# 5 mod, 6 episode, 7 season, 8 remake, 9 remaster, 10 expanded_game,
+# 11 port, 12 fork, 13 pack, 14 update.  Unlisted/missing ids rank 0.
+_PREFERRED_TYPE_RANK = 3
+_GAME_TYPE_RANK: dict[Any, int] = {
+    0: 3, 8: 3, 9: 3, 10: 3,
+    2: 2, 4: 2,
+    1: 1, 3: 1, 5: 1, 6: 1, 7: 1, 11: 1, 12: 1, 13: 1, 14: 1,
+}
+
+_ROMAN_NUMERALS = {
+    # "i" and "x" are left alone: too often a word or letter ("Mega Man X"
+    # must not equal "Mega Man 10").
+    "ii": "2", "iii": "3", "iv": "4", "v": "5", "vi": "6", "vii": "7",
+    "viii": "8", "ix": "9", "xi": "11", "xii": "12", "xiii": "13",
+    "xiv": "14", "xv": "15", "xvi": "16", "xvii": "17", "xviii": "18",
+    "xix": "19", "xx": "20",
+}
+
+
+def _normalize_title(value: Any) -> str:
+    """Normalize a game title for comparison.
+
+    Lowercases, strips diacritics and trademark symbols, treats ``&`` as
+    "and", turns punctuation into spaces, maps roman numerals II–XX to
+    digits and drops a leading "the".
+    """
+    # Drop trademark symbols first: NFKD would expand "™" into "TM".
+    text = re.sub(r"[™®©℠]", "", str(value or ""))
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.lower().replace("&", " and ")
+    text = re.sub(r"[^\w\s]|_", " ", text)
+    tokens = [_ROMAN_NUMERALS.get(tok, tok) for tok in text.split()]
+    if len(tokens) > 1 and tokens[0] == "the":
+        tokens = tokens[1:]
+    return " ".join(tokens)
+
+
+def _title_rank(query: str, result: dict[str, Any]) -> int:
+    """3 exact name, 2 exact alternative name, 1 containment, 0 otherwise."""
+    if not query:
+        return 0
+    name = _normalize_title(result.get("name"))
+    if name == query:
+        return 3
+    alternatives = [
+        _normalize_title(alt.get("name"))
+        for alt in result.get("alternative_names") or []
+        if isinstance(alt, dict)
+    ]
+    if query in alternatives:
+        return 2
+    padded_query = f" {query} "
+    for other in (name, *alternatives):
+        if other and (padded_query in f" {other} " or f" {other} " in padded_query):
+            return 1
+    return 0
+
+
+def _year_rank(cand_year: Any, ts: Any) -> int:
+    """2 same year, 1 within one year, 0 otherwise or without a year hint."""
+    if isinstance(cand_year, str) and cand_year.strip().isdigit():
+        cand_year = int(cand_year)
+    if not isinstance(cand_year, int) or isinstance(cand_year, bool) or not isinstance(ts, (int, float)):
+        return 0
+    diff = abs(datetime.fromtimestamp(ts, tz=timezone.utc).year - cand_year)
+    return 2 if diff == 0 else 1 if diff == 1 else 0
+
+
+def _rating_count(result: dict[str, Any]) -> int:
+    count = result.get("total_rating_count")
+    return count if isinstance(count, int) and not isinstance(count, bool) else 0
 
 
 # ── Field helpers ──────────────────────────────────────────────────────

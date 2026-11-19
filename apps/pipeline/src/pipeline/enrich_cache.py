@@ -39,6 +39,15 @@ from pipeline.paths import working_dir
 
 CANDIDATE_KEY_VERSION = 1
 RESOLVER_VERSION = "1"
+# Per-provider overrides of RESOLVER_VERSION.  Bumping one re-resolves only
+# that provider's candidates.  igdb 2: MTFL-86 best-match ranking.
+PROVIDER_RESOLVER_VERSIONS = {"igdb": "2"}
+
+
+def resolver_version(provider: str) -> str:
+    """Return the resolver version cache rows for *provider* are keyed on."""
+    return PROVIDER_RESOLVER_VERSIONS.get(provider, RESOLVER_VERSION)
+
 PAYLOAD_SCHEMA_VERSION = 1
 CACHE_TTLS = {
     "matched": timedelta(days=90),
@@ -144,7 +153,7 @@ class ProviderCache:
         identity = (provider, candidate["candidate_key"],
                                    CANDIDATE_KEY_VERSION, candidate.get("title"),
                                    candidate.get("year"), candidate.get("media_type"),
-                                   language, include_adult, RESOLVER_VERSION)
+                                   language, include_adult, resolver_version(provider))
         identity = (identity[0], identity[1], identity[2], self._canonical_title(identity[3]), *identity[4:])
         row = self._snapshot.get(identity)
         if row is None:
@@ -314,7 +323,7 @@ def make_cache_record(*, provider: str, candidate: dict[str, Any], language: str
         "candidate_key_version": CANDIDATE_KEY_VERSION, "query_title": candidate.get("title", ""),
         "query_year": candidate.get("year"), "query_media_type": candidate.get("media_type"),
         "language": language, "include_adult": int(include_adult),
-        "resolver_version": RESOLVER_VERSION, "outcome": outcome,
+        "resolver_version": resolver_version(provider), "outcome": outcome,
         "provider_record_id": record_id, "resolved_type": media,
         "resolved_title": (payload or {}).get("title"), "resolved_year": (payload or {}).get("release_year"),
         "normalized_payload": json.dumps(payload, ensure_ascii=False, sort_keys=True) if payload is not None else None,
