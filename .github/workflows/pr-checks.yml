@@ -1,0 +1,84 @@
+name: PR checks
+
+# Read-only verification for pull requests: pipeline unit tests, schema parity
+# plus `astro check`, and a production build from a snapshot of the locally
+# migrated D1. Nothing here touches Cloudflare or deploys, and no secrets are
+# used. Make the three jobs required through branch protection on `main`.
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pipeline-tests:
+    name: Pipeline tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with: { python-version: '3.11' }
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      - name: Install pipeline dependencies
+        run: uv sync --locked --project apps/pipeline
+      - name: Run unit tests
+        working-directory: apps/pipeline
+        env:
+          PYTHONPATH: src
+        run: uv run --locked python -m unittest discover -s tests
+
+  check:
+    name: Schema validation and astro check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version: 22 }
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Apply migrations to local D1
+        run: npm run db:migrate
+      - name: Validate schema and type-check
+        run: npm run check
+
+  build:
+    name: Production build (no deploy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with: { node-version: 22 }
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Seed local D1 from the tracked migrations
+        run: npm run db:migrate
+      - name: Export a data-only snapshot of the local D1
+        run: |
+          set -euo pipefail
+          snapshot="$RUNNER_TEMP/d1-local.sql"
+          npx wrangler d1 export movies-that-feel-like --local --no-schema --config apps/astro/wrangler.jsonc --output "$snapshot"
+          test -s "$snapshot"
+          echo "D1_SNAPSHOT=$snapshot" >> "$GITHUB_ENV"
+      - name: Build from the snapshot
+        run: |
+          node scripts/build-production.mjs \
+            --snapshot "$D1_SNAPSHOT" \
+            --state-dir "$RUNNER_TEMP/d1-build-state"

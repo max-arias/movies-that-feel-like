@@ -118,6 +118,16 @@ does, and the adapter emits the complete deploy config next to the Worker entry
 `assets.directory` → `../client`, the `ASSETS` binding, the `DB` binding and the
 `SESSION` KV namespace), so the deploy config is never hand-assembled.
 
+## Pull request checks
+
+`.github/workflows/pr-checks.yml` ("PR checks") runs on pull requests and on
+pushes to non-`main` branches, with no secrets: the pipeline unit tests, `npm run
+check` (schema parity plus `astro check`) against a locally migrated D1, and a
+production build from a snapshot exported from that local D1
+(`scripts/build-production.mjs`, no deploy). Superseded runs for the same PR are
+cancelled. The games site (`wrangler.games.jsonc`) is not covered yet: its D1 and
+KV ids are placeholders.
+
 ## Deployment
 
 Deployment is owned by `.github/workflows/deploy-production.yml` ("Deploy
