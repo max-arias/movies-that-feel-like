@@ -36,6 +36,7 @@ body {
   --color-gallery-empty: oklch(23% 0 0);
   --color-gallery-empty-text: oklch(70% 0 0);
   --color-gallery-overlay: oklch(0% 0 0 / 0.28);
+  --color-scrim: oklch(0% 0 0 / 0.4);
   --font-body: "Newsreader", "Iowan Old Style", "Charter", "Georgia", serif;
   --font-display: "Bebas Neue", "Impact", "Helvetica Neue Condensed", sans-serif;
   --spacing-gutter: 4vw;
@@ -174,6 +175,39 @@ body {
 
   @media (min-width: 768px) {
     font-size: clamp(.792rem, calc(.792rem + 2.016rem * (attr(data-count type(<number>), 1) / var(--tag-max-count))), 2.808rem);
+  }
+}
+
+/* Mobile filter drawer: a modal <dialog> that slides its [data-drawer-panel]
+   in from the left over a scrim, with the timings of the daisyUI drawer it
+   replaced, and locks page scroll while open. */
+@utility drawer-dialog {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  opacity: 0;
+  transition: opacity .2s ease-out .1s, display .3s allow-discrete, overlay .3s allow-discrete;
+  &::backdrop { background: transparent; }
+  & > [data-drawer-panel] { translate: -100%; transition: translate .3s ease-out; }
+  &[open] { opacity: 1; }
+  &[open] > [data-drawer-panel] { translate: 0; }
+  @starting-style {
+    &[open] { opacity: 0; }
+    &[open] > [data-drawer-panel] { translate: -100%; }
+  }
+  :root:has(&[open]) { overflow: hidden; }
+  @media (prefers-reduced-motion: reduce) {
+    &, & > [data-drawer-panel] { transition: none; }
   }
 }
 
