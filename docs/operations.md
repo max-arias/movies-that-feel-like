@@ -387,6 +387,17 @@ successful no-op only when the fetch scan was complete. A fetch artifact with
 not treated as a successful no-op. Dispatch another normal run with the same
 or a bounded `limit` and a higher `max_pages` for a controlled backfill.
 
+## Arctic Shift outages
+
+If the Arctic Shift search/listing keeps failing (HTTP 5xx, HTTP 429, timeouts
+or connection errors) after the fetch's bounded retries (about two minutes of
+extra backoff), `pipeline.fetch` prints `Arctic Shift unavailable (…); import
+deferred, nothing changed`, writes no raw artifact, exits 0 and sets
+`deferred=true` in `$GITHUB_OUTPUT`. Steps after fetch must be skipped when that
+output is `true`; the next scheduled run picks the posts up. Other 4xx
+responses still fail the run. Comment-tree failures after a successful search
+keep the existing per-post behaviour (recorded as `error` entries).
+
 ## Failure triage
 
 1. **D1 query/authentication:** verify the Cloudflare token (D1 Edit for
