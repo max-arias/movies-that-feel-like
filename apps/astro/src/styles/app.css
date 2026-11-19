@@ -223,5 +223,4 @@ body {
 @utility games-item-grid-mobile { grid-template-columns: 32px var(--spacing-games-cover-w) minmax(0, 1fr) 44px; }
 @utility games-meter-grid { grid-template-columns: minmax(0, 1fr) 70px; }
 @utility games-hero-shade { background: linear-gradient(180deg, transparent 45%, var(--color-night-shade)); }
-@utility games-card-shade { background: linear-gradient(transparent, var(--color-night-shade)); }
 @utility games-type-glow { background: radial-gradient(ellipse at 50% 0%, var(--color-signal-glow), transparent 70%), var(--color-night-card); }

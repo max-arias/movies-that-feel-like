@@ -596,7 +596,9 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
 
     const updatePlayback = () => {
       if (!playback) return;
-      playback.textContent = paused ? "Play" : "Pause";
+      playback.dataset.paused = String(paused);
+      // The games hero button is an icon that styles itself from data-paused.
+      if (!playback.hasAttribute("data-playback-icon")) playback.textContent = paused ? "Play" : "Pause";
       playback.setAttribute("aria-label", paused ? "Start automatic image changes" : "Pause automatic image changes");
     };
 

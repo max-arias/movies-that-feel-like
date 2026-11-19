@@ -64,6 +64,12 @@ const focus = "focus-visible:outline-2 focus-visible:outline-signal focus-visibl
     {post.tags[0] && <a href={feedHref(post.tags[0])} class:list={["pointer-events-auto max-w-11/12 rounded-full bg-night-ink px-6 pt-2.5 pb-3.5 font-pixel text-pill font-bold uppercase text-night transition-colors duration-200 hover:bg-signal", focus]}>{post.tags[0]}</a>}
     <h1 class="max-w-2xl text-hero-summary font-semibold text-balance text-night-ink" transition:name={`post-vibe-${post.redditPostId}`}>{post.vibeSummary ?? post.title}</h1>
   </div>
+  {totalImages > 1 && (
+    <button type="button" data-hero-playback data-playback-icon data-paused="false" aria-label="Pause automatic image changes" class:list={["group absolute right-4 bottom-4 grid size-10 cursor-pointer place-items-center rounded-full bg-night-shade text-night-ink transition-colors duration-200 hover:bg-signal hover:text-night", focus]}>
+      <svg class="size-4 group-data-[paused=true]:hidden" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3" y="2" width="3.5" height="12" rx="1" /><rect x="9.5" y="2" width="3.5" height="12" rx="1" /></svg>
+      <svg class="hidden size-4 group-data-[paused=true]:block" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2.5v11a1 1 0 0 0 1.5.86l9-5.5a1 1 0 0 0 0-1.72l-9-5.5A1 1 0 0 0 4 2.5Z" /></svg>
+    </button>
+  )}
 </section>
 
 {totalImages > 1 && (
@@ -73,7 +79,6 @@ const focus = "focus-visible:outline-2 focus-visible:outline-signal focus-visibl
         <img src={img.previewUrl ?? img.sourceUrl} alt="" class="h-full w-full object-cover" loading="lazy" decoding="async" />
       </button>
     ))}
-    <button type="button" data-hero-playback aria-label="Pause automatic image changes" class:list={["ml-2 text-meta text-night-quiet hover:text-signal", focus]}>Pause</button>
   </div>
 )}
 
@@ -113,7 +118,7 @@ const focus = "focus-visible:outline-2 focus-visible:outline-signal focus-visibl
                 : <span class="flex h-full w-full items-center justify-center p-6 text-center font-pixel text-section font-bold uppercase text-night-quiet" aria-hidden="true">{rec.title}</span>}
             </div>
             <span class="absolute top-3 left-3 rounded-full bg-night-ink px-3 font-pixel text-xl font-bold text-night">{rank(i + 1)}</span>
-            <div class="games-card-shade absolute inset-x-0 bottom-0 rounded-b-2xl px-4 pt-10 pb-3.5 text-night-ink">
+            <div class="absolute inset-x-0 bottom-0 rounded-b-2xl bg-night-shade px-4 pt-3 pb-3.5 text-night-ink backdrop-blur-sm">
               <b class="block text-game-title font-semibold group-hover:text-signal">{rec.title}{rec.externalUrl && <span aria-hidden="true"> ↗</span>}</b>
               <span class="text-meta opacity-85">
                 {rec.releaseYear ?? "—"}{rating(rec) && ` · ★ ${rating(rec)}`}{platforms(rec).length > 0 && ` · ${platforms(rec).slice(0, 3).join(" / ")}`}
@@ -122,7 +127,8 @@ const focus = "focus-visible:outline-2 focus-visible:outline-signal focus-visibl
           </>
         );
         return (
-          <li class="relative">
+          <li class="relative grid content-start gap-3">
+            {rec.overview && <p class="order-last line-clamp-3 px-1 text-sm text-night-quiet">{rec.overview}</p>}
             {rec.externalUrl
               ? <a href={rec.externalUrl} target="_blank" rel="noopener noreferrer" class:list={["group relative block", focus]}>{body}</a>
               : <div class="group relative">{body}</div>}
@@ -142,7 +148,10 @@ const focus = "focus-visible:outline-2 focus-visible:outline-signal focus-visibl
                   ? <img src={rec.posterUrl} alt="" class="h-full w-full object-cover" loading="lazy" decoding="async" />
                   : <span class="flex h-full w-full items-center justify-center font-pixel text-xl font-bold text-night-quiet" aria-hidden="true">{rec.title.charAt(0)}</span>}
               </div>
-              <span class="min-w-0"><b class="text-game-title font-semibold group-hover:text-signal">{rec.title}</b>{rec.releaseYear && <span class="ml-1.5 text-sm text-night-quiet">{rec.releaseYear}</span>}</span>
+              <span class="min-w-0">
+                <b class="text-game-title font-semibold group-hover:text-signal">{rec.title}</b>{rec.releaseYear && <span class="ml-1.5 text-sm text-night-quiet">{rec.releaseYear}</span>}
+                {rec.overview && <span class="mt-0.5 line-clamp-2 text-sm text-night-quiet">{rec.overview}</span>}
+              </span>
               <span class="hidden text-xs text-night-quiet md:block"><span class="sr-only">Platforms: </span>{platforms(rec).join(" · ")}</span>
               <span class="hidden h-games-meter overflow-hidden rounded-full bg-night-line md:block" aria-hidden="true"><span class="block h-full bg-signal" style={`width:${meter(rec)}`}></span></span>
               <span class="text-right font-pixel text-base font-bold">{rating(rec) ?? "—"}<span class="sr-only"> out of 10</span></span>
