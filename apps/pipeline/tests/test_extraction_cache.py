@@ -85,7 +85,7 @@ class ExtractionResultCacheTests(unittest.TestCase):
             payload={"reddit_post_id": "p1", "reddit_title": "Title",
                      "recommendations": [], "vibe": {"summary": "newer", "tags": []}},
         )
-        hit = lookup([older, newer], self.key())
+        hit = lookup([older, newer], self.key(), now=datetime(2026, 7, 28, tzinfo=timezone.utc))
         self.assertIsNotNone(hit)
         assert hit is not None
         self.assertEqual(hit["vibe"]["summary"], "newer")

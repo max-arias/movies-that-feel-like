@@ -55,13 +55,12 @@ SITES: dict[str, Site] = {
         migrations_dir="packages/db/migrations-games",
         media_types=("game",),
         include_flair=True,
-        # Assumed initial set: no local raw post carried a flair yet, so these
-        # are the usual promotion/showcase flair names. Tune from real data.
+        # Only flairs that can only mean promotion. Showcase/screenshot/mod
+        # posts are left to the extraction's is_request flag, since an image
+        # flair is also used by real requests. No local post had a flair yet.
         denied_flairs=frozenset({
             "self promotion", "self-promotion", "self promo", "self-promo",
-            "promotion", "promo", "advertisement", "ad",
-            "my game", "dev", "developer", "devlog", "dev log", "indie dev",
-            "showcase", "mod", "mods", "mod showcase", "screenshot", "screenshots",
+            "promotion", "promo", "advertisement", "devlog", "dev log",
         }),
     ),
 }
