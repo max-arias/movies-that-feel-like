@@ -1,27 +1,45 @@
-name: Import Reddit posts
+name: Import Reddit posts (reusable)
 
+# The Reddit import for one site, called by a thin per-site workflow that owns
+# the schedule and the deploy call:
+#
+#   import-reddit-movies.yml  r/MoviesThatFeelLike  D1 movies-that-feel-like  packages/db/migrations
+#   import-reddit-games.yml   r/GamesThatFeelLike   D1 games-that-feel-like   packages/db/migrations-games
+#
+# The pipeline picks the site from the `SITE` env var (apps/pipeline/src/pipeline/
+# sites.py), which this workflow sets from the `site` input. A run that releases
+# posts reports `released: true`; the caller then calls deploy-production.yml for
+# the same site. A site whose Wrangler config still carries PLACEHOLDER resource
+# ids is skipped with a notice.
 on:
-  schedule:
-    # Six runs a day, all outside OpenCode Go's weekday 2x price windows for
-    # deepseek-v4.1-flash (01:00-04:00 and 06:00-10:00 UTC).
-    - cron: '17 0,4,11,14,18,22 * * *'
-  workflow_dispatch:
+  workflow_call:
     inputs:
+      site:
+        description: 'Site to import: movies or games'
+        required: true
+        type: string
       limit:
         description: 'Maximum posts to fetch for this run'
-        required: true
+        required: false
         default: '30'
         type: string
       max_pages:
         description: 'Maximum fetch pages before stopping (positive integer)'
-        required: true
+        required: false
         default: '50'
         type: string
       verify_cache_round_trip:
         description: 'Run a bounded cache-only second pass against this run’s artifacts'
-        required: true
+        required: false
         default: false
         type: boolean
+    outputs:
+      released:
+        description: "'true' when the run pushed a release commit to main"
+        value: ${{ jobs.import.outputs.released }}
+      deferred:
+        description: "'true' when fetch deferred the run (Arctic Shift outage)"
+        value: ${{ jobs.import.outputs.deferred }}
 
 permissions:
   contents: write
@@ -32,7 +50,8 @@ defaults:
 
 env:
   # Both extraction passes must share the model and output-affecting settings
-  # so the cache-round-trip probe can reuse this run's extractions.
+  # so the cache-round-trip probe can reuse this run's extractions. Both sites
+  # use the same model.
   EXTRACTION_MODEL: deepseek-v4.1-flash
   # OpenCode Go meters dollars per model (5h: 20%, week: 50%, month: 100% of the
   # plan's monthly limit). A 5-post batch costs well under a cent, so the cap
@@ -43,26 +62,72 @@ env:
   EXTRACTION_MAX_REQUESTS: '30'
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Check the site's production resources
+        id: check
+        env:
+          SITE: ${{ inputs.site }}
+        run: |
+          set -euo pipefail
+          case "$SITE" in
+            movies) config=apps/astro/wrangler.jsonc ;;
+            games) config=apps/astro/wrangler.games.jsonc ;;
+            *) echo "Unknown site '$SITE': expected movies or games." >&2; exit 1 ;;
+          esac
+          if grep -Eq '"(id|database_id)"[[:space:]]*:[[:space:]]*"PLACEHOLDER' "$config"; then
+            echo "::notice title=Skipping $SITE import::$config still has PLACEHOLDER resource ids. Create the D1 database and KV namespace (docs/operations.md, \"Setting up the games site\") and commit their ids."
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          fi
+
   import:
+    needs: preflight
+    if: needs.preflight.outputs.ready == 'true'
     runs-on: ubuntu-latest
     environment: production
-    # Production D1 is mutated by this job and by the deploy job it calls, so both
-    # hold the same group and the group lives on the jobs, never on the workflow:
-    # a workflow-level group would already be held by this run when the reusable
-    # deploy workflow is called, and the deploy job would wait on itself.
+    # Production D1 is mutated by this job and by the deploy job the caller runs
+    # next, so both hold the same group, shared by both sites: every release
+    # commit pushes to main and refuses when main moved, so the imports and
+    # deploys of both sites run one at a time. The group lives on the jobs, never
+    # on a workflow: a workflow-level group would already be held by the calling
+    # run when the reusable deploy workflow is called, and the deploy job would
+    # wait on itself. `queue: max` keeps every waiting job; the default single
+    # pending slot would cancel a waiting job whenever another one queues.
     concurrency:
-      group: movies-import-production
+      group: production-release
       cancel-in-progress: false
+      queue: max
     # Fixed run paths remain available to diagnostic uploads after an early exit.
+    # WORK_DIR is the pipeline's working directory for the site (data/working for
+    # movies, data/games/working for games), so checkpoints land next to the run
+    # artifacts.
     env:
-      RAW_ARTIFACT: ${{ github.workspace }}/data/working/raw-${{ github.run_id }}.json
-      NORMALIZED_ARTIFACT: ${{ github.workspace }}/data/working/normalized-${{ github.run_id }}.json
-      EXTRACTION_ARTIFACT: ${{ github.workspace }}/data/working/extraction-${{ github.run_id }}.json
-      ENRICHMENT_ARTIFACT: ${{ github.workspace }}/data/working/enrichment-${{ github.run_id }}.json
+      SITE: ${{ inputs.site }}
+      SUBREDDIT: ${{ inputs.site == 'games' && 'GamesThatFeelLike' || 'MoviesThatFeelLike' }}
+      D1_DATABASE: ${{ inputs.site == 'games' && 'games-that-feel-like' || 'movies-that-feel-like' }}
+      WRANGLER_CONFIG: ${{ inputs.site == 'games' && 'apps/astro/wrangler.games.jsonc' || 'apps/astro/wrangler.jsonc' }}
+      MIGRATIONS_DIR: ${{ inputs.site == 'games' && 'packages/db/migrations-games' || 'packages/db/migrations' }}
+      WORK_DIR: ${{ github.workspace }}/${{ inputs.site == 'games' && 'data/games/working' || 'data/working' }}
+      RAW_ARTIFACT: ${{ github.workspace }}/${{ inputs.site == 'games' && 'data/games/working' || 'data/working' }}/raw-${{ github.run_id }}.json
+      NORMALIZED_ARTIFACT: ${{ github.workspace }}/${{ inputs.site == 'games' && 'data/games/working' || 'data/working' }}/normalized-${{ github.run_id }}.json
+      EXTRACTION_ARTIFACT: ${{ github.workspace }}/${{ inputs.site == 'games' && 'data/games/working' || 'data/working' }}/extraction-${{ github.run_id }}.json
+      ENRICHMENT_ARTIFACT: ${{ github.workspace }}/${{ inputs.site == 'games' && 'data/games/working' || 'data/working' }}/enrichment-${{ github.run_id }}.json
     outputs:
-      # A run that extracted nothing (no new posts, or every post deferred by
-      # quota) commits nothing and pushes nothing, so the deploy job is skipped.
-      released: ${{ steps.extraction_results.outputs.has-results == 'true' }}
+      # A run that extracted nothing (no new posts, every post deferred by quota,
+      # or a deferred fetch) commits nothing and pushes nothing, so the caller
+      # skips the deploy.
+      released: ${{ steps.fetch.outputs.deferred != 'true' && steps.extraction_results.outputs.has-results == 'true' }}
+      deferred: ${{ steps.fetch.outputs.deferred == 'true' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -87,14 +152,14 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          git ls-files 'packages/db/migrations/*.sql' | while IFS= read -r path; do basename "$path"; done | sort -u > /tmp/local-migrations
-          npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc \
+          git ls-files "$MIGRATIONS_DIR/*.sql" | while IFS= read -r path; do basename "$path"; done | sort -u > /tmp/local-migrations
+          npx wrangler d1 execute "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG" \
             --command 'SELECT name FROM d1_migrations ORDER BY name' --json \
             | jq -r '.[0].results[]?.name' | sort -u > /tmp/remote-migrations
           comm -23 /tmp/local-migrations /tmp/remote-migrations > /tmp/pending-migrations
           comm -13 /tmp/local-migrations /tmp/remote-migrations > /tmp/unknown-remote-migrations
           if [ -s /tmp/pending-migrations ] || [ -s /tmp/unknown-remote-migrations ]; then
-            echo 'Refusing normal import: local and production migration histories diverge.' >&2
+            echo "Refusing normal import: local and production migration histories of $D1_DATABASE diverge." >&2
             if [ -s /tmp/pending-migrations ]; then
               echo 'Missing in production D1:' >&2
               cat /tmp/pending-migrations >&2
@@ -111,13 +176,13 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          mkdir -p data/working
-          npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc \
+          mkdir -p $WORK_DIR
+          npx wrangler d1 execute "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG" \
             --command 'SELECT reddit_post_id FROM imported_vibe_posts ORDER BY reddit_post_id' --json \
-            | jq -r '.[0].results[]?.reddit_post_id' > data/working/excluded-reddit-ids.txt
+            | jq -r '.[0].results[]?.reddit_post_id' > $WORK_DIR/excluded-reddit-ids.txt
 
-      - name: Fetch and normalize new posts
-        id: normalize
+      - name: Fetch new posts
+        id: fetch
         env:
           IMPORT_LIMIT: ${{ inputs.limit || '30' }}
           IMPORT_MAX_PAGES: ${{ inputs.max_pages || '50' }}
@@ -125,17 +190,30 @@ jobs:
           set -euo pipefail
           [[ "$IMPORT_LIMIT" =~ ^[1-9][0-9]*$ ]] || { echo "limit must be a positive integer" >&2; exit 1; }
           [[ "$IMPORT_MAX_PAGES" =~ ^[1-9][0-9]*$ ]] || { echo "max_pages must be a positive integer" >&2; exit 1; }
-          raw="$RAW_ARTIFACT"
-          normalized="$NORMALIZED_ARTIFACT"
-          npm run pipeline:fetch -- --subreddit MoviesThatFeelLike --year 2026 --limit "$IMPORT_LIMIT" \
-            --max-pages "$IMPORT_MAX_PAGES" --sort desc --out "$raw" \
-            --exclude-reddit-ids-file "$GITHUB_WORKSPACE/data/working/excluded-reddit-ids.txt"
-          npm run pipeline:normalize -- --input "$raw" --out "$normalized" \
-            --exclude-reddit-ids-file "$GITHUB_WORKSPACE/data/working/excluded-reddit-ids.txt"
-          posts=$(jq -r '.posts | length' "$normalized")
+          # On an Arctic Shift outage fetch exits 0, writes no raw artifact and
+          # appends deferred=true to $GITHUB_OUTPUT (deferred=false otherwise).
+          # Every later step is guarded on it: the posts stay eligible for the
+          # next scheduled run, and nothing is committed or deployed.
+          npm run pipeline:fetch -- --subreddit "$SUBREDDIT" --year 2026 --limit "$IMPORT_LIMIT" \
+            --max-pages "$IMPORT_MAX_PAGES" --sort desc --out "$RAW_ARTIFACT" \
+            --exclude-reddit-ids-file "$WORK_DIR/excluded-reddit-ids.txt"
+
+      - name: Report deferred fetch
+        if: steps.fetch.outputs.deferred == 'true'
+        run: echo "::notice title=$SITE import deferred::Arctic Shift is unavailable; this run imports nothing and the posts stay eligible for the next run."
+
+      - name: Normalize new posts
+        id: normalize
+        if: steps.fetch.outputs.deferred != 'true'
+        run: |
+          set -euo pipefail
+          npm run pipeline:normalize -- --input "$RAW_ARTIFACT" --out "$NORMALIZED_ARTIFACT" \
+            --exclude-reddit-ids-file "$WORK_DIR/excluded-reddit-ids.txt"
+          posts=$(jq -r '.posts | length' "$NORMALIZED_ARTIFACT")
           echo "post-count=$posts" >> "$GITHUB_OUTPUT"
 
       - name: Reject truncated fetch scan
+        if: steps.fetch.outputs.deferred != 'true'
         run: |
           if [ "$(jq -r '.summary.pagination_truncated // false' "$RAW_ARTIFACT")" = true ]; then
             echo 'Fetch scan was truncated by max_pages; refusing to continue.' >&2
@@ -143,20 +221,20 @@ jobs:
           fi
 
       - name: Export canonical extraction cache snapshot
-        if: steps.normalize.outputs.post-count != '0'
+        if: steps.fetch.outputs.deferred != 'true' && steps.normalize.outputs.post-count != '0'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          mkdir -p data/working
-          npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --json \
+          mkdir -p $WORK_DIR
+          npx wrangler d1 execute "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG" --json \
             --command "WITH eligible AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY cache_key ORDER BY created_at DESC, id DESC) AS rn FROM extraction_result_cache WHERE datetime(fresh_until) > datetime('now')), ranked AS (SELECT *, (SELECT COUNT(*) FROM eligible WHERE rn = 1) AS eligible_count FROM eligible) SELECT * FROM ranked WHERE rn = 1 ORDER BY cache_key" \
-            | tee data/working/extraction-cache-snapshot.json \
+            | tee $WORK_DIR/extraction-cache-snapshot.json \
             | jq -e 'type == "array" and length == 1 and .[0].success == true and (.[0].results | type == "array") and ((.[0].results | length) == ((.[0].results[0].eligible_count // 0)))'
-          jq -r '.[0].results | "extraction snapshot rows=" + (length|tostring) + " eligible=" + ((.[0].eligible_count // 0)|tostring)' data/working/extraction-cache-snapshot.json
+          jq -r '.[0].results | "extraction snapshot rows=" + (length|tostring) + " eligible=" + ((.[0].eligible_count // 0)|tostring)' $WORK_DIR/extraction-cache-snapshot.json
 
       - name: Extract recommendations and persist extraction cache
-        if: steps.normalize.outputs.post-count != '0'
+        if: steps.fetch.outputs.deferred != 'true' && steps.normalize.outputs.post-count != '0'
         env:
           OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
         run: |
@@ -165,21 +243,21 @@ jobs:
             --model "$EXTRACTION_MODEL" --allow-errors \
             --batch-size "$EXTRACTION_BATCH_SIZE" --batch-max-chars "$EXTRACTION_BATCH_MAX_CHARS" \
             --max-requests "$EXTRACTION_MAX_REQUESTS" --rate-limit-rpm "$EXTRACTION_RATE_LIMIT_RPM" \
-            --cache-snapshot "$GITHUB_WORKSPACE/data/working/extraction-cache-snapshot.json"
-          printf '{"cache_records":[]}' > data/working/empty-cache.json
+            --cache-snapshot "$WORK_DIR/extraction-cache-snapshot.json"
+          printf '{"cache_records":[]}' > $WORK_DIR/empty-cache.json
           npm run pipeline:cache-sql -- --extraction "$EXTRACTION_ARTIFACT" \
-            --enrichment "$GITHUB_WORKSPACE/data/working/empty-cache.json" \
-            --out-dir "$GITHUB_WORKSPACE/data/working/cache-sql/extraction" \
-            --manifest "$GITHUB_WORKSPACE/data/working/extraction-cache-manifest.json"
+            --enrichment "$WORK_DIR/empty-cache.json" \
+            --out-dir "$WORK_DIR/cache-sql/extraction" \
+            --manifest "$WORK_DIR/extraction-cache-manifest.json"
 
       - name: Execute extraction cache DML remotely
-        if: steps.normalize.outputs.post-count != '0'
+        if: steps.fetch.outputs.deferred != 'true' && steps.normalize.outputs.post-count != '0'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
-          manifest=data/working/extraction-cache-manifest.json
+          manifest=$WORK_DIR/extraction-cache-manifest.json
           jq -e '.sources.extraction and (.chunks | type == "array")' "$manifest" >/dev/null
           source=$(jq -r '.sources.extraction.artifact' "$manifest"); source_sha=$(jq -r '.sources.extraction.artifact_sha256' "$manifest")
           test -f "$source" && test "$(sha256sum "$source" | cut -d' ' -f1)" = "$source_sha"
@@ -188,7 +266,7 @@ jobs:
             count=$(tr -cd ';' < "$path" | wc -c); bytes=$(wc -c < "$path")
             test -f "$path" && test "$(sha256sum "$path" | cut -d' ' -f1)" = "$sha" \
               && test "$count" = "$(jq -r '.statement_count' <<<"$row")" && test "$bytes" -le 65536
-            npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --file "$path"
+            npx wrangler d1 execute "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG" --file "$path"
           done < <(jq -c '.chunks[]' "$manifest")
           expected=$(jq '[.cache_records[] | select(.outcome == "extracted" or .outcome == "no_result") | .cache_key] | unique' "$source")
           manifest_count=$(jq -r '.sources.extraction.record_count' "$manifest")
@@ -199,13 +277,13 @@ jobs:
             exit 0
           fi
           keys_json=$(jq -c 'map(.)' <<<"$expected"); keys_sql=${keys_json//\'/\'\'}
-          rows=$(npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --command "SELECT cache_key FROM extraction_result_cache WHERE cache_key IN (SELECT value FROM json_each('$keys_sql')) AND datetime(fresh_until) > datetime('now') GROUP BY cache_key ORDER BY cache_key" --json)
+          rows=$(npx wrangler d1 execute "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG" --command "SELECT cache_key FROM extraction_result_cache WHERE cache_key IN (SELECT value FROM json_each('$keys_sql')) AND datetime(fresh_until) > datetime('now') GROUP BY cache_key ORDER BY cache_key" --json)
           jq -e --argjson expected "$expected" '([.[0].results[]?.cache_key] | sort) == ($expected | sort)' <<<"$rows" >/dev/null
           echo "extraction cache chunks=$(jq '.chunks|length' "$manifest") rows=$(jq '.sources.extraction.record_count' "$manifest")"
 
       - name: Decide whether extraction produced results
         id: extraction_results
-        if: steps.normalize.outputs.post-count != '0'
+        if: steps.fetch.outputs.deferred != 'true' && steps.normalize.outputs.post-count != '0'
         run: |
           set -euo pipefail
           if jq -e '.results | type == "array" and length > 0' "$EXTRACTION_ARTIFACT" >/dev/null 2>&1; then
@@ -224,19 +302,19 @@ jobs:
           exit 1
 
       - name: Export canonical enrichment cache snapshot
-        if: steps.extraction_results.outputs.has-results == 'true'
+        if: steps.fetch.outputs.deferred != 'true' && steps.extraction_results.outputs.has-results == 'true'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --json \
+          npx wrangler d1 execute "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG" --json \
             --command "WITH eligible AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY provider, candidate_key, candidate_key_version, query_title, query_year, query_media_type, language, include_adult, resolver_version, payload_schema_version ORDER BY fetched_at DESC, id DESC) AS rn FROM enrichment_resolution_cache WHERE datetime(fresh_until) > datetime('now') AND payload_schema_version = 1), ranked AS (SELECT *, (SELECT COUNT(*) FROM eligible WHERE rn = 1) AS eligible_count FROM eligible) SELECT * FROM ranked WHERE rn = 1 ORDER BY provider, candidate_key" \
-            | tee data/working/enrichment-cache-snapshot.json \
+            | tee $WORK_DIR/enrichment-cache-snapshot.json \
             | jq -e 'type == "array" and length == 1 and .[0].success == true and (.[0].results | type == "array") and ((.[0].results | length) == ((.[0].results[0].eligible_count // 0)))'
-          jq -r '.[0].results | "enrichment snapshot rows=" + (length|tostring) + " eligible=" + ((.[0].eligible_count // 0)|tostring)' data/working/enrichment-cache-snapshot.json
+          jq -r '.[0].results | "enrichment snapshot rows=" + (length|tostring) + " eligible=" + ((.[0].eligible_count // 0)|tostring)' $WORK_DIR/enrichment-cache-snapshot.json
 
       - name: Enrich recommendations and persist enrichment cache
-        if: steps.extraction_results.outputs.has-results == 'true'
+        if: steps.fetch.outputs.deferred != 'true' && steps.extraction_results.outputs.has-results == 'true'
         env:
           TMDB_ACCESS_TOKEN: ${{ secrets.TMDB_ACCESS_TOKEN }}
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
@@ -244,20 +322,20 @@ jobs:
         run: |
           set -euo pipefail
           npm run pipeline:enrich -- --input "$EXTRACTION_ARTIFACT" --out "$ENRICHMENT_ARTIFACT" \
-            --allow-failed-extraction --cache-snapshot "$GITHUB_WORKSPACE/data/working/enrichment-cache-snapshot.json"
-          npm run pipeline:cache-sql -- --extraction "$GITHUB_WORKSPACE/data/working/empty-cache.json" \
+            --allow-failed-extraction --cache-snapshot "$WORK_DIR/enrichment-cache-snapshot.json"
+          npm run pipeline:cache-sql -- --extraction "$WORK_DIR/empty-cache.json" \
             --enrichment "$ENRICHMENT_ARTIFACT" \
-            --out-dir "$GITHUB_WORKSPACE/data/working/cache-sql/enrichment" \
-            --manifest "$GITHUB_WORKSPACE/data/working/enrichment-cache-manifest.json"
+            --out-dir "$WORK_DIR/cache-sql/enrichment" \
+            --manifest "$WORK_DIR/enrichment-cache-manifest.json"
 
       - name: Execute enrichment cache DML remotely
-        if: steps.extraction_results.outputs.has-results == 'true'
+        if: steps.fetch.outputs.deferred != 'true' && steps.extraction_results.outputs.has-results == 'true'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
-          manifest=data/working/enrichment-cache-manifest.json
+          manifest=$WORK_DIR/enrichment-cache-manifest.json
           jq -e '.sources.enrichment and (.chunks | type == "array")' "$manifest" >/dev/null
           source=$(jq -r '.sources.enrichment.artifact' "$manifest"); source_sha=$(jq -r '.sources.enrichment.artifact_sha256' "$manifest")
           test -f "$source" && test "$(sha256sum "$source" | cut -d' ' -f1)" = "$source_sha"
@@ -266,7 +344,7 @@ jobs:
             count=$(tr -cd ';' < "$path" | wc -c); bytes=$(wc -c < "$path")
             test -f "$path" && test "$(sha256sum "$path" | cut -d' ' -f1)" = "$sha" \
               && test "$count" = "$(jq -r '.statement_count' <<<"$row")" && test "$bytes" -le 65536
-            npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --file "$path"
+            npx wrangler d1 execute "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG" --file "$path"
           done < <(jq -c '.chunks[]' "$manifest")
           expected=$(jq '[.cache_records[] | select(.outcome == "matched" or .outcome == "not_found") | {provider, candidate_key, candidate_key_version, query_title, query_year, query_media_type, language, include_adult, resolver_version}] | unique' "$source")
           manifest_count=$(jq -r '.sources.enrichment.record_count' "$manifest")
@@ -277,27 +355,27 @@ jobs:
             exit 0
           fi
           checksum=$(jq -r '[.cache_records[] | .source_artifact_checksum // empty][0]' "$source")
-          remote_count=$(npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --command "SELECT COUNT(DISTINCT provider || char(31) || candidate_key || char(31) || candidate_key_version || char(31) || query_title || char(31) || COALESCE(query_year, '') || char(31) || query_media_type || char(31) || language || char(31) || include_adult || char(31) || resolver_version) AS n FROM enrichment_resolution_cache WHERE source_artifact_checksum = '$checksum' AND payload_schema_version = 1" --json | jq -r '.[0].results[0].n')
+          remote_count=$(npx wrangler d1 execute "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG" --command "SELECT COUNT(DISTINCT provider || char(31) || candidate_key || char(31) || candidate_key_version || char(31) || query_title || char(31) || COALESCE(query_year, '') || char(31) || query_media_type || char(31) || language || char(31) || include_adult || char(31) || resolver_version) AS n FROM enrichment_resolution_cache WHERE source_artifact_checksum = '$checksum' AND payload_schema_version = 1" --json | jq -r '.[0].results[0].n')
           test "$remote_count" = "$manifest_count"
           echo "enrichment cache chunks=$(jq '.chunks|length' "$manifest") rows=$(jq '.sources.enrichment.record_count' "$manifest")"
 
       - name: Re-export persisted canonical cache snapshots
-        if: inputs.verify_cache_round_trip == true && steps.extraction_results.outputs.has-results == 'true'
+        if: inputs.verify_cache_round_trip == true && steps.fetch.outputs.deferred != 'true' && steps.extraction_results.outputs.has-results == 'true'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
-          npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --json \
+          npx wrangler d1 execute "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG" --json \
             --command "WITH eligible AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY cache_key ORDER BY created_at DESC, id DESC) AS rn FROM extraction_result_cache WHERE datetime(fresh_until) > datetime('now')), ranked AS (SELECT *, (SELECT COUNT(*) FROM eligible WHERE rn = 1) AS eligible_count FROM eligible) SELECT * FROM ranked WHERE rn = 1 ORDER BY cache_key" \
-            | tee data/working/extraction-cache-snapshot.json | jq -e '.[0].success == true and (.[0].results | type == "array")'
-          npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc --json \
+            | tee $WORK_DIR/extraction-cache-snapshot.json | jq -e '.[0].success == true and (.[0].results | type == "array")'
+          npx wrangler d1 execute "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG" --json \
             --command "WITH eligible AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY provider, candidate_key, candidate_key_version, query_title, query_year, query_media_type, language, include_adult, resolver_version, payload_schema_version ORDER BY fetched_at DESC, id DESC) AS rn FROM enrichment_resolution_cache WHERE datetime(fresh_until) > datetime('now') AND payload_schema_version = 1), ranked AS (SELECT *, (SELECT COUNT(*) FROM eligible WHERE rn = 1) AS eligible_count FROM eligible) SELECT * FROM ranked WHERE rn = 1 ORDER BY provider, candidate_key" \
-            | tee data/working/enrichment-cache-snapshot.json | jq -e '.[0].success == true and (.[0].results | type == "array")'
-          echo "persisted extraction rows=$(jq '.[0].results|length' data/working/extraction-cache-snapshot.json) enrichment rows=$(jq '.[0].results|length' data/working/enrichment-cache-snapshot.json)"
+            | tee $WORK_DIR/enrichment-cache-snapshot.json | jq -e '.[0].success == true and (.[0].results | type == "array")'
+          echo "persisted extraction rows=$(jq '.[0].results|length' $WORK_DIR/extraction-cache-snapshot.json) enrichment rows=$(jq '.[0].results|length' $WORK_DIR/enrichment-cache-snapshot.json)"
 
       - name: Verify cache round trip (bounded probe; never loads)
-        if: inputs.verify_cache_round_trip == true && steps.extraction_results.outputs.has-results == 'true'
+        if: inputs.verify_cache_round_trip == true && steps.fetch.outputs.deferred != 'true' && steps.extraction_results.outputs.has-results == 'true'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -307,71 +385,71 @@ jobs:
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
         run: |
           set -euo pipefail
-          jq -e '.[0].success == true' "$GITHUB_WORKSPACE/data/working/extraction-cache-snapshot.json" >/dev/null
-          jq -e '.[0].success == true' "$GITHUB_WORKSPACE/data/working/enrichment-cache-snapshot.json" >/dev/null
-          npm run pipeline:extract -- --input "$NORMALIZED_ARTIFACT" --out "$GITHUB_WORKSPACE/data/working/extraction-probe.json" \
+          jq -e '.[0].success == true' "$WORK_DIR/extraction-cache-snapshot.json" >/dev/null
+          jq -e '.[0].success == true' "$WORK_DIR/enrichment-cache-snapshot.json" >/dev/null
+          npm run pipeline:extract -- --input "$NORMALIZED_ARTIFACT" --out "$WORK_DIR/extraction-probe.json" \
             --model "$EXTRACTION_MODEL" \
             --max-requests 0 --rate-limit-rpm "$EXTRACTION_RATE_LIMIT_RPM" \
-            --limit 3 --cache-snapshot "$GITHUB_WORKSPACE/data/working/extraction-cache-snapshot.json"
-          npm run pipeline:enrich -- --input "$GITHUB_WORKSPACE/data/working/extraction-probe.json" --out "$GITHUB_WORKSPACE/data/working/enrichment-probe.json" \
-            --allow-failed-extraction --cache-snapshot "$GITHUB_WORKSPACE/data/working/enrichment-cache-snapshot.json"
-          jq -e '(.summary.cache_hits > 0) and (.summary.cache_hits == .summary.success_count) and (.summary.cache_writes == 0)' "$GITHUB_WORKSPACE/data/working/extraction-probe.json" >/dev/null
-          jq -e '(.summary.cache_hits > 0) and (.summary.cache_misses == 0) and (.summary.provider_calls == 0) and (.cache_records|length == 0)' "$GITHUB_WORKSPACE/data/working/enrichment-probe.json" >/dev/null
+            --limit 3 --cache-snapshot "$WORK_DIR/extraction-cache-snapshot.json"
+          npm run pipeline:enrich -- --input "$WORK_DIR/extraction-probe.json" --out "$WORK_DIR/enrichment-probe.json" \
+            --allow-failed-extraction --cache-snapshot "$WORK_DIR/enrichment-cache-snapshot.json"
+          jq -e '(.summary.cache_hits > 0) and (.summary.cache_hits == .summary.success_count) and (.summary.cache_writes == 0)' "$WORK_DIR/extraction-probe.json" >/dev/null
+          jq -e '(.summary.cache_hits > 0) and (.summary.cache_misses == 0) and (.summary.provider_calls == 0) and (.cache_records|length == 0)' "$WORK_DIR/enrichment-probe.json" >/dev/null
           echo 'Cache round trip passed: bounded probe was cache-only; probe artifacts were not loaded.'
 
       - name: Reject enrichment errors
-        if: steps.extraction_results.outputs.has-results == 'true'
+        if: steps.fetch.outputs.deferred != 'true' && steps.extraction_results.outputs.has-results == 'true'
         run: |
           errors=$(jq -r '.summary.error_count // (.errors | length) // 0' "$ENRICHMENT_ARTIFACT")
           [ "$errors" -eq 0 ] || { echo "Enrichment artifact contains $errors error(s)" >&2; exit 1; }
 
       - name: Load and generate migrations
-        if: steps.extraction_results.outputs.has-results == 'true'
+        if: steps.fetch.outputs.deferred != 'true' && steps.extraction_results.outputs.has-results == 'true'
         run: |
           npm run pipeline:load -- --normalized "$NORMALIZED_ARTIFACT" --extraction "$EXTRACTION_ARTIFACT" \
-            --enrichment "$ENRICHMENT_ARTIFACT" --out "$GITHUB_WORKSPACE/data/working/load-${GITHUB_RUN_ID}.json" --allow-partial-extraction
+            --enrichment "$ENRICHMENT_ARTIFACT" --out "$WORK_DIR/load-${GITHUB_RUN_ID}.json" --allow-partial-extraction
 
       - name: Validate load and prepare exact migration set
-        if: steps.extraction_results.outputs.has-results == 'true'
+        if: steps.fetch.outputs.deferred != 'true' && steps.extraction_results.outputs.has-results == 'true'
         run: |
           set -euo pipefail
-          load="$GITHUB_WORKSPACE/data/working/load-${GITHUB_RUN_ID}.json"
+          load="$WORK_DIR/load-${GITHUB_RUN_ID}.json"
           jq -e '.summary.errors == 0 and (.data_migrations | type == "array")' "$load" >/dev/null
-          relative_load="$GITHUB_WORKSPACE/data/working/load-${GITHUB_RUN_ID}-repo-relative.json"
+          relative_load="$WORK_DIR/load-${GITHUB_RUN_ID}-repo-relative.json"
           jq --arg root "$GITHUB_WORKSPACE" '.data_migrations |= map(.path |= if startswith($root + "/") then .[(($root | length) + 1):] else . end)' "$load" > "$relative_load"
-          rm -rf data/working/publishable-migrations && mkdir -p data/working/publishable-migrations
+          rm -rf $WORK_DIR/publishable-migrations && mkdir -p $WORK_DIR/publishable-migrations
           jq -r '.data_migrations[].path' "$relative_load" | while IFS= read -r path; do
-            case "$path" in packages/db/migrations/*.sql) ;; *) echo "Migration path is not repo-relative/publishable: $path" >&2; exit 1;; esac
+            case "$path" in "$MIGRATIONS_DIR"/*.sql) ;; *) echo "Migration path is not repo-relative/publishable: $path" >&2; exit 1;; esac
             git ls-files --error-unmatch "$path" >/dev/null 2>&1 && { echo "Generated migration already tracked: $path" >&2; exit 1; }
             test -f "$path"
-            cp -- "$path" data/working/publishable-migrations/
+            cp -- "$path" $WORK_DIR/publishable-migrations/
           done
 
       - name: Upload exact run artifacts
-        if: always() && (failure() || (steps.normalize.outputs.post-count != '' && steps.normalize.outputs.post-count != '0'))
+        if: always() && (failure() || (steps.fetch.outputs.deferred != 'true' && steps.normalize.outputs.post-count != '' && steps.normalize.outputs.post-count != '0'))
         uses: actions/upload-artifact@v4
         with:
-          name: reddit-import-${{ github.run_id }}
+          name: reddit-import-${{ inputs.site }}-${{ github.run_id }}
           if-no-files-found: error
           path: |
             ${{ env.RAW_ARTIFACT }}
             ${{ env.NORMALIZED_ARTIFACT }}
             ${{ env.EXTRACTION_ARTIFACT }}
             ${{ env.ENRICHMENT_ARTIFACT }}
-            ${{ github.workspace }}/data/working/load-${{ github.run_id }}.json
-            ${{ github.workspace }}/data/working/load-${{ github.run_id }}-repo-relative.json
-            data/working/checkpoints/*.jsonl
-            data/working/*cache-snapshot.json
-            data/working/*cache-manifest.json
-            data/working/cache-sql/extraction/*.sql
-            data/working/cache-sql/enrichment/*.sql
-            data/working/publishable-migrations/*.sql
+            ${{ env.WORK_DIR }}/load-${{ github.run_id }}.json
+            ${{ env.WORK_DIR }}/load-${{ github.run_id }}-repo-relative.json
+            ${{ env.WORK_DIR }}/checkpoints/*.jsonl
+            ${{ env.WORK_DIR }}/*cache-snapshot.json
+            ${{ env.WORK_DIR }}/*cache-manifest.json
+            ${{ env.WORK_DIR }}/cache-sql/extraction/*.sql
+            ${{ env.WORK_DIR }}/cache-sql/enrichment/*.sql
+            ${{ env.WORK_DIR }}/publishable-migrations/*.sql
 
       - name: Create local release commit
-        if: steps.extraction_results.outputs.has-results == 'true'
+        if: steps.fetch.outputs.deferred != 'true' && steps.extraction_results.outputs.has-results == 'true'
         run: |
           set -euo pipefail
-          mapfile -t migrations < <(jq -r '.data_migrations[].path' "$GITHUB_WORKSPACE/data/working/load-${GITHUB_RUN_ID}-repo-relative.json")
+          mapfile -t migrations < <(jq -r '.data_migrations[].path' "$WORK_DIR/load-${GITHUB_RUN_ID}-repo-relative.json")
           ((${#migrations[@]} > 0)) || { echo 'Load manifest has no publishable migrations' >&2; exit 1; }
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -379,30 +457,30 @@ jobs:
           printf '%s\n' "${migrations[@]}" | while IFS= read -r path; do basename "$path"; done | sort -u > /tmp/release-migration-names
           git add -- "${migrations[@]}"
           git diff --cached --name-only | sort | cmp - <(printf '%s\n' "${migrations[@]}" | sort) || { echo 'Staged paths differ from load manifest' >&2; exit 1; }
-          git commit -m "data: reddit import ${GITHUB_RUN_ID}"
+          git commit -m "data: $SITE reddit import ${GITHUB_RUN_ID}"
           git diff-tree --no-commit-id --name-only -r HEAD | sort | cmp - /tmp/release-migrations || { echo 'Release commit paths differ from load manifest' >&2; exit 1; }
 
       - name: Publish non-PR recovery ref
-        if: steps.extraction_results.outputs.has-results == 'true'
+        if: steps.fetch.outputs.deferred != 'true' && steps.extraction_results.outputs.has-results == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           gh auth setup-git --hostname github.com
-          recovery_ref="import-recovery-${GITHUB_RUN_ID}"
+          recovery_ref="import-recovery-${SITE}-${GITHUB_RUN_ID}"
           echo "RECOVERY_REF=$recovery_ref" >> "$GITHUB_ENV"
           git push origin "HEAD:refs/heads/$recovery_ref"
 
       - name: Apply release migrations and push main
-        if: steps.extraction_results.outputs.has-results == 'true'
+        if: steps.fetch.outputs.deferred != 'true' && steps.extraction_results.outputs.has-results == 'true'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git ls-files 'packages/db/migrations/*.sql' | while IFS= read -r path; do basename "$path"; done | sort -u > /tmp/local-release-migrations
-          npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc \
+          git ls-files "$MIGRATIONS_DIR/*.sql" | while IFS= read -r path; do basename "$path"; done | sort -u > /tmp/local-release-migrations
+          npx wrangler d1 execute "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG" \
             --command 'SELECT name FROM d1_migrations ORDER BY name' --json \
             | jq -r '.[0].results[]?.name' | sort -u > /tmp/remote-release-migrations
           comm -13 /tmp/local-release-migrations /tmp/remote-release-migrations > /tmp/remote-only-release-migrations
@@ -420,7 +498,7 @@ jobs:
           fi
 
           release_commit=$(git rev-parse HEAD)
-          npx wrangler d1 migrations apply movies-that-feel-like --remote --config apps/astro/wrangler.jsonc
+          npx wrangler d1 migrations apply "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG"
           if ! git push origin HEAD:main; then
             echo "D1 migrations were applied, but pushing main failed. Keep recovery ref '$RECOVERY_REF'." >&2
             echo "Recovery: push release commit $release_commit from '$RECOVERY_REF' to main, then verify d1_migrations before the next import." >&2
@@ -430,13 +508,3 @@ jobs:
             echo "Warning: main push succeeded, but cleanup of recovery ref '$RECOVERY_REF' failed; delete it manually." >&2
           fi
 
-  deploy:
-    # The release commit was pushed with GITHUB_TOKEN, which does not create push
-    # events, so the deploy has to be called explicitly. It reuses the same
-    # workflow a code push or a manual deploy runs, so production has one deploy
-    # path. A run that found no new posts pushed nothing, and the deployed site
-    # already matches main, so there is nothing to deploy.
-    needs: import
-    if: needs.import.outputs.released == 'true'
-    uses: ./.github/workflows/deploy-production.yml
-    secrets: inherit

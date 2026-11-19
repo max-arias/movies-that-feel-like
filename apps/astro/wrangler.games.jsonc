@@ -1,8 +1,10 @@
 // Games That Feel Like: the same Astro app built with `SITE=games`, deployed as
 // its own Worker over its own D1 database. Mirrors `wrangler.jsonc`.
 //
-// PLACEHOLDER ids: the D1 database and KV namespace do not exist yet. They are
-// created in MTFL-76; replace both PLACEHOLDER values with the real ids then.
+// Placeholder ids: the D1 database and KV namespace do not exist yet. Create them
+// (docs/operations.md, "Setting up the games site") and replace both
+// PLACEHOLDER-… values with the ids Wrangler prints. Until then the deploy and
+// import workflows skip the games site with a notice instead of failing.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "games-that-feel-like",

@@ -1,25 +1,49 @@
 name: Deploy production
 
-# Builds and deploys the site from an export of the production D1 corpus: the
+# Builds and deploys a site from an export of its production D1 corpus: the
 # prerendered feed and tag pages read D1 at build time, so the build needs a copy
 # of the live data, restored into an isolated local database. The runtime Worker
 # keeps its own production `DB` binding.
 #
-# Triggered by pushes to main, by hand, and by the import workflow after it
-# pushes a release commit. The import job there pushes with GITHUB_TOKEN, which
-# does not create push events, so that call is explicit rather than implied.
+# Two sites share this workflow, each its own Worker over its own D1:
+#
+#   movies: apps/astro/wrangler.jsonc        D1 movies-that-feel-like  packages/db/migrations
+#   games:  apps/astro/wrangler.games.jsonc  D1 games-that-feel-like   packages/db/migrations-games
+#
+# Triggers:
+# - a push to main: the `plan` job picks the sites the push touched (shared app
+#   and build paths deploy both; a site's migrations directory deploys only it);
+# - Run workflow, for one site or both;
+# - a call from a site's import workflow after it pushes a release commit. The
+#   import pushes with GITHUB_TOKEN, which does not create push events, so that
+#   call is explicit rather than implied.
+#
+# A site whose Wrangler config still carries PLACEHOLDER resource ids is skipped
+# with a notice, so pushes to main stay green until its D1 and KV exist.
 on:
   push:
     branches: [main]
     paths:
-      - 'apps/**'
-      - 'packages/**'
+      - 'apps/astro/**'
+      - 'packages/db/**'
       - 'scripts/**'
       - 'package.json'
       - 'bun.lock'
       - '.github/workflows/deploy-production.yml'
   workflow_dispatch:
+    inputs:
+      site:
+        description: 'Site to deploy'
+        required: true
+        default: both
+        type: choice
+        options: [both, movies, games]
   workflow_call:
+    inputs:
+      site:
+        description: 'Site to deploy: movies or games'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -28,23 +52,121 @@ defaults:
   run:
     shell: bash
 
-env:
-  D1_DATABASE_NAME: movies-that-feel-like
-
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      # JSON array of matrix entries, one per site to deploy; '[]' when none.
+      sites: ${{ steps.plan.outputs.sites }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          # The deploy job checks out the newest main, so the placeholder check
+          # reads the same config it would deploy.
+          ref: main
+          persist-credentials: false
+
+      - name: Pick the sites to deploy
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_SITE: ${{ inputs.site }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          movies=false games=false
+          case "$EVENT" in
+            push)
+              # Per-site path filter. Anything shared by both builds deploys both;
+              # a site's own migrations directory deploys only that site. A push
+              # whose base is unknown (new branch, force push past history we
+              # have) deploys both rather than guessing.
+              if [ -z "$BEFORE" ] || [ "$BEFORE" = 0000000000000000000000000000000000000000 ] \
+                || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+                echo "Push base '$BEFORE' is not available; deploying both sites."
+                movies=true games=true
+              else
+                while IFS= read -r path; do
+                  case "$path" in
+                    packages/db/migrations/*) movies=true ;;
+                    packages/db/migrations-games/*) games=true ;;
+                    apps/astro/*|packages/db/*|scripts/*|package.json|bun.lock|.github/workflows/deploy-production.yml)
+                      movies=true games=true ;;
+                  esac
+                done < <(git diff --name-only "$BEFORE" "$AFTER")
+              fi
+              ;;
+            *)
+              case "$INPUT_SITE" in
+                both) movies=true games=true ;;
+                movies) movies=true ;;
+                games) games=true ;;
+                *) echo "Unknown site '$INPUT_SITE': expected movies, games or both." >&2; exit 1 ;;
+              esac
+              ;;
+          esac
+
+          entries=()
+          add_site() {
+            local site=$1 config=$2 db=$3 migrations=$4 bootstrap=$5
+            # Resource ids Max has not created yet are spelled PLACEHOLDER-…; such
+            # a site cannot be deployed, and that is not an error.
+            if grep -Eq '"(id|database_id)"[[:space:]]*:[[:space:]]*"PLACEHOLDER' "$config"; then
+              echo "::notice title=Skipping $site deploy::$config still has PLACEHOLDER resource ids. Create the D1 database and KV namespace (docs/operations.md, \"Setting up the games site\") and commit their ids."
+              return
+            fi
+            entries+=("$(jq -cn --arg site "$site" --arg config "$config" --arg db "$db" \
+              --arg migrations "$migrations" --argjson bootstrap "$bootstrap" \
+              '{site: $site, config: $config, db: $db, migrations_dir: $migrations, empty_corpus_ok: $bootstrap}')")
+          }
+          # empty_corpus_ok: a freshly created database has no posts until its
+          # first import, which deploys it; until then a deploy is skipped with a
+          # notice. The movies corpus is never legitimately empty, so there an
+          # empty export still fails the build.
+          if [ "$movies" = true ]; then
+            add_site movies apps/astro/wrangler.jsonc movies-that-feel-like packages/db/migrations false
+          fi
+          if [ "$games" = true ]; then
+            add_site games apps/astro/wrangler.games.jsonc games-that-feel-like packages/db/migrations-games true
+          fi
+          if [ "${#entries[@]}" -gt 0 ]; then
+            sites=$(printf '%s\n' "${entries[@]}" | jq -cs .)
+          else
+            sites='[]'
+          fi
+          echo "sites=$sites" >> "$GITHUB_OUTPUT"
+          echo "Sites to deploy: $(jq -r 'map(.site) | join(", ") | if . == "" then "none" else . end' <<<"$sites")"
+
   deploy:
+    needs: plan
+    if: needs.plan.outputs.sites != '[]'
     runs-on: ubuntu-latest
     environment: production
-    # One production mutation at a time. The same group guards the import job, so
-    # an import and the deploy that follows it never overlap, a hand-pushed
-    # deploy waits for an in-flight import, and two deploys never race. The group
-    # is deliberately on the jobs rather than on the workflows: a called
-    # workflow's group would be held by the calling run and the deploy job would
-    # deadlock behind it. cancel-in-progress stays false — cancelling a job
-    # between a migration and a deploy would leave production half-updated.
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.sites) }}
+    # One production mutation at a time, across both sites. The same group guards
+    # both import jobs: they push release commits to main and refuse when main
+    # moved, so imports and deploys of either site never overlap. The group is
+    # deliberately on the jobs rather than on the workflows: a called workflow's
+    # group would be held by the calling run and the deploy job would deadlock
+    # behind it. cancel-in-progress stays false — cancelling a job between a
+    # migration and a deploy would leave production half-updated — and
+    # `queue: max` keeps every waiting job instead of the default single pending
+    # slot, where a newly queued job cancels the one already waiting (a games
+    # import would otherwise cancel a pending movies deploy).
     concurrency:
-      group: movies-import-production
+      group: production-release
       cancel-in-progress: false
+      queue: max
+    env:
+      SITE: ${{ matrix.site }}
+      WRANGLER_CONFIG: ${{ matrix.config }}
+      D1_DATABASE: ${{ matrix.db }}
+      MIGRATIONS_DIR: ${{ matrix.migrations_dir }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -66,8 +188,8 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          git ls-files 'packages/db/migrations/*.sql' | while IFS= read -r path; do basename "$path"; done | sort -u > /tmp/local-migrations
-          npx wrangler d1 execute movies-that-feel-like --remote --config apps/astro/wrangler.jsonc \
+          git ls-files "$MIGRATIONS_DIR/*.sql" | while IFS= read -r path; do basename "$path"; done | sort -u > /tmp/local-migrations
+          npx wrangler d1 execute "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG" \
             --command 'SELECT name FROM d1_migrations ORDER BY name' --json \
             | jq -r '.[0].results[]?.name' | sort -u > /tmp/remote-migrations
           comm -23 /tmp/local-migrations /tmp/remote-migrations > /tmp/pending-migrations
@@ -77,7 +199,7 @@ jobs:
           # hide that. Pending local migrations are the normal case here: they are
           # applied by the next step.
           if [ -s /tmp/unknown-remote-migrations ]; then
-            echo 'Refusing deploy: production D1 has migrations the repository does not.' >&2
+            echo "Refusing deploy: production D1 $D1_DATABASE has migrations the repository does not." >&2
             cat /tmp/unknown-remote-migrations >&2
             exit 1
           fi
@@ -92,33 +214,60 @@ jobs:
           # deployed Worker is still serving until the deploy below lands. The
           # import workflow applies its own generated migrations before pushing,
           # so this is usually a no-op there.
-          npx wrangler d1 migrations apply movies-that-feel-like --remote --config apps/astro/wrangler.jsonc
+          npx wrangler d1 migrations apply "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG"
+
+      - name: Check for a corpus to deploy
+        id: corpus
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          EMPTY_CORPUS_OK: ${{ matrix.empty_corpus_ok }}
+        run: |
+          set -euo pipefail
+          posts=$(npx wrangler d1 execute "$D1_DATABASE" --remote --config "$WRANGLER_CONFIG" \
+            --command 'SELECT COUNT(*) AS n FROM imported_vibe_posts' --json | jq -r '.[0].results[0].n')
+          echo "Production $D1_DATABASE holds $posts posts."
+          if [ "$posts" = 0 ] && [ "$EMPTY_CORPUS_OK" = true ]; then
+            # A new site before its first import: nothing to prerender yet. The
+            # first import that releases posts deploys it.
+            echo "::notice title=Skipping $SITE deploy::$D1_DATABASE has no posts yet; the first $SITE import will deploy the site."
+            echo 'skip=true' >> "$GITHUB_OUTPUT"
+          else
+            # An empty movies corpus is not skipped: the build refuses it loudly.
+            echo 'skip=false' >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Export production D1 corpus
+        if: steps.corpus.outputs.skip != 'true'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
-          snapshot="$RUNNER_TEMP/d1-corpus.sql"
+          snapshot="$RUNNER_TEMP/d1-corpus-$SITE.sql"
           # Data only: the build applies the tracked migrations itself, which keeps
-          # the schema (and its summary triggers) owned by packages/db/migrations.
-          npx wrangler d1 export movies-that-feel-like --remote --no-schema --skip-confirmation \
-            --config apps/astro/wrangler.jsonc --output "$snapshot"
+          # the schema (and its summary triggers) owned by the migrations directory.
+          npx wrangler d1 export "$D1_DATABASE" --remote --no-schema --skip-confirmation \
+            --config "$WRANGLER_CONFIG" --output "$snapshot"
           test -s "$snapshot"
           echo "D1_SNAPSHOT=$snapshot" >> "$GITHUB_ENV"
           echo "Exported corpus: $(wc -c < "$snapshot") bytes, sha256 $(sha256sum "$snapshot" | cut -d' ' -f1)"
 
       - name: Build production site from the exported corpus
+        if: steps.corpus.outputs.skip != 'true'
         # Deliberately no Cloudflare credentials: the build must read the local
         # restore, so any attempt to reach production D1 during prerendering fails
         # instead of silently querying production once per page.
         run: |
           node scripts/build-production.mjs \
+            --site "$SITE" \
+            --db "$D1_DATABASE" \
+            --migrations-dir "$MIGRATIONS_DIR" \
             --snapshot "$D1_SNAPSHOT" \
-            --state-dir "$RUNNER_TEMP/d1-build-state"
+            --state-dir "$RUNNER_TEMP/d1-build-state-$SITE"
 
       - name: Deploy Worker
+        if: steps.corpus.outputs.skip != 'true'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -126,11 +275,15 @@ jobs:
 
       - name: Summarize deployment
         if: always()
+        env:
+          SKIPPED: ${{ steps.corpus.outputs.skip }}
         run: |
           {
-            echo "### Production deploy"
+            echo "### Production deploy: $SITE"
             echo
-            echo "- commit: \`${{ github.sha }}\`"
+            echo "- worker config: \`$WRANGLER_CONFIG\`, D1: \`$D1_DATABASE\`"
+            echo "- commit: \`$(git rev-parse HEAD)\` (triggered by \`${{ github.sha }}\`)"
             echo "- ref: \`${{ github.ref }}\`"
+            if [ "$SKIPPED" = true ]; then echo "- skipped: no posts in D1 yet"; fi
             echo "- job status: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"
