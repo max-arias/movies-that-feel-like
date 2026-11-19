@@ -8,10 +8,10 @@
 
 Tickets live in the Obsidian vault, not GitHub Issues:
 
-- Board: `/mnt/c/Users/max/Documents/Obsidian Vault/movies-that-feel-like/Board.md`.
-- Tickets: `/mnt/c/Users/max/Documents/Obsidian Vault/movies-that-feel-like/tickets/MTFL-<n>.md`.
+- Board: `C:\Users\max\Documents\Obsidian Vault\movies-that-feel-like\Board.md`.
+- Tickets: `C:\Users\max\Documents\Obsidian Vault\movies-that-feel-like\tickets\MTFL-<n>.md`.
 
-Read `/mnt/c/Users/max/Documents/Obsidian Vault/Ticket System.md` for the format
+Read `C:\Users\max\Documents\Obsidian Vault\Ticket System.md` for the format
 and operations (create, read, list, comment, claim, resolve, frontier), triage
 labels, and how `/wayfinder` maps, children and blockers work.
 

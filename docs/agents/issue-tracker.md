@@ -1,12 +1,12 @@
 # Issue tracker: Obsidian board
 
-GitHub Issues and `TODO` files are not used for this repo. Work items are tickets in the Obsidian vault (`/mnt/c/Users/max/Documents/Obsidian Vault`):
+GitHub Issues and `TODO` files are not used for this repo. Work items are tickets in the Obsidian vault (`C:\Users\max\Documents\Obsidian Vault`):
 
 - Project folder: `movies-that-feel-like`, ticket prefix `MTFL`.
-- Board: `/mnt/c/Users/max/Documents/Obsidian Vault/movies-that-feel-like/Board.md`.
-- Tickets: `/mnt/c/Users/max/Documents/Obsidian Vault/movies-that-feel-like/tickets/MTFL-<n>.md`.
+- Board: `C:\Users\max\Documents\Obsidian Vault\movies-that-feel-like\Board.md`.
+- Tickets: `C:\Users\max\Documents\Obsidian Vault\movies-that-feel-like\tickets\MTFL-<n>.md`.
 
-`/mnt/c/Users/max/Documents/Obsidian Vault/Ticket System.md` is the spec for the board format, ticket frontmatter, lanes, operations (create, read, list, comment, claim, resolve, frontier), triage labels and wayfinding. Follow it instead of restating it here.
+`C:\Users\max\Documents\Obsidian Vault\Ticket System.md` is the spec for the board format, ticket frontmatter, lanes, operations (create, read, list, comment, claim, resolve, frontier), triage labels and wayfinding. Follow it instead of restating it here.
 
 ## Pull requests as a triage surface
 
