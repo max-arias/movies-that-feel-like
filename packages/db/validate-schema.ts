@@ -2,7 +2,10 @@
 // PRAGMA-based drift detection: compares Drizzle schema columns against
 // the actual D1 database schema. Exits 1 on any mismatch.
 //
-// Usage: tsx validate-schema.ts
+// Usage: tsx validate-schema.ts [--db <d1-database-name>] [--config <wrangler-config>]
+//   DB name:  --db, else $D1_DATABASE_NAME, else "movies-that-feel-like"
+//   Config:   --config, else $WRANGLER_CONFIG, else apps/astro/wrangler.jsonc
+//             (relative paths resolve from the repo root)
 // Requires: local D1 with migrations applied (npm run db:migrate)
 
 import { execSync } from "node:child_process";
@@ -14,8 +17,22 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const repoRoot = resolve(__dirname, "../..");
 
-const WRANGLER_CONFIG = resolve(repoRoot, "apps/astro/wrangler.jsonc");
-const DB_NAME = "movies-that-feel-like";
+function argValue(flag: string): string | undefined {
+  const args = process.argv.slice(2);
+  const eq = args.find((a) => a.startsWith(`${flag}=`));
+  if (eq) return eq.slice(flag.length + 1);
+  const i = args.indexOf(flag);
+  return i >= 0 ? args[i + 1] : undefined;
+}
+
+const DB_NAME =
+  argValue("--db") || process.env.D1_DATABASE_NAME || "movies-that-feel-like";
+const WRANGLER_CONFIG = resolve(
+  repoRoot,
+  argValue("--config") ||
+    process.env.WRANGLER_CONFIG ||
+    "apps/astro/wrangler.jsonc"
+);
 
 const TABLES: Record<string, Record<string, unknown>> = {
   imported_vibe_posts: schema.importedVibePosts,

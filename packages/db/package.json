@@ -5,7 +5,7 @@
     "drizzle-orm": "^0.45.2"
   },
   "scripts": {
-    "migrate": "wrangler d1 migrations apply movies-that-feel-like --local",
+    "migrate": "wrangler d1 migrations apply ${D1_DATABASE_NAME:-movies-that-feel-like} --local --config ../../${WRANGLER_CONFIG:-apps/astro/wrangler.jsonc}",
     "validate-schema": "tsx validate-schema.ts"
   },
   "devDependencies": {
