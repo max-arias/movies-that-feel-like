@@ -6,3 +6,8 @@ declare namespace Cloudflare {
     ASSETS: Fetcher;
   }
 }
+
+interface ImportMetaEnv {
+  /** Which site this build is: `movies` or `games`. Inlined by astro.config.mjs from `SITE`. */
+  readonly SITE_ID: string;
+}

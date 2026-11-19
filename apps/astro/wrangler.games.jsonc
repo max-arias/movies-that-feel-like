@@ -1,0 +1,33 @@
+// Games That Feel Like: the same Astro app built with `SITE=games`, deployed as
+// its own Worker over its own D1 database. Mirrors `wrangler.jsonc`.
+//
+// PLACEHOLDER ids: the D1 database and KV namespace do not exist yet. They are
+// created in MTFL-76; replace both PLACEHOLDER values with the real ids then.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "games-that-feel-like",
+  "main": "src/worker-entry.ts",
+  "compatibility_date": "2026-07-13",
+  "compatibility_flags": ["nodejs_compat"],
+  "kv_namespaces": [
+    {
+      "binding": "SESSION",
+      "id": "PLACEHOLDER-games-session-kv-id"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "games-that-feel-like",
+      "database_id": "PLACEHOLDER-games-d1-database-id",
+      "migrations_dir": "../../packages/db/migrations-games"
+    }
+  ],
+  "assets": {
+    "binding": "ASSETS",
+    // Every request to the root goes through the Worker: middleware answers the
+    // legacy `/?tag=…&page=…` URLs with a permanent redirect and delegates a
+    // plain `/` to the prerendered feed. Everything else is assets-first.
+    "run_worker_first": ["/"]
+  }
+}

@@ -1,0 +1,15 @@
+---
+// Picks the feed design for the site this bundle was built for: the games
+// "Night" feed or the movies feed. Both take the same FeedPage.
+import Feed from "./Feed.astro";
+import GamesFeed from "./GamesFeed.astro";
+import type { FeedPage } from "../lib/db/queries";
+import { site } from "../site";
+
+export interface Props {
+  page: FeedPage;
+}
+const { page } = Astro.props;
+---
+
+{site.id === "games" ? <GamesFeed page={page} /> : <Feed page={page} />}

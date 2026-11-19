@@ -9,10 +9,11 @@
 // so a URL's markup does not depend on which one answered it.
 
 import Layout from "../layouts/Layout.astro";
-import Feed from "../components/Feed.astro";
+import SiteFeed from "../components/SiteFeed.astro";
 import FeedNotFound from "../components/FeedNotFound.astro";
 import { getDb } from "../lib/db";
 import { feedDescription, feedTitle, resolveOnDemandFeed } from "../lib/feed-routes";
+import { pageTitle } from "../site";
 
 // One URL per feed page: the asset store redirects the prerendered pages, the
 // on-demand ones redirect themselves.
@@ -28,8 +29,8 @@ const page = outcome.kind === "feed" ? outcome.page : null;
 ---
 
 <Layout
-  title={page ? feedTitle(page) : "Feed page not found — Movies That Feel Like"}
+  title={page ? feedTitle(page) : pageTitle("Feed page not found")}
   description={page ? feedDescription(page) : undefined}
 >
-  {page ? <Feed page={page} /> : <FeedNotFound />}
+  {page ? <SiteFeed page={page} /> : <FeedNotFound />}
 </Layout>

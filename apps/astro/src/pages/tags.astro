@@ -9,14 +9,36 @@ import Layout from "../layouts/Layout.astro";
 import { getDb } from "../lib/db";
 import { loadTagCounts } from "../lib/db/queries";
 import { feedHref } from "../lib/feed-paths";
+import { pageTitle, site } from "../site";
 
 const tags = (await loadTagCounts(getDb())).sort((a, b) => a.tag.localeCompare(b.tag, "en"));
 ---
 
 <Layout
-  title="All tags — Movies That Feel Like"
+  title={pageTitle("All tags")}
   description="Every feeling the index can be filtered by, from the largest tag to the smallest."
 >
+  {site.id === "games" ? (
+    <div class="px-games-gutter pt-8 pb-24">
+      <header class="mb-8 flex flex-wrap items-baseline justify-between gap-2 border-b-2 border-night-line pb-4">
+        <h1 class="font-pixel text-section font-bold uppercase">All tags</h1>
+        <p class="text-meta text-night-quiet">{tags.length} tags</p>
+      </header>
+      <nav aria-label="All tags">
+        <ul class="flex flex-wrap gap-2">
+          {tags.map(({ tag, count }) => (
+            <li>
+              <a
+                href={feedHref(tag)}
+                aria-label={`${tag}, ${count} ${count === 1 ? "post" : "posts"}`}
+                class="inline-flex items-center gap-2 rounded-full border-2 border-night-ink px-3 py-1 text-meta font-semibold transition-colors duration-200 hover:border-signal hover:bg-signal hover:text-night focus-visible:outline-2 focus-visible:outline-signal focus-visible:outline-offset-4"
+              >{tag}<span class="opacity-60">{count}</span></a>
+            </li>
+          ))}
+        </ul>
+      </nav>
+    </div>
+  ) : (
   <div class="pt-8 pb-24">
     <header class="mb-8 flex flex-wrap items-baseline justify-between gap-2 border-b border-line pb-3 transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:border-line-dark">
       <h1 class="font-display text-caption uppercase tracking-theme text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-ink-dark">All tags</h1>
@@ -39,4 +61,5 @@ const tags = (await loadTagCounts(getDb())).sort((a, b) => a.tag.localeCompare(b
       </ul>
     </nav>
   </div>
+  )}
 </Layout>

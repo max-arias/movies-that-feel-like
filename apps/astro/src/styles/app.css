@@ -120,6 +120,39 @@ body {
   --spacing-tag-hover: 5px;
   --ease-theme: ease;
   --ease-gallery: ease;
+
+  /* Games site ("Night"). Its fonts load from Google Fonts in Layout. */
+  --color-night: oklch(14% 0.004 286);
+  --color-night-card: oklch(21% 0.006 286);
+  --color-night-ink: oklch(95% 0.008 107);
+  --color-night-quiet: oklch(95% 0.008 107 / 0.55);
+  --color-night-line: oklch(95% 0.008 107 / 0.2);
+  --color-night-shade: oklch(0% 0 0 / 0.7);
+  --color-signal: oklch(86% 0.15 100);
+  --font-pixel: "Silkscreen", ui-monospace, monospace;
+  --font-grotesk: "Schibsted Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --text-pill: clamp(1.75rem, 4.4vw, 4rem);
+  --text-pill--line-height: 1;
+  --text-meta: .875rem;
+  --text-meta--line-height: 1.4;
+  --text-section: 1.75rem;
+  --text-section--line-height: 1;
+  --text-row-heading: 1.625rem;
+  --text-row-heading--line-height: 1.15;
+  --text-hero-summary: clamp(1.125rem, 2vw, 1.625rem);
+  --text-hero-summary--line-height: 1.25;
+  --text-game-title: 1.0625rem;
+  --text-game-title--line-height: 1.25;
+  --spacing-games-gutter: 28px;
+  --spacing-games-hero: 64vh;
+  --spacing-games-detail-hero: 70vh;
+  --spacing-games-row-image: 200px;
+  --spacing-games-thumb-w: 72px;
+  --spacing-games-thumb-h: 48px;
+  --spacing-games-cover-w: 52px;
+  --spacing-games-cover-h: 70px;
+  --spacing-games-meter: 8px;
+  --aspect-games-card: 16 / 10;
 }
 
 @custom-variant theme-dark (&:where([data-theme="dark"], [data-theme="dark"] *));
@@ -145,3 +178,11 @@ body {
 }
 
 @utility index-grid { grid-template-columns: minmax(0, 1fr) clamp(200px, 25vw, 200px); }
+
+/* Games: feed row (image · text) and ranked game row. */
+@utility games-row-grid { grid-template-columns: 300px minmax(0, 1fr); }
+@utility games-item-grid { grid-template-columns: 44px var(--spacing-games-cover-w) minmax(0, 1fr) 220px 120px 60px; }
+@utility games-item-grid-mobile { grid-template-columns: 32px var(--spacing-games-cover-w) minmax(0, 1fr) 44px; }
+@utility games-meter-grid { grid-template-columns: minmax(0, 1fr) 70px; }
+@utility games-hero-shade { background: linear-gradient(180deg, transparent 45%, var(--color-night-shade)); }
+@utility games-card-shade { background: linear-gradient(transparent, var(--color-night-shade)); }

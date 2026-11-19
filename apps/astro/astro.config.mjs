@@ -54,6 +54,18 @@ function assertPrerenderDataSource(command) {
   );
 }
 
+/**
+ * Which site this build renders, from the `SITE` env var: `movies` (default) or
+ * `games`. Read once here and inlined as `import.meta.env.SITE_ID`, which
+ * `src/site.ts` turns into that site's copy and links.
+ */
+function resolveSiteId() {
+  const value = process.env.SITE ?? "";
+  if (value === "" || value === "movies") return "movies";
+  if (value === "games") return "games";
+  throw new Error(`Unknown SITE "${value}": expected "movies" or "games".`);
+}
+
 export default defineConfig(resolveAstroConfig());
 
 /**
@@ -69,6 +81,7 @@ function resolveAstroConfig() {
   // Set by scripts/build-production.mjs to the isolated restore directory.
   // Absolute, because Wrangler resolves `--persist-to` against its own cwd.
   const stateDir = process.env.BUILD_D1_STATE_DIR;
+  const siteId = resolveSiteId();
 
   return {
     output: "server",
@@ -77,12 +90,18 @@ function resolveAstroConfig() {
       // Bindings marked `remote: true` are ignored: neither the build nor the dev
       // server may reach production D1 or KV.
       remoteBindings: false,
+      // Each site is its own Worker over its own D1: the games build reads
+      // `wrangler.games.jsonc`, the movies build the default `wrangler.jsonc`.
+      ...(siteId === "games" ? { configPath: "wrangler.games.jsonc" } : {}),
       persistState: stateDir ? { path: stateDir } : true,
     }),
     cache: { provider: cacheCloudflare() },
     routeRules: ROUTE_RULES,
     vite: {
       plugins: [tailwindcss()],
+      define: {
+        "import.meta.env.SITE_ID": JSON.stringify(siteId),
+      },
     },
   };
 }

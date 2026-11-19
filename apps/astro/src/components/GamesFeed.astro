@@ -1,0 +1,148 @@
+---
+// The games site's feed ("Night" design, MTFL-85): a cinematic hero for the
+// page's first post, mood pills, and numbered rows that list each post's top
+// games with IGDB rating meters. Rendered by every feed URL through SiteFeed,
+// with the same routes, pagination and tag links as the movies Feed.
+
+import { PAGE_SIZE, loadPostGames, type FeedPage } from "../lib/db/queries";
+import { getDb } from "../lib/db";
+import { feedHref } from "../lib/feed-paths";
+import { site } from "../site";
+
+export interface Props {
+  page: FeedPage;
+}
+
+const { page } = Astro.props;
+const { posts, tagCounts, selectedTag, currentPage, pageCount } = page;
+const gamesByPost = await loadPostGames(getDb(), posts.map((post) => post.id));
+
+// The hero is the page's newest tagged post, so the pill has a mood to show.
+const hero = posts.find((post) => post.tags.length > 0) ?? posts[0];
+const heroPill = selectedTag ?? hero?.tags[0] ?? null;
+const postHref = (redditPostId: string) => `/posts/${redditPostId}/`;
+const imageOf = (post: (typeof posts)[number]) => post.images[0]?.previewUrl ?? post.images[0]?.sourceUrl ?? "";
+// The hero is full-width, so it takes Reddit's original upload; the stored
+// preview is capped at 960px wide.
+const heroImageOf = (post: (typeof posts)[number]) => post.images[0]?.sourceUrl ?? post.images[0]?.previewUrl ?? "";
+// The hero post is not repeated in the list below it.
+const listed = posts.filter((post) => post !== hero);
+const meter = (voteAverage: number | null) => `${Math.round((voteAverage ?? 0) * 10)}%`;
+
+const pageCountFor = (tag: string) => Math.max(1, Math.ceil((tagCounts.find((entry) => entry.tag === tag)?.count ?? 0) / PAGE_SIZE));
+const tagHref = (tag: string | null) => feedHref(tag, tag === null ? currentPage : Math.min(currentPage, pageCountFor(tag)));
+const pageItems: (number | "ellipsis")[] = pageCount <= 4
+  ? Array.from({ length: pageCount }, (_, index) => index + 1)
+  : currentPage <= 2
+    ? [1, 2, 3, "ellipsis", pageCount]
+    : currentPage >= pageCount - 1
+      ? [1, "ellipsis", pageCount - 2, pageCount - 1, pageCount]
+      : [1, "ellipsis", currentPage, "ellipsis", pageCount];
+const pageHref = (pageNumber: number) => feedHref(selectedTag, pageNumber);
+const footerLinks = [
+  { text: site.subreddit.name, href: site.subreddit.href },
+  ...site.footerLinks,
+  ...(site.attribution ? [site.attribution] : []),
+];
+
+const focus = "focus-visible:outline-2 focus-visible:outline-signal focus-visible:outline-offset-4";
+const pill = "inline-flex items-center rounded-full border-2 px-3 py-0.5 text-meta font-semibold transition-colors duration-200";
+---
+
+{posts.length === 0 || !hero ? (
+  <div class="m-games-gutter rounded-2xl border-2 border-night-line p-empty">
+    <h2 class="mb-2.5 font-pixel text-section font-bold uppercase">{site.emptyState.heading}</h2>
+    {site.emptyState.lines.map((line) => <p class="text-night-quiet" set:html={line} />)}
+  </div>
+) : (
+  <>
+    <article class="relative m-games-gutter h-games-hero overflow-hidden rounded-2xl bg-night-card" aria-label="Featured post">
+      <a href={postHref(hero.redditPostId)} class:list={["absolute inset-0 block overflow-hidden", focus]} aria-label={`View details for ${hero.title}`} data-gallery>
+        <img class="absolute inset-0 h-full w-full scale-110 object-cover blur-2xl brightness-50" src={heroImageOf(hero)} alt="" aria-hidden="true" decoding="async" />
+        <img class="relative h-full w-full object-cover data-small:object-contain" src={heroImageOf(hero)} alt="" loading="eager" fetchpriority="high" decoding="async" data-fit />
+      </a>
+      <div class="games-hero-shade pointer-events-none absolute inset-0" aria-hidden="true"></div>
+      <div class="pointer-events-none absolute inset-x-0 bottom-8 grid justify-items-center gap-3 px-6 text-center">
+        {heroPill && <a href={feedHref(heroPill)} aria-current={selectedTag === heroPill ? "page" : undefined} class:list={["pointer-events-auto max-w-11/12 rounded-full bg-night-ink px-6 pt-2.5 pb-3.5 font-pixel text-pill font-bold uppercase text-night transition-colors duration-200 hover:bg-signal", focus]}>{heroPill}</a>}
+        <h1 class="max-w-2xl text-hero-summary font-semibold text-balance text-night-ink" data-vibe>{hero.vibeSummary ?? hero.title}</h1>
+      </div>
+    </article>
+
+    <nav class="flex flex-wrap justify-center gap-2 px-games-gutter pb-7" aria-label="Filter by feeling">
+      <a href={tagHref(null)} aria-current={selectedTag === null ? "page" : undefined} class:list={[pill, focus, selectedTag === null ? "border-signal bg-signal text-night" : "border-night-ink hover:bg-signal hover:border-signal hover:text-night"]}>All</a>
+      {tagCounts.slice(0, 24).map(({ tag, count }) => (
+        <a href={tagHref(tag)} aria-current={selectedTag === tag ? "page" : undefined} class:list={[pill, focus, selectedTag === tag ? "border-signal bg-signal text-night" : "border-night-ink hover:bg-signal hover:border-signal hover:text-night"]}>{tag} · {count}</a>
+      ))}
+      <a href="/tags/" class:list={[pill, focus, "border-transparent text-signal hover:text-night-ink"]}>All tags →</a>
+    </nav>
+
+    <section class="px-games-gutter" aria-label="Vibe posts">
+      <ul>
+        {listed.map((post) => {
+          const entry = gamesByPost.get(post.id);
+          return (
+            <li class="border-t-2 border-night-line py-7">
+             <article class="grid grid-cols-1 gap-4 md:games-row-grid md:gap-7">
+              <a href={postHref(post.redditPostId)} class:list={["block h-games-row-image cursor-pointer overflow-hidden rounded-xl bg-night-card ring-signal ring-offset-4 ring-offset-night transition-shadow duration-200 hover:ring-2", focus]} aria-label={`View details for ${post.title}`} data-gallery>
+                <img class="h-full w-full object-cover" src={imageOf(post)} alt="" loading="lazy" decoding="async" />
+              </a>
+              <div class="min-w-0">
+                {post.tags.length > 0 && (
+                  <p class="text-meta text-night-quiet">
+                    {post.tags.map((tag, i) => (
+                      <>
+                        {i > 0 && <span aria-hidden="true"> / </span>}
+                        <a href={feedHref(tag)} aria-current={selectedTag === tag ? "page" : undefined} class:list={["underline-offset-4 transition-colors duration-200 hover:text-signal hover:underline", focus, { "text-signal": selectedTag === tag }]}>{tag}</a>
+                      </>
+                    ))}
+                  </p>
+                )}
+                <h2 class="mt-1 text-row-heading font-semibold text-pretty" data-vibe><a href={postHref(post.redditPostId)} class:list={["transition-colors duration-200 hover:text-signal", focus]}>{post.vibeSummary ?? post.title}</a></h2>
+                {entry && entry.games.length > 0 && (
+                  <ul class="mt-4 columns-1 gap-8 md:columns-2">
+                    {entry.games.map((game) => (
+                      <li class="grid break-inside-avoid games-meter-grid items-center gap-2.5 border-b border-dashed border-night-line py-1.5 text-sm">
+                        <span class="min-w-0">{game.title} {game.releaseYear && <span class="text-xs text-night-quiet">{game.releaseYear}</span>}</span>
+                        <span class="h-games-meter overflow-hidden rounded-full bg-night-line" aria-label={game.voteAverage == null ? "No rating" : `Rated ${game.voteAverage.toFixed(1)} of 10`}>
+                          <span class="block h-full bg-signal" style={`width:${meter(game.voteAverage)}`}></span>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {entry && <a href={postHref(post.redditPostId)} class:list={["mt-3.5 inline-block text-meta font-semibold text-signal hover:text-night-ink", focus]}>All {entry.total} games →</a>}
+              </div>
+             </article>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+
+    {pageCount > 1 && (
+      <nav class="flex flex-wrap items-center justify-center gap-x-4 gap-y-2 py-10 text-meta text-night-quiet" aria-label="Pagination">
+        {currentPage > 1 && <a class:list={["hover:text-signal", focus]} href={pageHref(currentPage - 1)} aria-label="Previous page">&lt;</a>}
+        {pageItems.map((item) => item === "ellipsis"
+          ? <span aria-hidden="true">…</span>
+          : item === currentPage
+            ? <span class="rounded-full bg-signal px-2.5 text-night" aria-current="page">{item}</span>
+            : <a class:list={["hover:text-signal", focus]} href={pageHref(item)}>{item}</a>)}
+        {currentPage < pageCount && <a class:list={["hover:text-signal", focus]} href={pageHref(currentPage + 1)} aria-label="Next page">&gt;</a>}
+      </nav>
+    )}
+
+    <footer class="mx-games-gutter mt-6 flex flex-wrap items-center justify-end gap-3 border-t-2 border-night-line py-8 text-meta text-night-quiet">
+      {footerLinks.map((link, index) => (
+        <>
+          {index > 0 && <span aria-hidden="true">·</span>}
+          <a class:list={["hover:text-signal", focus]} href={link.href} target="_blank" rel="noopener noreferrer">{link.text}</a>
+        </>
+      ))}
+    </footer>
+  </>
+)}
+
+<script>
+  import { fitSmallImages } from "../lib/fit-small-images";
+  document.addEventListener("astro:page-load", fitSmallImages);
+</script>

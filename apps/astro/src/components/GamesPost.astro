@@ -1,0 +1,165 @@
+---
+// The games site's post detail body ("Night" design, MTFL-85): a cinematic
+// hero with a pixel tag pill, the source thread, and the thread's games — the
+// top three as artwork cards, the rest as a ranked list with IGDB ratings.
+// Rendered by pages/posts/[id].astro, whose scripts drive the hero crossfade,
+// thumbnails, autoplay and lightbox through the same data attributes the
+// movies hero uses.
+
+import type { PostDetail, Recommendation } from "../lib/db/queries";
+import { feedHref } from "../lib/feed-paths";
+import { site } from "../site";
+
+export interface Props {
+  post: PostDetail;
+}
+
+const { post } = Astro.props;
+const galleryImages = post.images.slice(0, 10);
+const totalImages = galleryImages.length;
+const games = post.recommendations.filter((rec) => rec.mediaType === "game");
+const featured = games.slice(0, 3);
+const rest = games.slice(3);
+const date = new Date(post.createdUtc * 1000).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" });
+
+const PLATFORM_SHORT: Record<string, string> = {
+  "PC (Microsoft Windows)": "PC",
+  "PlayStation 5": "PS5",
+  "PlayStation 4": "PS4",
+  "PlayStation 3": "PS3",
+  PlayStation: "PS1",
+  "PlayStation Portable": "PSP",
+  "Xbox Series X|S": "Xbox Series",
+  "Nintendo Switch": "Switch",
+  "Nintendo Switch 2": "Switch 2",
+};
+const platforms = (rec: Recommendation) =>
+  [...new Set((rec.platforms ?? []).filter((p) => p.trim().length > 0).map((p) => PLATFORM_SHORT[p] ?? p))];
+const rating = (rec: Recommendation) => (rec.voteAverage == null ? null : rec.voteAverage.toFixed(1));
+const meter = (rec: Recommendation) => `${Math.round((rec.voteAverage ?? 0) * 10)}%`;
+const rank = (n: number) => String(n).padStart(2, "0");
+
+const focus = "focus-visible:outline-2 focus-visible:outline-signal focus-visible:outline-offset-4";
+---
+
+<section class="relative mx-games-gutter mt-6 h-games-detail-hero overflow-hidden rounded-2xl bg-night-card" aria-label="Post hero">
+  <div class="absolute inset-0" data-hero-gallery transition:name={`post-image-${post.redditPostId}`} aria-label={`Image gallery. ${totalImages} image${totalImages === 1 ? "" : "s"}.`}>
+    {galleryImages.map((img, i) => (
+      <div class="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-1600 ease-in-out motion-reduce:transition-none data-[active=true]:pointer-events-auto data-[active=true]:opacity-100" data-hero-slide data-active={i === 0 ? "true" : "false"} inert={i !== 0}>
+        <button type="button" class:list={["relative block h-full w-full cursor-zoom-in overflow-hidden", focus]} data-open-lightbox={i} aria-label={`Open image ${i + 1} of ${totalImages} at full size`}>
+          <img src={img.sourceUrl ?? img.previewUrl} alt="" aria-hidden="true" class="absolute inset-0 h-full w-full scale-110 object-cover blur-2xl brightness-50" loading={i === 0 ? "eager" : "lazy"} decoding="async" />
+          <img src={img.sourceUrl ?? img.previewUrl} alt={`Post image ${i + 1} of ${totalImages}`} class="relative h-full w-full object-cover data-small:object-contain" loading={i === 0 ? "eager" : "lazy"} decoding="async" fetchpriority={i === 0 ? "high" : undefined} data-fit />
+        </button>
+      </div>
+    ))}
+  </div>
+  <div class="games-hero-shade pointer-events-none absolute inset-0" aria-hidden="true"></div>
+  <div class="pointer-events-none absolute inset-x-0 bottom-8 grid justify-items-center gap-3 px-6 text-center">
+    {post.tags[0] && <a href={feedHref(post.tags[0])} class:list={["pointer-events-auto max-w-11/12 rounded-full bg-night-ink px-6 pt-2.5 pb-3.5 font-pixel text-pill font-bold uppercase text-night transition-colors duration-200 hover:bg-signal", focus]}>{post.tags[0]}</a>}
+    <h1 class="max-w-2xl text-hero-summary font-semibold text-balance text-night-ink" transition:name={`post-vibe-${post.redditPostId}`}>{post.vibeSummary ?? post.title}</h1>
+  </div>
+</section>
+
+{totalImages > 1 && (
+  <div class="flex flex-wrap items-center justify-center gap-2 px-games-gutter pt-3" role="group" aria-label="Choose hero image">
+    {galleryImages.map((img, i) => (
+      <button type="button" data-hero-thumbnail={i} aria-label={`Show image ${i + 1} of ${totalImages}`} aria-pressed={i === 0 ? "true" : "false"} class:list={["h-games-thumb-h w-games-thumb-w cursor-pointer overflow-hidden rounded-lg border-2 border-transparent opacity-60 transition-opacity aria-pressed:border-signal aria-pressed:opacity-100 hover:opacity-100", focus]}>
+        <img src={img.previewUrl ?? img.sourceUrl} alt="" class="h-full w-full object-cover" loading="lazy" decoding="async" />
+      </button>
+    ))}
+    <button type="button" data-hero-playback aria-label="Pause automatic image changes" class:list={["ml-2 text-meta text-night-quiet hover:text-signal", focus]}>Pause</button>
+  </div>
+)}
+
+<div class="flex flex-wrap items-center justify-center gap-4 px-games-gutter pt-5 pb-4">
+  <q class="text-night-quiet">{post.title}</q>
+  <span class="text-meta text-night-quiet">{date}</span>
+  {post.permalink && <a href={`https://reddit.com${post.permalink}`} target="_blank" rel="noopener noreferrer" class:list={["border-b-2 border-signal text-meta font-semibold hover:text-signal", focus]}>Reddit thread ↗</a>}
+</div>
+{post.tags.length > 0 && (
+  <nav class="flex flex-wrap justify-center gap-2 px-games-gutter pb-8" aria-label="Post tags">
+    {post.tags.map((tag) => (
+      <a href={feedHref(tag)} class:list={["rounded-full border-2 border-night-ink px-3 py-0.5 text-meta font-semibold transition-colors duration-200 hover:border-signal hover:bg-signal hover:text-night", focus]}>{tag}</a>
+    ))}
+  </nav>
+)}
+
+{games.length > 0 && (
+  <section class="px-games-gutter" aria-label="Recommended games">
+    <div class="flex items-baseline justify-between border-t-2 border-night-line py-5">
+      <h2 class="font-pixel text-section font-bold uppercase">The games</h2>
+      <span class="text-meta text-night-quiet">{games.length} picked by the thread</span>
+    </div>
+
+    <ol class="mb-8 grid grid-cols-1 gap-4 md:grid-cols-3">
+      {featured.map((rec, i) => {
+        const image = rec.backdropUrl ?? rec.posterUrl;
+        const body = (
+          <>
+            <div class="aspect-games-card overflow-hidden rounded-2xl bg-night-card">
+              {image
+                ? <img src={image} alt="" class="h-full w-full object-cover" loading="lazy" decoding="async" />
+                : <span class="flex h-full w-full items-center justify-center p-6 text-center font-pixel text-section font-bold uppercase text-night-quiet" aria-hidden="true">{rec.title}</span>}
+            </div>
+            <span class="absolute top-3 left-3 rounded-full bg-night-ink px-3 font-pixel text-xl font-bold text-night">{rank(i + 1)}</span>
+            <div class="games-card-shade absolute inset-x-0 bottom-0 rounded-b-2xl px-4 pt-10 pb-3.5 text-night-ink">
+              <b class="block text-game-title font-semibold group-hover:text-signal">{rec.title}{rec.externalUrl && <span aria-hidden="true"> ↗</span>}</b>
+              <span class="text-meta opacity-85">
+                {rec.releaseYear ?? "—"}{rating(rec) && ` · ★ ${rating(rec)}`}{platforms(rec).length > 0 && ` · ${platforms(rec).slice(0, 3).join(" / ")}`}
+              </span>
+            </div>
+          </>
+        );
+        return (
+          <li class="relative">
+            {rec.externalUrl
+              ? <a href={rec.externalUrl} target="_blank" rel="noopener noreferrer" class:list={["group relative block", focus]}>{body}</a>
+              : <div class="group relative">{body}</div>}
+          </li>
+        );
+      })}
+    </ol>
+
+    {rest.length > 0 && (
+      <ol class="pb-10" start={4}>
+        {rest.map((rec, i) => {
+          const cells = (
+            <>
+              <span class="font-pixel text-base font-bold text-night-quiet">{rank(i + 4)}</span>
+              <div class="h-games-cover-h w-games-cover-w overflow-hidden rounded bg-night-card">
+                {rec.posterUrl
+                  ? <img src={rec.posterUrl} alt="" class="h-full w-full object-cover" loading="lazy" decoding="async" />
+                  : <span class="flex h-full w-full items-center justify-center font-pixel text-xl font-bold text-night-quiet" aria-hidden="true">{rec.title.charAt(0)}</span>}
+              </div>
+              <span class="min-w-0"><b class="text-game-title font-semibold group-hover:text-signal">{rec.title}</b>{rec.releaseYear && <span class="ml-1.5 text-sm text-night-quiet">{rec.releaseYear}</span>}</span>
+              <span class="hidden text-xs text-night-quiet md:block"><span class="sr-only">Platforms: </span>{platforms(rec).join(" · ")}</span>
+              <span class="hidden h-games-meter overflow-hidden rounded-full bg-night-line md:block" aria-hidden="true"><span class="block h-full bg-signal" style={`width:${meter(rec)}`}></span></span>
+              <span class="text-right font-pixel text-base font-bold">{rating(rec) ?? "—"}<span class="sr-only"> out of 10</span></span>
+            </>
+          );
+          const row = "grid items-center gap-4 border-b border-dashed border-night-line py-2.5 games-item-grid-mobile md:games-item-grid md:gap-4.5";
+          return (
+            <li>
+              {rec.externalUrl
+                ? <a href={rec.externalUrl} target="_blank" rel="noopener noreferrer" class:list={["group", row, focus]}>{cells}</a>
+                : <div class:list={["group", row]}>{cells}</div>}
+            </li>
+          );
+        })}
+      </ol>
+    )}
+  </section>
+)}
+
+{site.attribution && (
+  <footer class="mx-games-gutter border-t-2 border-night-line py-6 text-meta text-night-quiet">
+    <a href={site.attribution.href} target="_blank" rel="noopener noreferrer" class:list={["hover:text-signal", focus]}>{site.attribution.text}</a>
+    <span aria-hidden="true"> · </span>
+    <a href={site.subreddit.href} target="_blank" rel="noopener noreferrer" class:list={["hover:text-signal", focus]}>{site.subreddit.name}</a>
+  </footer>
+)}
+
+<script>
+  import { fitSmallImages } from "../lib/fit-small-images";
+  document.addEventListener("astro:page-load", fitSmallImages);
+</script>

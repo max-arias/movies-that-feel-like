@@ -6,6 +6,7 @@
 
 import { PAGE_SIZE, type FeedPage } from "../lib/db/queries";
 import { feedHref } from "../lib/feed-paths";
+import { site } from "../site";
 
 export interface Props {
   page: FeedPage;
@@ -29,18 +30,20 @@ const pageItems: (number | "ellipsis")[] = pageCount <= 4
       ? [1, "ellipsis", pageCount - 2, pageCount - 1, pageCount]
       : [1, "ellipsis", currentPage, "ellipsis", pageCount];
 const pageHref = (pageNumber: number) => feedHref(selectedTag, pageNumber);
+const footerLinks = [
+  { text: site.subreddit.name, href: site.subreddit.href },
+  ...site.footerLinks,
+  ...(site.attribution ? [site.attribution] : []),
+];
 ---
 
 {
   paginatedPosts.length === 0 ? (
     <div class="mb-20 border border-line p-empty transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:border-line-dark">
-        <h2 class="mb-2.5 font-display text-5xl uppercase">No posts loaded yet</h2>
-        <p class="text-error text-quiet theme-dark:text-quiet-dark">
-            No publishable posts found in the database.
-        </p>
-        <p class="text-error text-quiet theme-dark:text-quiet-dark">
-            Run the pipeline load stage and <code>npm run seed</code>.
-        </p>
+        <h2 class="mb-2.5 font-display text-5xl uppercase">{site.emptyState.heading}</h2>
+        {site.emptyState.lines.map((line) => (
+          <p class="text-error text-quiet theme-dark:text-quiet-dark" set:html={line} />
+        ))}
     </div>
   ) : (
     <div class="flex flex-col-reverse gap-12 md:index-grid md:grid md:items-start md:gap-index-gap">
@@ -116,9 +119,12 @@ const pageHref = (pageNumber: number) => feedHref(selectedTag, pageNumber);
       </aside>
     </div>
     <footer class="mt-index-gap flex flex-wrap items-center justify-end gap-3 border-t border-line pt-pagination-y pb-pagination-y text-label tracking-theme text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:border-line-dark theme-dark:text-quiet-dark">
-      <a class="transition-colors duration-200 ease-theme hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:hover:text-red-dark theme-dark:outline-red-dark" href="https://www.reddit.com/r/MoviesThatFeelLike/" target="_blank" rel="noopener noreferrer">/r/MoviesThatFeelLike/</a>
-      <span class="text-line theme-dark:text-line-dark" aria-hidden="true">|</span>
-      <a class="transition-colors duration-200 ease-theme hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:hover:text-red-dark theme-dark:outline-red-dark" href="https://maxarias.com" target="_blank" rel="noopener noreferrer">maxarias.com</a>
+      {footerLinks.map((link, index) => (
+        <>
+          {index > 0 && <span class="text-line theme-dark:text-line-dark" aria-hidden="true">|</span>}
+          <a class="transition-colors duration-200 ease-theme hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:hover:text-red-dark theme-dark:outline-red-dark" href={link.href} target="_blank" rel="noopener noreferrer">{link.text}</a>
+        </>
+      ))}
     </footer>
   )
 }

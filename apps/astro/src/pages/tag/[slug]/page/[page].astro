@@ -5,7 +5,7 @@
 export const prerender = true;
 
 import Layout from "../../../../layouts/Layout.astro";
-import Feed from "../../../../components/Feed.astro";
+import SiteFeed from "../../../../components/SiteFeed.astro";
 import { getDb } from "../../../../lib/db";
 import { loadFeed, loadTagBySlug } from "../../../../lib/db/queries";
 import { feedDescription, feedTitle, loadStaticTags, STATIC_TAG_MIN_POSTS } from "../../../../lib/feed-routes";
@@ -28,5 +28,5 @@ const page = await loadFeed(getDb(), tag.tag, Number(Astro.params.page ?? "1"));
 ---
 
 <Layout title={feedTitle(page)} description={feedDescription(page)}>
-  <Feed page={page} />
+  <SiteFeed page={page} />
 </Layout>

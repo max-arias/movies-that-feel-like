@@ -3,9 +3,11 @@
 // Tile captions overlay the artwork; gallery images retain their lightbox.
 
 import Layout from "../../layouts/Layout.astro";
+import GamesPost from "../../components/GamesPost.astro";
 import { getDb } from "../../lib/db";
 import { loadPost, type Recommendation } from "../../lib/db/queries";
 import { feedHref } from "../../lib/feed-paths";
+import { pageTitle, site } from "../../site";
 
 const postId = Astro.params.id;
 const post = postId ? await loadPost(getDb(), postId) : null;
@@ -22,15 +24,20 @@ const totalImages = galleryImages.length;
 const tagHref = (tag: string) => feedHref(tag);
 const redditHref = (permalink: string) => `https://reddit.com${permalink}`;
 
+// Games link to their IGDB page (`externalUrl`); IMDb and TMDB are film-only.
+const isGame = (rec: Recommendation) => rec.mediaType === "game";
+
 const externalHref = (rec: Recommendation): string | null => {
+  if (isGame(rec)) return rec.externalUrl ?? null;
   if (rec.imdbId) return `https://www.imdb.com/title/${rec.imdbId}/`;
   if (rec.tmdbId) {
-    const tmdbType = rec.mediaType === "tv" ? "tv" : rec.mediaType === "game" ? "game" : "movie";
+    const tmdbType = rec.mediaType === "tv" ? "tv" : "movie";
     return `https://www.themoviedb.org/${tmdbType}/${rec.tmdbId}`;
   }
   return rec.externalUrl ?? null;
 };
 const externalLabel = (rec: Recommendation): string => {
+  if (isGame(rec)) return rec.externalUrl ? "IGDB" : "";
   if (rec.imdbId) return "IMDb";
   if (rec.tmdbId) return "TMDB";
   return rec.externalUrl ? "Source" : "";
@@ -57,7 +64,7 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
 };
 ---
 
-<Layout title={post ? `${post.vibeSummary ?? "Vibe post"} — Movies That Feel Like` : "Post not found"}>
+<Layout title={post ? pageTitle(post.vibeSummary ?? "Vibe post") : "Post not found"}>
   {!post ? (
     <div class="hero min-h-64 rounded-box border border-line bg-paper transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:border-line-dark theme-dark:bg-paper-dark">
       <div class="hero-content text-center">
@@ -72,6 +79,8 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
     </div>
   ) : (
     <div class="pb-24">
+      {site.id === "games" ? <GamesPost post={post} /> : (
+      <>
       <section class="post-hero" aria-label="Post hero">
         <div class="relative h-full">
           <div
@@ -213,9 +222,14 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
                 : isWide
                   ? `(min-width: 768px) ${wideDesktopSize}, 100vw`
                   : "(min-width: 768px) 25vw, 50vw";
-              const image = imageUrl
-                ? responsiveImage(imageUrl, usesBackdrop ? "backdrop" : "poster", imageSizes)
-                : null;
+              // IGDB covers keep their exact supplied URL: the TMDB size ladder
+              // does not apply to them.
+              const image = !imageUrl
+                ? null
+                : isGame(rec)
+                  ? { src: imageUrl, sizes: imageSizes }
+                  : responsiveImage(imageUrl, usesBackdrop ? "backdrop" : "poster", imageSizes);
+              const platforms = isGame(rec) ? (rec.platforms ?? []).filter((platform) => platform.trim().length > 0) : [];
               const cardClass = [
                 "recommendation-tile group relative block overflow-hidden bg-gallery focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark",
                 !isGalleryHero && !isFourCardLead && !isSparseHero && "aspect-poster",
@@ -260,6 +274,11 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
                       </>
                     )}
                     </p>
+                    {platforms.length > 0 && (
+                      <p class="mt-0.5 text-xs text-paper/75">
+                        <span class="sr-only">Platforms: </span>{platforms.join(", ")}
+                      </p>
+                    )}
                   </div>
                 </>
               );
@@ -280,7 +299,14 @@ const responsiveImage = (url: string, role: ImageRole, sizes: string) => {
               );
             })}
           </div>
+          {site.attribution && (
+            <p class="mt-6 text-right text-label tracking-theme text-quiet transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-quiet-dark">
+              <a class="transition-colors duration-200 ease-theme hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:hover:text-red-dark theme-dark:outline-red-dark" href={site.attribution.href} target="_blank" rel="noopener noreferrer">{site.attribution.text}</a>
+            </p>
+          )}
         </section>
+      )}
+      </>
       )}
 
       <dialog id="hero-lightbox" class="modal" aria-label="Image lightbox">

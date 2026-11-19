@@ -12,6 +12,7 @@
 import { PAGE_SIZE, loadFeed, loadTagBySlug, loadTagCounts, type FeedPage } from "./db/queries";
 import { feedHref, tagSlug } from "./feed-paths";
 import type { Db } from "./db";
+import { pageTitle, site } from "../site";
 
 /** Page 1 (`/`) plus pages 2..this are prerendered; deeper pages render on demand. */
 export const STATIC_FEED_PAGES = 5;
@@ -78,16 +79,12 @@ export function parseLegacyFeedQuery(params: URLSearchParams): FeedRequest | nul
 }
 
 export function feedTitle(page: FeedPage): string {
-  const base = page.selectedTag
-    ? `${page.selectedTag} — Movies That Feel Like`
-    : "Movies That Feel Like — a visual discovery index";
+  const base = page.selectedTag ? pageTitle(page.selectedTag) : site.feedTitle;
   return page.currentPage > 1 ? `${base} (page ${page.currentPage})` : base;
 }
 
 export function feedDescription(page: FeedPage): string {
-  return page.selectedTag
-    ? `Movies that feel like ${page.selectedTag}, from the imagery and discussion of r/MoviesThatFeelLike.`
-    : "Discover movies that match the feeling of the stories, places, and moments you love.";
+  return page.selectedTag ? site.tagDescription(page.selectedTag) : site.feedDescription;
 }
 
 /** Pages 2..min(pageCount, STATIC_FEED_PAGES): the unfiltered feed is capped. */

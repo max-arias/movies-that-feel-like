@@ -344,3 +344,46 @@ export async function loadPost(db: Db, redditPostId: string): Promise<PostDetail
     recommendations: [...seen.values()],
   };
 }
+
+export type PostGame = {
+  id: number;
+  title: string;
+  releaseYear: number | null;
+  voteAverage: number | null;
+};
+
+export type PostGames = { games: PostGame[]; total: number };
+
+/**
+ * The games feed's per-post game list: each post's top `perPost` games, in the
+ * post page's order (evidence score, then popularity), plus how many it has.
+ * One query for the whole feed page; duplicates from multiple evidence rows
+ * are collapsed per post.
+ */
+export async function loadPostGames(db: Db, postIds: number[], perPost = 10): Promise<Map<number, PostGames>> {
+  const result = new Map<number, PostGames>();
+  if (postIds.length === 0) return result;
+
+  const rows = await db
+    .select({
+      postId: recommendationEvidence.importedVibePostId,
+      id: recommendations.id,
+      title: recommendations.title,
+      releaseYear: recommendations.releaseYear,
+      voteAverage: recommendations.voteAverage,
+    })
+    .from(recommendations)
+    .innerJoin(recommendationEvidence, eq(recommendationEvidence.recommendationId, recommendations.id))
+    .where(and(inArray(recommendationEvidence.importedVibePostId, postIds), eq(recommendations.mediaType, "game")))
+    .orderBy(desc(recommendations.evidenceScore), desc(recommendations.popularity), asc(recommendations.id));
+
+  for (const [postId, postRows] of groupBy(rows, (row) => row.postId)) {
+    const seen = new Map<number, PostGame>();
+    for (const { id, title, releaseYear, voteAverage } of postRows) {
+      if (!seen.has(id)) seen.set(id, { id, title, releaseYear, voteAverage });
+    }
+    const games = [...seen.values()];
+    result.set(postId, { games: games.slice(0, perPost), total: games.length });
+  }
+  return result;
+}

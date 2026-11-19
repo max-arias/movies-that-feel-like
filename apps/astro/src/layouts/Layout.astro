@@ -1,14 +1,18 @@
 ---
 import "../styles/app.css";
 import { ClientRouter } from "astro:transitions";
+import { site } from "../site";
 export interface Props {
   title?: string;
   description?: string;
 }
 const { title, description } = Astro.props;
+// The games site has its own dark-only "Night" design (MTFL-85); the movies
+// markup below is unchanged.
+const isGames = site.id === "games";
 ---
 <!doctype html>
-<html transition:name="root" transition:animate="none" lang="en" class="bg-paper font-body text-ink scroll-smooth motion-reduce:scroll-auto transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark theme-dark:text-ink-dark">
+<html transition:name="root" transition:animate="none" lang="en" class={isGames ? "bg-night font-grotesk text-night-ink scroll-smooth motion-reduce:scroll-auto" : "bg-paper font-body text-ink scroll-smooth motion-reduce:scroll-auto transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark theme-dark:text-ink-dark"}>
   <head>
     <script is:inline>
       (() => {
@@ -29,30 +33,48 @@ const { title, description } = Astro.props;
     </script>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{title ?? "Movies That Feel Like"}</title>
-    <meta name="description" content={description ?? "A visual index of movies that feel like something."} />
-    <link rel="preload" href="/fonts/newsreader-latin-opsz-wght.woff2" as="font" type="font/woff2" crossorigin />
+    <title>{title ?? site.name}</title>
+    <meta name="description" content={description ?? site.description} />
+    {isGames
+      ? <>
+          <link rel="preconnect" href="https://fonts.googleapis.com" />
+          <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+          <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400..700&family=Silkscreen:wght@400;700&display=swap" />
+        </>
+      : <link rel="preload" href="/fonts/newsreader-latin-opsz-wght.woff2" as="font" type="font/woff2" crossorigin />}
     <ClientRouter />
     <slot name="head" />
   </head>
-  <body class="min-w-80 bg-paper font-body text-body text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark theme-dark:text-ink-dark">
-    <header class="sticky top-0 z-30 mx-0 flex min-h-header items-center justify-between border-b border-line bg-paper px-5 transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark md:static md:mx-gutter md:bg-transparent md:px-0 md:theme-dark:bg-transparent theme-dark:border-line-dark">
-      <a href="/" class="flex items-center gap-2.5 text-brand uppercase transition-colors duration-240 ease-theme motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-ink-dark" aria-label="Movies That Feel Like home">
-        <span class="h-brand-mark-height w-brand-mark-width flex items-center justify-center bg-red font-display text-mark text-paper transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-red-dark theme-dark:text-paper-dark" aria-hidden="true">MTFL</span>
-        <span class="transition-colors duration-240 ease-theme motion-reduce:transition-none">Movies<br />That Feel Like</span>
-      </a>
-      <label class="flex cursor-pointer items-center justify-self-end gap-2 bg-transparent py-2 pl-2.5 text-label uppercase tracking-theme text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-ink-dark">
-        <input class="absolute h-px w-px opacity-0 focus-visible:outline-none" type="checkbox" value="dark" data-theme-toggle aria-label="Switch to dark theme" />
-        <span class="text-icon text-red transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:hidden theme-dark:text-red-dark" aria-hidden="true">☼</span>
-        <span class="hidden text-icon text-red transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:inline theme-dark:text-red-dark" aria-hidden="true">◐</span>
-        <span class="transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:hidden" aria-hidden="true">Light</span>
-        <span class="hidden transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:inline" aria-hidden="true">Dark</span>
-      </label>
+  {isGames ? (
+  <body class="min-w-80 bg-night font-grotesk text-night-ink">
+    <header class="flex items-center justify-between border-b-2 border-night-line px-games-gutter py-3.5">
+      <a href="/" class="border-2 border-night-ink px-2 py-0.5 font-pixel text-lg font-bold transition-colors duration-200 hover:border-signal hover:text-signal focus-visible:outline-2 focus-visible:outline-signal focus-visible:outline-offset-4" aria-label={`${site.name} home`}>{site.logoMark}</a>
+      <a href={site.subreddit.href} class="text-meta text-night-quiet transition-colors duration-200 hover:text-signal focus-visible:outline-2 focus-visible:outline-signal focus-visible:outline-offset-4" target="_blank" rel="noopener noreferrer">From r/{site.subreddit.name.replace(/^\/r\/|\/$/g, "")}</a>
     </header>
-    <main class="relative mx-auto w-full max-w-content px-gutter motion-reduce:scroll-auto md:static">
+    <main class="w-full">
       <slot />
     </main>
   </body>
+  ) : (
+  <body class="min-w-80 bg-paper font-body text-body text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark theme-dark:text-ink-dark">
+      <header class="sticky top-0 z-30 mx-0 flex min-h-header items-center justify-between border-b border-line bg-paper px-5 transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-paper-dark md:static md:mx-gutter md:bg-transparent md:px-0 md:theme-dark:bg-transparent theme-dark:border-line-dark">
+        <a href="/" class="flex items-center gap-2.5 text-brand uppercase transition-colors duration-240 ease-theme motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-ink-dark" aria-label={`${site.name} home`}>
+          <span class="h-brand-mark-height w-brand-mark-width flex items-center justify-center bg-red font-display text-mark text-paper transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:bg-red-dark theme-dark:text-paper-dark" aria-hidden="true">{site.logoMark}</span>
+          <span class="transition-colors duration-240 ease-theme motion-reduce:transition-none">{site.logoLines[0]}<br />{site.logoLines[1]}</span>
+        </a>
+        <label class="flex cursor-pointer items-center justify-self-end gap-2 bg-transparent py-2 pl-2.5 text-label uppercase tracking-theme text-ink transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:text-ink-dark">
+          <input class="absolute h-px w-px opacity-0 focus-visible:outline-none" type="checkbox" value="dark" data-theme-toggle aria-label="Switch to dark theme" />
+          <span class="text-icon text-red transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:hidden theme-dark:text-red-dark" aria-hidden="true">☼</span>
+          <span class="hidden text-icon text-red transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:inline theme-dark:text-red-dark" aria-hidden="true">◐</span>
+          <span class="transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:hidden" aria-hidden="true">Light</span>
+          <span class="hidden transition-colors duration-240 ease-theme motion-reduce:transition-none theme-dark:inline" aria-hidden="true">Dark</span>
+        </label>
+      </header>
+      <main class="relative mx-auto w-full max-w-content px-gutter motion-reduce:scroll-auto md:static">
+        <slot />
+      </main>
+  </body>
+  )}
 </html>
 
 <script>
@@ -70,7 +92,8 @@ const { title, description } = Astro.props;
 
     const postId = decodeURIComponent(postMatch[1]);
     const gallery = article.querySelector<HTMLElement>("[data-gallery]");
-    const vibeSummary = article.querySelector<HTMLParagraphElement>(":scope > p");
+    // Movies cards put the summary in a direct <p>; games rows mark it data-vibe.
+    const vibeSummary = article.querySelector<HTMLElement>("[data-vibe]") ?? article.querySelector<HTMLElement>(":scope > p");
     if (gallery) {
       const track = gallery.querySelector<HTMLElement>(".gallery-track");
       if (track) track.scrollLeft = 0;
