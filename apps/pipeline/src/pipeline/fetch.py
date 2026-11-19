@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +21,75 @@ from pipeline.sites import current_site
 # Max in-flight comment-tree fetches during the parallel fan-out.
 _CONCURRENCY = 8
 _MAX_SEARCH_PAGE_SIZE = 100
+# Waits between whole-search attempts, on top of the client's own short
+# retries. Keeps an outage's added wait to about two minutes.
+_SEARCH_RETRY_DELAYS = (20.0, 40.0)
+
+
+class SourceUnavailable(Exception):
+    """Arctic Shift stayed unreachable or erroring (5xx, timeout, 429)."""
+
+
+def _transient_reason(exc: BaseException) -> str | None:
+    """Return a short reason if *exc* is a transient Arctic Shift failure.
+
+    ``arcshiftwrap`` retries internally, then raises ``RuntimeError`` chained
+    from the ``requests`` error. Client errors (4xx except 429) are not
+    transient and return ``None``.
+    """
+    import requests
+
+    cause = exc.__cause__ if exc.__cause__ is not None else exc
+    if isinstance(cause, requests.HTTPError) and cause.response is not None:
+        status = cause.response.status_code
+        if status >= 500 or status == 429:
+            return f"HTTP {status}"
+        return None
+    if isinstance(cause, requests.Timeout):
+        return "timeout"
+    if isinstance(cause, requests.ConnectionError):
+        return "connection error"
+    if isinstance(exc, RuntimeError):
+        message = str(exc)
+        if "timed out" in message:
+            return "HTTP 504"
+        if message.startswith("Unexpected request failure"):
+            return "HTTP 429"  # the client only falls through after repeated 429s
+    return None
+
+
+def _search_with_retry(client: Any, **kwargs: Any) -> Any:
+    """Run ``client.search_posts``, retrying transient failures with backoff.
+
+    Raises ``SourceUnavailable`` once retries are exhausted; any other error
+    (including 4xx other than 429) propagates unchanged.
+    """
+    attempts = len(_SEARCH_RETRY_DELAYS) + 1
+    for attempt in range(1, attempts + 1):
+        try:
+            return client.search_posts(**kwargs)
+        except Exception as exc:
+            reason = _transient_reason(exc)
+            if reason is None:
+                raise
+            if attempt == attempts:
+                raise SourceUnavailable(reason) from exc
+            delay = _SEARCH_RETRY_DELAYS[attempt - 1]
+            print(
+                f"[pipeline:fetch] Arctic Shift search failed ({reason}); "
+                f"retry {attempt}/{attempts - 1} in {delay:.0f}s",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+    raise AssertionError("unreachable")
+
+
+def _set_github_output(name: str, value: str) -> None:
+    """Append ``name=value`` to ``$GITHUB_OUTPUT`` when running in Actions."""
+    path = os.environ.get("GITHUB_OUTPUT")
+    if path:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(f"{name}={value}\n")
 
 
 def _today_utc_str() -> str:
@@ -225,7 +296,8 @@ async def _async_main(argv: list[str] | None = None) -> None:
             break
         page_limit = _MAX_SEARCH_PAGE_SIZE if exclusion_enabled else requested_limit
         response = await asyncio.to_thread(
-            client.search_posts,
+            _search_with_retry,
+            client,
             subreddit=args.subreddit,
             after=after,
             before=search_before,
@@ -338,7 +410,18 @@ async def _async_main(argv: list[str] | None = None) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    asyncio.run(_async_main(argv))
+    try:
+        asyncio.run(_async_main(argv))
+    except SourceUnavailable as exc:
+        # Search/listing failed before any artifact was written: defer the
+        # whole import and exit 0 so the workflow can skip later steps.
+        print(
+            f"[pipeline:fetch] Arctic Shift unavailable ({exc}); "
+            "import deferred, nothing changed"
+        )
+        _set_github_output("deferred", "true")
+        return
+    _set_github_output("deferred", "false")
 
 
 if __name__ == "__main__":
