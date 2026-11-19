@@ -129,6 +129,40 @@ BATCH_SYSTEM_INSTRUCTION = (
 )
 
 
+# Games site (r/GamesThatFeelLike): games only. Prompt version is separate so
+# games cache keys never collide with movies keys.
+GAMES_EXTRACTION_PROMPT_VERSION = "games-extraction-prompt-v1-batch"
+GAMES_BATCH_SYSTEM_INSTRUCTION = (
+    "You extract video game recommendations and the atmosphere of several independent Reddit posts "
+    "from a community where people ask for games that feel like an image, another game, a film, a "
+    "book or a mood. Return exactly the requested JSON schema with one entry in posts for every post "
+    "in the input, in input order, each with that post's reddit_post_id copied exactly. Treat every "
+    "post separately: a recommendation and its evidence must come only from that post's own title, "
+    "selftext, flair, and comments. Recommend only concrete, released or announced video games with "
+    "media_type game; never movies, series, books, DLC, mods, or platforms. A game the poster names "
+    "as the reference they already like is not a recommendation unless a commenter recommends it. "
+    "For every evidence item copy the exact comment_id of a comment listed under the same post and "
+    "quote the triggering words as extracted_text; never invent identifiers. The vibe summary must "
+    "be exactly one concise, direct atmospheric mood fragment grounded in that post. A post with no "
+    "supported recommendation must return empty recommendations. Do not add explanations outside "
+    "the schema."
+)
+
+
+def batch_system_instruction() -> str:
+    """Return the batch system instruction for the current site."""
+    from pipeline.sites import current_site
+
+    return GAMES_BATCH_SYSTEM_INSTRUCTION if current_site().key == "games" else BATCH_SYSTEM_INSTRUCTION
+
+
+def extraction_prompt_version() -> str:
+    """Return the extraction prompt version for the current site."""
+    from pipeline.sites import current_site
+
+    return GAMES_EXTRACTION_PROMPT_VERSION if current_site().key == "games" else EXTRACTION_PROMPT_VERSION
+
+
 def build_extraction_prompt(
     post: dict[str, Any],
     comments: list[dict[str, Any]],
@@ -149,6 +183,12 @@ def build_extraction_prompt(
         f"- **reddit_post_id**: {post_id}",
         f"- **Title**: {title}",
     ]
+    from pipeline.sites import current_site
+
+    # Flair is games-only so movies prompts (and their cache keys) are unchanged.
+    flair = post.get("flair")
+    if flair and current_site().include_flair:
+        parts.append(f"- **Flair**: {flair}")
     if selftext.strip():
         # only include first 1 000 chars to keep prompt focused
         truncated = selftext.strip()[:1000]

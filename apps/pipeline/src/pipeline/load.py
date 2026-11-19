@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from pipeline.artifacts import read_json_artifact, timestamp_slug, validate_complete_extraction, write_json_artifact
-from pipeline.paths import ensure_pipeline_dirs, normalized_dir, project_root, working_dir
+from pipeline.paths import data_dir, ensure_pipeline_dirs, normalized_dir, project_root, working_dir
+from pipeline.sites import current_site
 
 # ── Constants ──────────────────────────────────────────────────────────
 
@@ -277,7 +278,7 @@ def _upsert_post(
             post.get("created_utc"),
             permalink,
             post.get("source_url"),
-            post.get("subreddit", "MoviesThatFeelLike"),
+            post.get("subreddit") or current_site().subreddit,
             vibe_summary,
             status,
             error_info,
@@ -1152,11 +1153,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--migrations-dir",
-        default="packages/db/migrations",
+        default=None,
         help=(
-            "Directory for the emitted data migration "
-            "(default: packages/db/migrations/, which apps/astro/wrangler.jsonc "
-            "points at via `migrations_dir`)"
+            "Directory for the emitted data migration (default: the site's "
+            "migrations dir — packages/db/migrations/ for movies, "
+            "packages/db/migrations-games/ for SITE=games — which the site's "
+            "wrangler config points at via `migrations_dir`)"
         ),
     )
     parser.add_argument(
@@ -1194,14 +1196,15 @@ def main(argv: list[str] | None = None) -> None:
         Path(args.enrichment) if args.enrichment else _latest_enrichment()
     )
 
-    db_path = Path(args.db) if args.db else root / "data" / "app.db"
+    site = current_site()
+    db_path = Path(args.db) if args.db else data_dir() / "app.db"
     # When --schema is given explicitly, use it as a single file;
     # otherwise apply all migrations from the migrations directory.
     schema_src: Path
     if args.schema:
         schema_src = Path(args.schema)
     else:
-        schema_src = root / "packages" / "db" / "migrations"
+        schema_src = root / site.migrations_dir
 
     print(f"[pipeline:load] Normalized:  {norm_path.name}")
     print(f"[pipeline:load] Extraction:  {ext_path.name}")
@@ -1612,7 +1615,7 @@ def main(argv: list[str] | None = None) -> None:
         # migration to packages/db/migrations/ so ``wrangler d1
         # migrations apply`` picks it up alongside the schema migrations.
         # The migration IS the SQL output — there's no separate dump
-        migrations_dir = Path(args.migrations_dir)
+        migrations_dir = Path(args.migrations_dir or site.migrations_dir)
         if not migrations_dir.is_absolute():
             migrations_dir = root / migrations_dir
         data_migrations = _write_data_migration(

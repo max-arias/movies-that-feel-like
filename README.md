@@ -131,6 +131,14 @@ The stages consume the latest artifacts already present under `data/`; the
 command runs normalize, extraction, enrichment, and local D1 seeding in that
 order. It does not run `pipeline:fetch`.
 
+Every stage serves one site, chosen with `SITE` (the variable the Astro app
+reads too). Unset or `SITE=movies` is r/MoviesThatFeelLike with artifacts in
+`data/` and seeds in `packages/db/migrations/`. `SITE=games` is
+r/GamesThatFeelLike: artifacts in `data/games/`, seeds in
+`packages/db/migrations-games/`, a games-only extraction prompt that includes
+the post flair, and IGDB-only enrichment (cover, 1080p artwork backdrop,
+platforms, `total_rating`/10). For example `SITE=games npm run pipeline:fetch -- --limit 10`.
+
 A small end-to-end sample looks like this:
 
 ```bash

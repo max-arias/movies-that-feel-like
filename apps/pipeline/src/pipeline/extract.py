@@ -33,8 +33,8 @@ from typing import Any, Callable, Literal
 from pipeline.artifacts import read_json_artifact, timestamp_slug, write_json_artifact
 from pipeline.extraction_batches import (BatchPost, batch_post_from_prompt, pack_batches,
                                          render_batch_prompt, resolve_batch_response)
-from pipeline.extraction_input import (BATCH_SYSTEM_INSTRUCTION, EXTRACTION_PROMPT_VERSION,
-                                       build_extraction_prompt, flatten_comments)
+from pipeline.extraction_input import (batch_system_instruction, build_extraction_prompt,
+                                       extraction_prompt_version, flatten_comments)
 from pipeline.extraction_cache import (canonical_json, extraction_cache_key, lookup as lookup_cache,
                                        make_cache_record, read_cache_snapshot)
 from pipeline.models import BatchExtractionResponse, PostExtraction
@@ -523,7 +523,7 @@ class _BatchRun:
         try:
             response = self.client.create(
                 response_model=BatchExtractionResponse,
-                messages=[{"role": "system", "content": BATCH_SYSTEM_INSTRUCTION},
+                messages=[{"role": "system", "content": batch_system_instruction()},
                           {"role": "user", "content": render_batch_prompt(batch.posts)}],
                 model=self.actual_model,
                 temperature=0.1,
@@ -769,7 +769,7 @@ def _resolve_identity(args: argparse.Namespace) -> _Identity:
 
 
 def _prompt_hash(prompt: dict[str, Any]) -> str:
-    value = {"system": BATCH_SYSTEM_INSTRUCTION, "user": prompt["user_prompt"],
+    value = {"system": batch_system_instruction(), "user": prompt["user_prompt"],
              "schema_version": EXTRACTION_SCHEMA_VERSION, "schema": _BATCH_SCHEMA_JSON}
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
@@ -780,7 +780,7 @@ def _acquire_checkpoint(args: argparse.Namespace, identity: _Identity, input_pat
     # completed work; output-affecting provider/model/prompt/schema inputs must.
     run_identity = {"model": identity.actual_model, "requested_model": args.model,
                     "mode": identity.instructor_mode, "provider": identity.provider,
-                    "api_base": identity.api_base, "prompt_version": EXTRACTION_PROMPT_VERSION,
+                    "api_base": identity.api_base, "prompt_version": extraction_prompt_version(),
                     "schema_version": EXTRACTION_SCHEMA_VERSION, "schema": _BATCH_SCHEMA_JSON}
     run_id = hashlib.sha256((input_path.read_bytes().decode("utf-8")
                              + json.dumps(run_identity, sort_keys=True)).encode()).hexdigest()[:20]
@@ -818,10 +818,10 @@ def _assign_cache_keys(prompts: list[dict[str, Any]], identity: _Identity, max_c
     # Keys stay per post, so batch composition never changes them.
     for prompt in prompts:
         prompt["_cache_key"] = extraction_cache_key(
-            prompt_input=prompt["prompt_input"], system_prompt=BATCH_SYSTEM_INSTRUCTION,
+            prompt_input=prompt["prompt_input"], system_prompt=batch_system_instruction(),
             user_prompt=prompt["user_prompt"], schema=_BATCH_SCHEMA,
             provider=identity.provider, model=identity.actual_model, api_base=identity.api_base,
-            instructor_mode=identity.instructor_mode, prompt_version=EXTRACTION_PROMPT_VERSION,
+            instructor_mode=identity.instructor_mode, prompt_version=extraction_prompt_version(),
             schema_version=EXTRACTION_SCHEMA_VERSION,
             settings={"temperature": 0.1, "max_comments": max_comments})
 
@@ -884,11 +884,11 @@ def _build_cache_records(prompts: list[dict[str, Any]], all_results: dict[int, d
         prompt_record = prompts[ordinal]
         content_hash = hashlib.sha256(canonical_json(prompt_record["prompt_input"]).encode()).hexdigest()
         rendered_hash = hashlib.sha256(canonical_json(
-            {"system": BATCH_SYSTEM_INSTRUCTION, "user": prompt_record["user_prompt"]}).encode()).hexdigest()
+            {"system": batch_system_instruction(), "user": prompt_record["user_prompt"]}).encode()).hexdigest()
         cache_records.append(make_cache_record(
             key=prompt_record["_cache_key"], post_id=prompt_record["reddit_post_id"],
             payload=valid, outcome="extracted", content_hash=content_hash,
-            prompt_hash=rendered_hash, prompt_version=EXTRACTION_PROMPT_VERSION,
+            prompt_hash=rendered_hash, prompt_version=extraction_prompt_version(),
             provider=identity.provider, model=identity.actual_model, api_base=identity.api_base,
             instructor_mode=identity.instructor_mode, source_normalized_checksum=source_checksum))
     return cache_records
@@ -912,7 +912,7 @@ def _build_artifact(args: argparse.Namespace, input_path: Path, prompts: list[di
             "dry_run": False,
             **_run_args(args),
             "provider": provider_audit,
-            "prompt_version": EXTRACTION_PROMPT_VERSION,
+            "prompt_version": extraction_prompt_version(),
             "schema_version": EXTRACTION_SCHEMA_VERSION,
         },
         "results": results,

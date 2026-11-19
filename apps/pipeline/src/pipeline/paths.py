@@ -17,8 +17,12 @@ def project_root() -> Path:
 
 
 def data_dir() -> Path:
-    """Return ``root/data``."""
-    return project_root() / "data"
+    """Return the current site's data dir: ``root/data`` for movies,
+    ``root/data/<site>`` for any other site (see ``pipeline.sites``)."""
+    from pipeline.sites import current_site
+
+    subdir = current_site().data_subdir
+    return project_root() / "data" / subdir if subdir else project_root() / "data"
 
 
 def working_dir() -> Path:

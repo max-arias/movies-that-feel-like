@@ -14,6 +14,7 @@ from typing import Any
 
 from pipeline.artifacts import timestamp_slug, write_json_artifact
 from pipeline.paths import ensure_pipeline_dirs, raw_dir
+from pipeline.sites import current_site
 
 # Max in-flight comment-tree fetches during the parallel fan-out.
 _CONCURRENCY = 8
@@ -52,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--subreddit",
-        default="MoviesThatFeelLike",
+        default=current_site().subreddit,
         help="Subreddit to pull from (default: %(default)s)",
     )
     parser.add_argument(

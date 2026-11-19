@@ -101,6 +101,9 @@ def collect_candidates(
 
     Returns a list of candidate dicts with aggregated evidence.
     """
+    from pipeline.sites import current_site
+
+    site = current_site()
     buckets: dict[str, dict[str, Any]] = {}
 
     for post_result in results:
@@ -109,6 +112,10 @@ def collect_candidates(
             title = rec.get("title", "")
             year = rec.get("year")
             media_type = rec.get("media_type", "unknown")
+            # The games site publishes games only: a stray movie/series pick
+            # (or an untyped one) is not enriched or loaded there.
+            if site.key != "movies" and media_type not in site.media_types:
+                continue
             key = _candidate_key(title, year, media_type)
 
             if key not in buckets:

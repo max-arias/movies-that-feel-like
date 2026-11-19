@@ -170,6 +170,32 @@ async def _igdb_headers_async() -> dict[str, str]:
 # ── Search ─────────────────────────────────────────────────────────────
 
 
+# artworks/screenshots give a wide backdrop; total_rating is IGDB's 0-100
+# critic+user score, stored /10 to match the shared vote_average scale.
+_SEARCH_FIELDS = (
+    "name, first_release_date, cover.url, platforms.name, slug, summary, game_type, "
+    "artworks.image_id, screenshots.image_id, total_rating, total_rating_count"
+)
+
+
+def _backdrop_url(result: dict[str, Any]) -> str | None:
+    """Return a 1080p IGDB artwork (or screenshot) URL, if the game has one."""
+    for field in ("artworks", "screenshots"):
+        for image in result.get(field) or []:
+            image_id = image.get("image_id") if isinstance(image, dict) else None
+            if image_id:
+                return f"https://images.igdb.com/igdb/image/upload/t_1080p/{image_id}.jpg"
+    return None
+
+
+def _rating(result: dict[str, Any]) -> float | None:
+    """Return IGDB ``total_rating`` (0-100) as a 0-10 score, rounded to 0.1."""
+    rating = result.get("total_rating")
+    if not isinstance(rating, (int, float)) or isinstance(rating, bool):
+        return None
+    return round(rating / 10, 1)
+
+
 def _search_games(
     client: httpx.Client,
     query: str,
@@ -188,7 +214,7 @@ def _search_games(
     """
     body = (
         f'search "{query}";\n'
-        f"fields name, first_release_date, cover.url, platforms.name, slug, summary, game_type;\n"
+        f"fields {_SEARCH_FIELDS};\n"
         f"limit 5;\n"
     )
 
@@ -224,7 +250,7 @@ async def _search_games_async(
     """Async variant of :func:`_search_games`."""
     body = (
         f'search "{query}";\n'
-        f"fields name, first_release_date, cover.url, platforms.name, slug, summary, game_type;\n"
+        f"fields {_SEARCH_FIELDS};\n"
         f"limit 5;\n"
     )
 
@@ -359,10 +385,10 @@ def build_match(
         "original_title": result.get("name"),  # IGDB has no separate original_title
         "release_year": release_year,
         "poster_url": _cover_url(cover),
-        "backdrop_url": None,
+        "backdrop_url": _backdrop_url(result),
         "overview": result.get("summary"),
         "popularity": None,
-        "vote_average": None,
+        "vote_average": _rating(result),
         "imdb_id": None,
         "external_url": _external_url(slug),
         "platforms": _platform_names(result),

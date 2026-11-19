@@ -213,6 +213,7 @@ def _normalize_post(
         "reddit_post_id": post.get("id", ""),
         "title": post.get("title", ""),
         "selftext": post.get("selftext", ""),
+        "flair": post.get("link_flair_text") or None,
         "subreddit": post.get("subreddit", ""),
         "author": post.get("author", ""),
         "created_utc": post.get("created_utc"),
