@@ -72,6 +72,11 @@ def _has_usable_image(images: list[dict[str, Any]]) -> bool:
     return bool(images) and all(isinstance(image.get("source_url"), str) and image["source_url"] for image in images)
 
 
+def _is_request(extraction_result: dict[str, Any] | None) -> bool:
+    """Games extraction flags self-promotion and showcases as non-requests."""
+    return (extraction_result or {}).get("is_request", True) is not False
+
+
 def _latest_normalized() -> Path:
     candidates = sorted(normalized_dir().glob("*.json"))
     if not candidates:
@@ -228,6 +233,7 @@ def _upsert_post(
     vibe = (extraction_result or {}).get("vibe") or {}
     vibe_summary = vibe.get("summary")
     permalink = post.get("permalink", "")
+    is_request = _is_request(extraction_result)
 
     # Determine status
     if (
@@ -235,6 +241,7 @@ def _upsert_post(
         and vibe_summary
         and match_count_for_post > 0
         and permalink
+        and is_request
     ):
         status = "publishable"
         error_info = None
@@ -249,6 +256,8 @@ def _upsert_post(
             reasons.append("no enriched recommendation matches")
         if not permalink:
             reasons.append("no permalink")
+        if not is_request:
+            reasons.append("not a request")
         error_info = "; ".join(reasons)
 
     db.execute(
@@ -1285,6 +1294,7 @@ def main(argv: list[str] | None = None) -> None:
                 and vibe_has
                 and match_count > 0
                 and bool(post.get("permalink"))
+                and _is_request(ext_result)
             )
 
             preview_posts.append(
@@ -1298,6 +1308,7 @@ def main(argv: list[str] | None = None) -> None:
                     "match_count": match_count,
                     "evidence_count": evidence_count,
                     "has_permalink": bool(post.get("permalink")),
+                    "is_request": _is_request(ext_result),
                     "will_publish": will_publish,
                 }
             )
@@ -1310,6 +1321,7 @@ def main(argv: list[str] | None = None) -> None:
             "post_count": len(post_ids),
             "publishable": sum(1 for p in preview_posts if p["will_publish"]),
             "skipped": sum(1 for p in preview_posts if not p["will_publish"]),
+            "not_request": sum(1 for p in preview_posts if not p["is_request"]),
             "images": total_images,
             "matches": total_recs,
             "evidence_items": total_evidence,
@@ -1419,6 +1431,7 @@ def main(argv: list[str] | None = None) -> None:
         posts_seen = 0
         posts_publishable = 0
         posts_skipped = 0
+        posts_not_request = 0
         images_inserted = 0
         recommendations_upserted = 0
         evidence_inserted = 0
@@ -1515,6 +1528,8 @@ def main(argv: list[str] | None = None) -> None:
                 posts_publishable += 1
             else:
                 posts_skipped += 1
+            if not _is_request(ext_result):
+                posts_not_request += 1
 
             # Images
             try:
@@ -1631,6 +1646,7 @@ def main(argv: list[str] | None = None) -> None:
                 "posts_seen": posts_seen,
                 "posts_publishable": posts_publishable,
                 "posts_skipped": posts_skipped,
+                "posts_not_request": posts_not_request,
                 "images_inserted": images_inserted,
                 "recommendations_upserted": recommendations_upserted,
                 "evidence_inserted": evidence_inserted,

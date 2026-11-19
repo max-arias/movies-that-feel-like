@@ -11,6 +11,7 @@ from typing import Any
 
 from pipeline.artifacts import read_json_artifact, timestamp_slug, write_json_artifact
 from pipeline.paths import ensure_pipeline_dirs, normalized_dir, raw_dir
+from pipeline.sites import current_site
 
 _IMAGE_EXT_RE = re.compile(r"\.(jpe?g|png|webp|gif)(\?|$)", re.IGNORECASE)
 _IMAGE_HOST_RE = re.compile(r"^https?://(i\.)?redd\.it/", re.IGNORECASE)
@@ -311,9 +312,17 @@ def main(argv: list[str] | None = None) -> None:
     posts = [post for post in raw_posts if post.get("id") not in excluded_ids]
     excluded_count = len(raw_posts) - len(posts)
 
+    # Drop non-request posts (self-promotion, showcases) by flair before
+    # extraction, so they cost no LLM call and can never publish.
+    site = current_site()
+    kept_posts = [post for post in posts if not site.is_denied_flair(post.get("link_flair_text"))]
+    flair_excluded_count = len(posts) - len(kept_posts)
+    posts = kept_posts
+
     print(
         f"[pipeline:normalize] Processing {len(posts)} posts from {raw_path.name}"
         + (f" ({excluded_count} excluded)" if excluded_count else "")
+        + (f" ({flair_excluded_count} dropped by flair)" if flair_excluded_count else "")
     )
 
     # Normalize each post --------------------------------------------------
@@ -322,7 +331,7 @@ def main(argv: list[str] | None = None) -> None:
     ]
 
     comments_by_post = raw_artifact.get("comments_by_post", {})
-    if excluded_ids:
+    if excluded_count or flair_excluded_count:
         included_comment_keys = {f"t3_{post.get('id')}" for post in posts}
         comments_by_post = {
             key: value
@@ -357,6 +366,7 @@ def main(argv: list[str] | None = None) -> None:
             "post_count": len(normalized_posts),
             "image_count": total_images,
             "post_without_images_count": posts_without_images,
+            "flair_excluded_count": flair_excluded_count,
         },
     }
 

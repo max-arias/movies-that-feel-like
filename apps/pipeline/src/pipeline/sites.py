@@ -30,6 +30,13 @@ class Site:
     media_types: tuple[str, ...]
     # Whether the post's Reddit flair is part of the extraction prompt.
     include_flair: bool
+    # Reddit flairs (compared case-insensitively) that mark a post as not a
+    # request, e.g. self-promotion or showcases; normalize drops these posts
+    # so they are never extracted or published.
+    denied_flairs: frozenset[str] = frozenset()
+
+    def is_denied_flair(self, flair: str | None) -> bool:
+        return bool(flair) and flair.strip().casefold() in self.denied_flairs
 
 
 SITES: dict[str, Site] = {
@@ -48,6 +55,14 @@ SITES: dict[str, Site] = {
         migrations_dir="packages/db/migrations-games",
         media_types=("game",),
         include_flair=True,
+        # Assumed initial set: no local raw post carried a flair yet, so these
+        # are the usual promotion/showcase flair names. Tune from real data.
+        denied_flairs=frozenset({
+            "self promotion", "self-promotion", "self promo", "self-promo",
+            "promotion", "promo", "advertisement", "ad",
+            "my game", "dev", "developer", "devlog", "dev log", "indie dev",
+            "showcase", "mod", "mods", "mod showcase", "screenshot", "screenshots",
+        }),
     ),
 }
 
