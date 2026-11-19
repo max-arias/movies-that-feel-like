@@ -145,6 +145,25 @@ def collect_candidates(
                 ):
                     bucket["evidence"].append(ev_with_post)
 
+        # Games: the post's own reference game ("feels like X") is resolved
+        # too, for its artwork, but carries no evidence and is never one of
+        # the post's recommendations.
+        reference_title = post_result.get("reference_title")
+        if site.key == "games" and reference_title:
+            key = _candidate_key(reference_title, post_result.get("reference_year"), "game")
+            bucket = buckets.setdefault(key, {
+                "candidate_key": key,
+                "title": reference_title,
+                "year": post_result.get("reference_year"),
+                "media_type": "game",
+                "source_post_ids": [],
+                "evidence_count": 0,
+                "evidence": [],
+            })
+            bucket.setdefault("reference_post_ids", [])
+            if post_id not in bucket["reference_post_ids"]:
+                bucket["reference_post_ids"].append(post_id)
+
     return list(buckets.values())
 
 

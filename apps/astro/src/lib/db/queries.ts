@@ -24,6 +24,18 @@ export type FeedImage = {
   sortOrder: number;
 };
 
+/**
+ * Games: the game a post wants others to feel like. `igdbId` and the art are
+ * null when IGDB had no match; the whole value is null on movies.
+ */
+export type PostReference = {
+  title: string;
+  igdbId: number | null;
+  posterUrl: string | null;
+  backdropUrl: string | null;
+  externalUrl: string | null;
+};
+
 export type FeedPost = {
   id: number;
   redditPostId: string;
@@ -31,6 +43,7 @@ export type FeedPost = {
   vibeSummary: string | null;
   images: FeedImage[];
   tags: string[];
+  reference: PostReference | null;
 };
 
 export type TagCount = { tag: string; slug: string; count: number };
@@ -72,6 +85,7 @@ export type PostDetail = {
   images: FeedImage[];
   tags: string[];
   recommendations: Recommendation[];
+  reference: PostReference | null;
 };
 
 /**
@@ -91,6 +105,8 @@ const feedPostColumns = {
   redditPostId: importedVibePosts.redditPostId,
   title: importedVibePosts.title,
   vibeSummary: importedVibePosts.vibeSummary,
+  referenceTitle: importedVibePosts.referenceTitle,
+  referenceIgdbId: importedVibePosts.referenceIgdbId,
 };
 
 const tagCountColumns = {
@@ -104,7 +120,45 @@ type FeedPostRow = {
   redditPostId: string;
   title: string;
   vibeSummary: string | null;
+  referenceTitle: string | null;
+  referenceIgdbId: number | null;
 };
+
+type ReferenceArt = Omit<PostReference, "title" | "igdbId">;
+
+/** IGDB art for posts' reference games, keyed by IGDB id; one query, none on movies. */
+async function loadReferenceArt(db: Db, igdbIds: number[]): Promise<Map<number, ReferenceArt>> {
+  const art = new Map<number, ReferenceArt>();
+  const ids = [...new Set(igdbIds)];
+  if (ids.length === 0) return art;
+  const rows = await db
+    .select({
+      igdbId: recommendations.igdbId,
+      posterUrl: recommendations.posterUrl,
+      backdropUrl: recommendations.backdropUrl,
+      externalUrl: recommendations.externalUrl,
+    })
+    .from(recommendations)
+    .where(inArray(recommendations.igdbId, ids));
+  for (const { igdbId, ...rest } of rows) if (igdbId != null) art.set(igdbId, rest);
+  return art;
+}
+
+function toReference(
+  title: string | null,
+  igdbId: number | null,
+  art: Map<number, ReferenceArt>,
+): PostReference | null {
+  if (!title) return null;
+  const found = igdbId == null ? undefined : art.get(igdbId);
+  return {
+    title,
+    igdbId: found ? igdbId : null,
+    posterUrl: found?.posterUrl ?? null,
+    backdropUrl: found?.backdropUrl ?? null,
+    externalUrl: found?.externalUrl ?? null,
+  };
+}
 
 function groupBy<T, K>(items: T[], key: (item: T) => K): Map<K, T[]> {
   const groups = new Map<K, T[]>();
@@ -213,7 +267,7 @@ async function loadFeedPosts(db: Db, tag: string | null, offset: number): Promis
   const ids = rows.map((row) => row.id);
   if (ids.length === 0) return [];
 
-  const [imageRows, tagRows] = await Promise.all([
+  const [imageRows, tagRows, referenceArt] = await Promise.all([
     db
       .select({
         id: importedPostImages.id,
@@ -230,6 +284,10 @@ async function loadFeedPosts(db: Db, tag: string | null, offset: number): Promis
       .from(vibeTags)
       .where(inArray(vibeTags.importedVibePostId, ids))
       .orderBy(asc(vibeTags.id)),
+    loadReferenceArt(
+      db,
+      rows.flatMap((row) => (row.referenceIgdbId == null ? [] : [row.referenceIgdbId])),
+    ),
   ]);
 
   const imagesByPost = groupBy(imageRows, (image) => image.importedVibePostId);
@@ -247,6 +305,7 @@ async function loadFeedPosts(db: Db, tag: string | null, offset: number): Promis
       sortOrder,
     })),
     tags: (tagsByPost.get(row.id) ?? []).map(({ tag }) => tag),
+    reference: toReference(row.referenceTitle, row.referenceIgdbId, referenceArt),
   }));
 }
 
@@ -329,6 +388,7 @@ export async function loadPost(db: Db, redditPostId: string): Promise<PostDetail
   // post whose last image died between the two reads is not a hero-less shell.
   if (images.length === 0) return null;
 
+  const referenceArt = await loadReferenceArt(db, post.referenceIgdbId == null ? [] : [post.referenceIgdbId]);
   const seen = new Map<number, Recommendation>();
   for (const rec of recRows) if (!seen.has(rec.id)) seen.set(rec.id, rec);
 
@@ -342,6 +402,7 @@ export async function loadPost(db: Db, redditPostId: string): Promise<PostDetail
     images,
     tags: tagRows.map(({ tag }) => tag),
     recommendations: [...seen.values()],
+    reference: toReference(post.referenceTitle, post.referenceIgdbId, referenceArt),
   };
 }
 

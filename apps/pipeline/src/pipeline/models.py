@@ -65,6 +65,10 @@ class PostExtraction(BaseModel):
     extraction_notes: list[str] = Field(
         default_factory=list, description="Warnings or observations from extraction"
     )
+    # Games site only: the game the post wants things to feel like. None on
+    # movies and on games posts that name no game.
+    reference_title: str | None = None
+    reference_year: int | None = None
 
 
 class BatchEvidence(BaseModel):
@@ -90,3 +94,22 @@ class BatchPostExtraction(BaseModel):
 
 class BatchExtractionResponse(BaseModel):
     posts: list[BatchPostExtraction]
+
+
+class GamesBatchPostExtraction(BatchPostExtraction):
+    reference_title: str | None = Field(
+        default=None, description="The game this post wants others to feel like, or null if none")
+    reference_year: int | None = None
+
+
+class GamesBatchExtractionResponse(BaseModel):
+    """The games site's response schema; the movies schema (and its cache keys) is unchanged."""
+
+    posts: list[GamesBatchPostExtraction]
+
+
+def batch_response_model() -> type[BatchExtractionResponse] | type[GamesBatchExtractionResponse]:
+    """Return the batch response schema for the current site."""
+    from pipeline.sites import current_site
+
+    return GamesBatchExtractionResponse if current_site().key == "games" else BatchExtractionResponse

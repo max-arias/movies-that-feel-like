@@ -221,6 +221,7 @@ def _upsert_post(
     extraction_result: dict[str, Any] | None,
     has_usable_image: bool,
     match_count_for_post: int,
+    reference_igdb_id: int | None = None,
 ) -> int:
     """Insert or update an imported_vibe_posts row. Returns row id."""
     pid = post["reddit_post_id"]
@@ -254,8 +255,8 @@ def _upsert_post(
         """INSERT INTO imported_vibe_posts
            (reddit_post_id, title, cleaned_title, selftext, author,
             created_utc, permalink, url, subreddit,
-            vibe_summary, status, error_info)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            vibe_summary, status, error_info, reference_title, reference_igdb_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(reddit_post_id) DO UPDATE SET
                title=excluded.title,
                cleaned_title=excluded.cleaned_title,
@@ -268,6 +269,8 @@ def _upsert_post(
                vibe_summary=excluded.vibe_summary,
                status=excluded.status,
                error_info=excluded.error_info,
+               reference_title=excluded.reference_title,
+               reference_igdb_id=excluded.reference_igdb_id,
                updated_at=datetime('now')""",
         (
             pid,
@@ -282,6 +285,8 @@ def _upsert_post(
             vibe_summary,
             status,
             error_info,
+            (extraction_result or {}).get("reference_title"),
+            reference_igdb_id,
         ),
     )
     row = db.execute(
@@ -1458,6 +1463,30 @@ def main(argv: list[str] | None = None) -> None:
                                 }
                             )
 
+            # Games: the post's reference game is stored as a recommendation
+            # row without evidence and linked by its IGDB id (a natural key).
+            reference_igdb_id: int | None = None
+            reference_title = (ext_result or {}).get("reference_title")
+            if reference_title:
+                ref_match = enrich_match_by_key.get(
+                    _candidate_key(reference_title, ext_result.get("reference_year"), "game")
+                )
+                if ref_match and ref_match.get("igdb_id"):
+                    try:
+                        ref_id = _upsert_recommendation(db, ref_match)
+                        if ref_id != -1:
+                            touched_recommendation_ids.add(ref_id)
+                            reference_igdb_id = ref_match["igdb_id"]
+                    except Exception as exc:
+                        errors.append(
+                            {
+                                "reddit_post_id": pid,
+                                "stage": "upsert_reference",
+                                "title": reference_title,
+                                "error": str(exc),
+                            }
+                        )
+
             try:
                 post_row_id = _upsert_post(
                     db,
@@ -1465,6 +1494,7 @@ def main(argv: list[str] | None = None) -> None:
                     ext_result,
                     has_usable_image,
                     match_count_for_post,
+                    reference_igdb_id,
                 )
             except Exception as exc:
                 errors.append(

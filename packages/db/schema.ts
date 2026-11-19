@@ -26,6 +26,9 @@ export const importedVibePosts = sqliteTable(
     url: text("url"),
     subreddit: text("subreddit").notNull().default("MoviesThatFeelLike"),
     vibeSummary: text("vibe_summary"),
+    // Games: the post's own "feels like X" game; see 0399_reference_game.sql.
+    referenceTitle: text("reference_title"),
+    referenceIgdbId: integer("reference_igdb_id"),
     status: text("status")
       .notNull()
       .default("pending")

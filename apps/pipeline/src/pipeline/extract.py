@@ -37,7 +37,7 @@ from pipeline.extraction_input import (batch_system_instruction, build_extractio
                                        extraction_prompt_version, flatten_comments)
 from pipeline.extraction_cache import (canonical_json, extraction_cache_key, lookup as lookup_cache,
                                        make_cache_record, read_cache_snapshot)
-from pipeline.models import BatchExtractionResponse, PostExtraction
+from pipeline.models import BatchExtractionResponse, PostExtraction, batch_response_model
 from pipeline.paths import checkpoints_dir, ensure_pipeline_dirs, normalized_dir, working_dir
 
 EXTRACTION_SCHEMA_VERSION = "post-extraction-v3"
@@ -522,7 +522,7 @@ class _BatchRun:
               f"extracting {len(batch.posts)} post(s): {ids}", flush=True)
         try:
             response = self.client.create(
-                response_model=BatchExtractionResponse,
+                response_model=batch_response_model(),
                 messages=[{"role": "system", "content": batch_system_instruction()},
                           {"role": "user", "content": render_batch_prompt(batch.posts)}],
                 model=self.actual_model,
@@ -655,8 +655,13 @@ def _build_prompts(
     return prompts
 
 
-_BATCH_SCHEMA = BatchExtractionResponse.model_json_schema()
-_BATCH_SCHEMA_JSON = json.dumps(_BATCH_SCHEMA, sort_keys=True)
+def _batch_schema() -> dict[str, Any]:
+    """The current site's response schema; part of every extraction cache key."""
+    return batch_response_model().model_json_schema()
+
+
+def _batch_schema_json() -> str:
+    return json.dumps(_batch_schema(), sort_keys=True)
 
 
 @dataclass(frozen=True)
@@ -770,7 +775,7 @@ def _resolve_identity(args: argparse.Namespace) -> _Identity:
 
 def _prompt_hash(prompt: dict[str, Any]) -> str:
     value = {"system": batch_system_instruction(), "user": prompt["user_prompt"],
-             "schema_version": EXTRACTION_SCHEMA_VERSION, "schema": _BATCH_SCHEMA_JSON}
+             "schema_version": EXTRACTION_SCHEMA_VERSION, "schema": _batch_schema_json()}
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
@@ -781,7 +786,7 @@ def _acquire_checkpoint(args: argparse.Namespace, identity: _Identity, input_pat
     run_identity = {"model": identity.actual_model, "requested_model": args.model,
                     "mode": identity.instructor_mode, "provider": identity.provider,
                     "api_base": identity.api_base, "prompt_version": extraction_prompt_version(),
-                    "schema_version": EXTRACTION_SCHEMA_VERSION, "schema": _BATCH_SCHEMA_JSON}
+                    "schema_version": EXTRACTION_SCHEMA_VERSION, "schema": _batch_schema_json()}
     run_id = hashlib.sha256((input_path.read_bytes().decode("utf-8")
                              + json.dumps(run_identity, sort_keys=True)).encode()).hexdigest()[:20]
     lock_handle = (checkpoints_dir() / f"{run_id}.lock").open("a+", encoding="utf-8")
@@ -819,7 +824,7 @@ def _assign_cache_keys(prompts: list[dict[str, Any]], identity: _Identity, max_c
     for prompt in prompts:
         prompt["_cache_key"] = extraction_cache_key(
             prompt_input=prompt["prompt_input"], system_prompt=batch_system_instruction(),
-            user_prompt=prompt["user_prompt"], schema=_BATCH_SCHEMA,
+            user_prompt=prompt["user_prompt"], schema=_batch_schema(),
             provider=identity.provider, model=identity.actual_model, api_base=identity.api_base,
             instructor_mode=identity.instructor_mode, prompt_version=extraction_prompt_version(),
             schema_version=EXTRACTION_SCHEMA_VERSION,

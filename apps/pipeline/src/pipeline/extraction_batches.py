@@ -97,6 +97,8 @@ def _to_post_extraction(post: BatchPost, entry: BatchPostExtraction) -> tuple[di
         reddit_post_id=post.reddit_post_id, reddit_title=post.title,
         cleaned_title=entry.cleaned_title, recommendations=recommendations,
         vibe=entry.vibe, extraction_notes=entry.extraction_notes,
+        reference_title=getattr(entry, "reference_title", None) or None,
+        reference_year=getattr(entry, "reference_year", None),
     )
     return extraction.model_dump(), dropped
 

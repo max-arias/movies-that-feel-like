@@ -19,6 +19,9 @@ const galleryImages = post.images.slice(0, 10);
 const totalImages = galleryImages.length;
 const games = post.recommendations.filter((rec) => rec.mediaType === "game");
 const featured = games.slice(0, 3);
+// IGDB art of the post's reference game, swapped in when the first upload is too small.
+const reference = post.reference;
+const referenceArt = reference?.backdropUrl ?? reference?.posterUrl ?? null;
 const rest = games.slice(3);
 const date = new Date(post.createdUtc * 1000).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" });
 
@@ -42,18 +45,19 @@ const rank = (n: number) => String(n).padStart(2, "0");
 const focus = "focus-visible:outline-2 focus-visible:outline-signal focus-visible:outline-offset-4";
 ---
 
-<section class="relative mx-games-gutter mt-6 h-games-detail-hero overflow-hidden rounded-2xl bg-night-card" aria-label="Post hero">
+<section class="relative mx-games-gutter mt-6 h-games-detail-hero overflow-hidden rounded-2xl bg-night-card" aria-label="Post hero" data-hero-frame>
   <div class="absolute inset-0" data-hero-gallery transition:name={`post-image-${post.redditPostId}`} aria-label={`Image gallery. ${totalImages} image${totalImages === 1 ? "" : "s"}.`}>
     {galleryImages.map((img, i) => (
       <div class="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-1600 ease-in-out motion-reduce:transition-none data-[active=true]:pointer-events-auto data-[active=true]:opacity-100" data-hero-slide data-active={i === 0 ? "true" : "false"} inert={i !== 0}>
         <button type="button" class:list={["relative block h-full w-full cursor-zoom-in overflow-hidden", focus]} data-open-lightbox={i} aria-label={`Open image ${i + 1} of ${totalImages} at full size`}>
           <img src={img.sourceUrl ?? img.previewUrl} alt="" aria-hidden="true" class="absolute inset-0 h-full w-full scale-110 object-cover blur-2xl brightness-50" loading={i === 0 ? "eager" : "lazy"} decoding="async" />
-          <img src={img.sourceUrl ?? img.previewUrl} alt={`Post image ${i + 1} of ${totalImages}`} class="relative h-full w-full object-cover data-small:object-contain" loading={i === 0 ? "eager" : "lazy"} decoding="async" fetchpriority={i === 0 ? "high" : undefined} data-fit />
+          <img src={img.sourceUrl ?? img.previewUrl} alt={`Post image ${i + 1} of ${totalImages}`} class="relative h-full w-full object-cover data-small:object-contain" loading={i === 0 ? "eager" : "lazy"} decoding="async" fetchpriority={i === 0 ? "high" : undefined} data-fit data-fallback-art={i === 0 ? (referenceArt ?? undefined) : undefined} />
         </button>
       </div>
     ))}
   </div>
   <div class="games-hero-shade pointer-events-none absolute inset-0" aria-hidden="true"></div>
+  {referenceArt && reference && <p class="pointer-events-none absolute top-3 right-4 text-xs text-night-ink/80" data-art-credit hidden>Artwork: {reference.title} · IGDB</p>}
   <div class="pointer-events-none absolute inset-x-0 bottom-8 grid justify-items-center gap-3 px-6 text-center">
     {post.tags[0] && <a href={feedHref(post.tags[0])} class:list={["pointer-events-auto max-w-11/12 rounded-full bg-night-ink px-6 pt-2.5 pb-3.5 font-pixel text-pill font-bold uppercase text-night transition-colors duration-200 hover:bg-signal", focus]}>{post.tags[0]}</a>}
     <h1 class="max-w-2xl text-hero-summary font-semibold text-balance text-night-ink" transition:name={`post-vibe-${post.redditPostId}`}>{post.vibeSummary ?? post.title}</h1>
@@ -73,6 +77,11 @@ const focus = "focus-visible:outline-2 focus-visible:outline-signal focus-visibl
 
 <div class="flex flex-wrap items-center justify-center gap-4 px-games-gutter pt-5 pb-4">
   <q class="text-night-quiet">{post.title}</q>
+  {reference && (
+    <span class="text-meta text-night-quiet">Feels like {reference.externalUrl
+      ? <a href={reference.externalUrl} target="_blank" rel="noopener noreferrer" class:list={["font-semibold text-night-ink underline-offset-4 hover:text-signal hover:underline", focus]}>{reference.title}</a>
+      : <span class="font-semibold text-night-ink">{reference.title}</span>}</span>
+  )}
   <span class="text-meta text-night-quiet">{date}</span>
   {post.permalink && <a href={`https://reddit.com${post.permalink}`} target="_blank" rel="noopener noreferrer" class:list={["border-b-2 border-signal text-meta font-semibold hover:text-signal", focus]}>Reddit thread ↗</a>}
 </div>
