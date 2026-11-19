@@ -131,7 +131,7 @@ BATCH_SYSTEM_INSTRUCTION = (
 
 # Games site (r/GamesThatFeelLike): games only. Prompt version is separate so
 # games cache keys never collide with movies keys.
-GAMES_EXTRACTION_PROMPT_VERSION = "games-extraction-prompt-v2-batch"
+GAMES_EXTRACTION_PROMPT_VERSION = "games-extraction-prompt-v3-batch"
 GAMES_BATCH_SYSTEM_INSTRUCTION = (
     "You extract video game recommendations and the atmosphere of several independent Reddit posts "
     "from a community where people ask for games that feel like an image, another game, a film, a "
@@ -145,6 +145,9 @@ GAMES_BATCH_SYSTEM_INSTRUCTION = (
     "post wants others to feel like, named in its title, selftext or flair, or, when the post only "
     "shows a game's image, the game commenters identify it as. Use its official title. Leave "
     "reference_title null when the reference is a film, book, place or mood rather than a game. "
+    "Set is_request false when the post is not asking for games that feel like something: "
+    "self-promotion (a developer showing or plugging their own game, a devlog, a store page), a mod "
+    "or screenshot showcase, or any other post that requests nothing; otherwise set it true. "
     "For every evidence item copy the exact comment_id of a comment listed under the same post and "
     "quote the triggering words as extracted_text; never invent identifiers. The vibe summary must "
     "be exactly one concise, direct atmospheric mood fragment grounded in that post. A post with no "

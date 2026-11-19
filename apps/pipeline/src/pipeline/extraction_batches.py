@@ -99,6 +99,7 @@ def _to_post_extraction(post: BatchPost, entry: BatchPostExtraction) -> tuple[di
         vibe=entry.vibe, extraction_notes=entry.extraction_notes,
         reference_title=getattr(entry, "reference_title", None) or None,
         reference_year=getattr(entry, "reference_year", None),
+        is_request=getattr(entry, "is_request", True),
     )
     return extraction.model_dump(), dropped
 

@@ -69,6 +69,10 @@ class PostExtraction(BaseModel):
     # movies and on games posts that name no game.
     reference_title: str | None = None
     reference_year: int | None = None
+    # Games site only: False for posts that are not asking for games that
+    # feel like something (self-promotion, showcases); load never publishes
+    # them. Defaults True so cached rows without the field still validate.
+    is_request: bool = True
 
 
 class BatchEvidence(BaseModel):
@@ -100,6 +104,10 @@ class GamesBatchPostExtraction(BatchPostExtraction):
     reference_title: str | None = Field(
         default=None, description="The game this post wants others to feel like, or null if none")
     reference_year: int | None = None
+    is_request: bool = Field(
+        default=True,
+        description="False if the post is not asking for games that feel like something, "
+        "e.g. self-promotion or a mod or screenshot showcase")
 
 
 class GamesBatchExtractionResponse(BaseModel):
