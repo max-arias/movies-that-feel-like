@@ -1,6 +1,6 @@
 /** Runtime queries backing the feed and the post detail pages. */
 
-import { and, asc, desc, eq, gt, inArray, isNull, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import {
   importedPostImages,
   importedVibePosts,
@@ -10,6 +10,7 @@ import {
   tagCounts as tagCountsTable,
   vibeTags,
 } from "db/schema";
+import { site } from "../../site";
 import type { Db } from ".";
 
 export const PAGE_SIZE = 25;
@@ -36,6 +37,12 @@ export type PostReference = {
   externalUrl: string | null;
 };
 
+/**
+ * Games: IGDB art standing in as the hero of a post with no live Reddit image:
+ * the reference game's, else the post's highest-ranked game that has art.
+ */
+export type StandInArt = { url: string; title: string };
+
 export type FeedPost = {
   id: number;
   redditPostId: string;
@@ -44,6 +51,8 @@ export type FeedPost = {
   images: FeedImage[];
   tags: string[];
   reference: PostReference | null;
+  /** Games only, for a post with no images; null there means a typographic hero. */
+  standInArt: StandInArt | null;
 };
 
 export type TagCount = { tag: string; slug: string; count: number };
@@ -86,7 +95,16 @@ export type PostDetail = {
   tags: string[];
   recommendations: Recommendation[];
   reference: PostReference | null;
+  /** Games only, for a post with no images; null there means a typographic hero. */
+  standInArt: StandInArt | null;
 };
+
+/**
+ * Games shows text-only posts (MTFL-80): a publishable games post, which always
+ * has at least one recommendation, is displayed whether or not it owns a live
+ * image, and IGDB art (or a typographic hero) stands in for the upload.
+ */
+const textPostsDisplayable = site.id === "games";
 
 /**
  * The product rule, expressed once: a post is displayable while it owns at
@@ -94,11 +112,15 @@ export type PostDetail = {
  * is that rule, maintained by triggers for every write path, and the summary
  * tables are counted from it — so the feed reads a flag instead of probing
  * `imported_post_images` once per post, per request.
+ *
+ * Games drops the image half of the rule. Its triggers, `tag_counts` and
+ * `site_stats` still encode the movies rule, so games counts its live posts at
+ * request time instead (`liveTagCounts`, `loadSitePostCount`) until a
+ * games-only migration redefines `is_displayable` there.
  */
-const displayablePost = and(
-  eq(importedVibePosts.status, "publishable"),
-  eq(importedVibePosts.isDisplayable, true),
-);
+const displayablePost = textPostsDisplayable
+  ? eq(importedVibePosts.status, "publishable")
+  : and(eq(importedVibePosts.status, "publishable"), eq(importedVibePosts.isDisplayable, true));
 
 const feedPostColumns = {
   id: importedVibePosts.id,
@@ -160,6 +182,49 @@ function toReference(
   };
 }
 
+type ArtSource = { title: string; posterUrl: string | null; backdropUrl: string | null };
+
+/** The wide artwork first: a cover is portrait and crops badly in a hero. */
+function artOf(source: ArtSource): StandInArt | null {
+  const url = source.backdropUrl ?? source.posterUrl;
+  return url ? { url, title: source.title } : null;
+}
+
+/**
+ * The stand-in hero of an imageless games post: the reference game's art, else
+ * the first of the post's games, in ranking order, that has art.
+ */
+function standInArtFor(reference: PostReference | null, rankedGames: ArtSource[]): StandInArt | null {
+  for (const source of reference ? [reference, ...rankedGames] : rankedGames) {
+    const art = artOf(source);
+    if (art) return art;
+  }
+  return null;
+}
+
+/** Each post's games that have IGDB art, in the post page's ranking order. */
+async function loadRankedGameArt(db: Db, postIds: number[]): Promise<Map<number, ArtSource[]>> {
+  if (postIds.length === 0) return new Map();
+  const rows = await db
+    .select({
+      postId: recommendationEvidence.importedVibePostId,
+      title: recommendations.title,
+      posterUrl: recommendations.posterUrl,
+      backdropUrl: recommendations.backdropUrl,
+    })
+    .from(recommendations)
+    .innerJoin(recommendationEvidence, eq(recommendationEvidence.recommendationId, recommendations.id))
+    .where(
+      and(
+        inArray(recommendationEvidence.importedVibePostId, postIds),
+        eq(recommendations.mediaType, "game"),
+        or(isNotNull(recommendations.backdropUrl), isNotNull(recommendations.posterUrl)),
+      ),
+    )
+    .orderBy(desc(recommendations.evidenceScore), desc(recommendations.popularity), asc(recommendations.id));
+  return groupBy(rows, (row) => row.postId);
+}
+
 function groupBy<T, K>(items: T[], key: (item: T) => K): Map<K, T[]> {
   const groups = new Map<K, T[]>();
   for (const item of items) {
@@ -180,6 +245,7 @@ function groupBy<T, K>(items: T[], key: (item: T) => K): Map<K, T[]> {
  * static tag pages are built from it.
  */
 export async function loadTagCounts(db: Db, limit?: number): Promise<TagCount[]> {
+  if (textPostsDisplayable) return liveTagCounts(db, undefined, limit);
   const query = db
     .select(tagCountColumns)
     .from(tagCountsTable)
@@ -196,6 +262,7 @@ export async function loadTagCounts(db: Db, limit?: number): Promise<TagCount[]>
  * an unknown, or emptied, tag reads as null.
  */
 async function selectTagCountRow(db: Db, key: SQL): Promise<TagCount | null> {
+  if (textPostsDisplayable) return (await liveTagCounts(db, key, 1))[0] ?? null;
   const [row] = await db
     .select(tagCountColumns)
     .from(tagCountsTable)
@@ -219,8 +286,33 @@ export async function loadTagBySlug(db: Db, slug: string): Promise<TagCount | nu
   return selectTagCountRow(db, eq(tagCountsTable.tag, tag));
 }
 
+/**
+ * Games: the counts `tag_counts` would hold under the games rule, counted from
+ * the posts. `tag_counts` still supplies each tag's slug (its vocabulary is
+ * complete), and the (post, tag) unique index counts each post once per tag.
+ */
+async function liveTagCounts(db: Db, key: SQL | undefined, limit: number | undefined): Promise<TagCount[]> {
+  const count = sql<number>`count(*)`.mapWith(Number);
+  const query = db
+    .select({ tag: tagCountsTable.tag, slug: tagCountsTable.slug, count })
+    .from(tagCountsTable)
+    .innerJoin(vibeTags, eq(vibeTags.tag, tagCountsTable.tag))
+    .innerJoin(importedVibePosts, and(eq(importedVibePosts.id, vibeTags.importedVibePostId), displayablePost))
+    .where(key)
+    .groupBy(tagCountsTable.tag, tagCountsTable.slug)
+    .orderBy(desc(count), asc(tagCountsTable.tag));
+  return limit === undefined ? query : query.limit(limit);
+}
+
 /** Every displayable post on the site, from the singleton summary row. */
 async function loadSitePostCount(db: Db): Promise<number> {
+  if (textPostsDisplayable) {
+    const [row] = await db
+      .select({ count: sql<number>`count(*)`.mapWith(Number) })
+      .from(importedVibePosts)
+      .where(displayablePost);
+    return row?.count ?? 0;
+  }
   const [row] = await db.select({ postCount: siteStats.postCount }).from(siteStats).limit(1);
   return Number(row?.postCount ?? 0);
 }
@@ -292,20 +384,36 @@ async function loadFeedPosts(db: Db, tag: string | null, offset: number): Promis
 
   const imagesByPost = groupBy(imageRows, (image) => image.importedVibePostId);
   const tagsByPost = groupBy(tagRows, (tag) => tag.importedVibePostId);
+  const posts = rows.map((row) => ({
+    row,
+    images: imagesByPost.get(row.id) ?? [],
+    reference: toReference(row.referenceTitle, row.referenceIgdbId, referenceArt),
+  }));
+  // Games: an imageless post whose reference game has no art falls back to its games' art.
+  const rankedGameArt = textPostsDisplayable
+    ? await loadRankedGameArt(
+        db,
+        posts
+          .filter(({ images, reference }) => images.length === 0 && !(reference && artOf(reference)))
+          .map(({ row }) => row.id),
+      )
+    : new Map<number, ArtSource[]>();
 
-  return rows.map((row) => ({
+  return posts.map(({ row, images, reference }) => ({
     id: row.id,
     redditPostId: row.redditPostId,
     title: row.title,
     vibeSummary: row.vibeSummary,
-    images: (imagesByPost.get(row.id) ?? []).map(({ id, sourceUrl, previewUrl, sortOrder }) => ({
+    images: images.map(({ id, sourceUrl, previewUrl, sortOrder }) => ({
       id,
       sourceUrl,
       previewUrl,
       sortOrder,
     })),
     tags: (tagsByPost.get(row.id) ?? []).map(({ tag }) => tag),
-    reference: toReference(row.referenceTitle, row.referenceIgdbId, referenceArt),
+    reference,
+    standInArt:
+      textPostsDisplayable && images.length === 0 ? standInArtFor(reference, rankedGameArt.get(row.id) ?? []) : null,
   }));
 }
 
@@ -386,11 +494,14 @@ export async function loadPost(db: Db, redditPostId: string): Promise<PostDetail
 
   // The flag is the feed's rule; the page still renders only live images, so a
   // post whose last image died between the two reads is not a hero-less shell.
-  if (images.length === 0) return null;
+  // Games gives an imageless post a stand-in hero instead.
+  if (images.length === 0 && !textPostsDisplayable) return null;
 
   const referenceArt = await loadReferenceArt(db, post.referenceIgdbId == null ? [] : [post.referenceIgdbId]);
   const seen = new Map<number, Recommendation>();
   for (const rec of recRows) if (!seen.has(rec.id)) seen.set(rec.id, rec);
+  const ranked = [...seen.values()];
+  const reference = toReference(post.referenceTitle, post.referenceIgdbId, referenceArt);
 
   return {
     id: post.id,
@@ -401,8 +512,12 @@ export async function loadPost(db: Db, redditPostId: string): Promise<PostDetail
     createdUtc: post.createdUtc,
     images,
     tags: tagRows.map(({ tag }) => tag),
-    recommendations: [...seen.values()],
-    reference: toReference(post.referenceTitle, post.referenceIgdbId, referenceArt),
+    recommendations: ranked,
+    reference,
+    standInArt:
+      textPostsDisplayable && images.length === 0
+        ? standInArtFor(reference, ranked.filter((rec) => rec.mediaType === "game"))
+        : null,
   };
 }
 

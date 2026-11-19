@@ -5,6 +5,7 @@
 // with the same routes, pagination and tag links as the movies Feed.
 
 import { PAGE_SIZE, loadPostGames, type FeedPage } from "../lib/db/queries";
+import GamesStandIn from "./GamesStandIn.astro";
 import { getDb } from "../lib/db";
 import { feedHref } from "../lib/feed-paths";
 import { site } from "../site";
@@ -22,6 +23,8 @@ const hero = posts.find((post) => post.tags.length > 0) ?? posts[0];
 const heroPill = selectedTag ?? hero?.tags[0] ?? null;
 // IGDB art of the hero's reference game, swapped in when the upload is too small.
 const heroArt = hero?.reference?.backdropUrl ?? hero?.reference?.posterUrl ?? null;
+// A text-only post (no Reddit image) shows IGDB art or a typographic frame instead.
+const standInLabel = (post: (typeof posts)[number]) => post.reference?.title ?? post.title;
 const postHref = (redditPostId: string) => `/posts/${redditPostId}/`;
 const imageOf = (post: (typeof posts)[number]) => post.images[0]?.previewUrl ?? post.images[0]?.sourceUrl ?? "";
 // The hero is full-width, so it takes Reddit's original upload; the stored
@@ -60,11 +63,17 @@ const pill = "inline-flex items-center rounded-full border-2 px-3 py-0.5 text-me
   <>
     <article class="relative m-games-gutter h-games-hero overflow-hidden rounded-2xl bg-night-card" aria-label="Featured post" data-hero-frame>
       <a href={postHref(hero.redditPostId)} class:list={["absolute inset-0 block overflow-hidden", focus]} aria-label={`View details for ${hero.title}`} data-gallery>
-        <img class="absolute inset-0 h-full w-full scale-110 object-cover blur-2xl brightness-50" src={heroImageOf(hero)} alt="" aria-hidden="true" decoding="async" />
-        <img class="relative h-full w-full object-cover data-small:object-contain" src={heroImageOf(hero)} alt="" loading="eager" fetchpriority="high" decoding="async" data-fit data-fallback-art={heroArt ?? undefined} />
+        {hero.images.length > 0 ? (
+          <>
+            <img class="absolute inset-0 h-full w-full scale-110 object-cover blur-2xl brightness-50" src={heroImageOf(hero)} alt="" aria-hidden="true" decoding="async" />
+            <img class="relative h-full w-full object-cover data-small:object-contain" src={heroImageOf(hero)} alt="" loading="eager" fetchpriority="high" decoding="async" data-fit data-fallback-art={heroArt ?? undefined} />
+          </>
+        ) : (
+          <GamesStandIn art={hero.standInArt} label={standInLabel(hero)} size="hero" />
+        )}
       </a>
       <div class="games-hero-shade pointer-events-none absolute inset-0" aria-hidden="true"></div>
-      {heroArt && hero.reference && <p class="pointer-events-none absolute top-3 right-4 text-xs text-night-ink/80" data-art-credit hidden>Artwork: {hero.reference.title} · IGDB</p>}
+      {hero.images.length > 0 && heroArt && hero.reference && <p class="pointer-events-none absolute top-3 right-4 text-xs text-night-ink/80" data-art-credit hidden>Artwork: {hero.reference.title} · IGDB</p>}
       <div class="pointer-events-none absolute inset-x-0 bottom-8 grid justify-items-center gap-3 px-6 text-center">
         {heroPill && <a href={feedHref(heroPill)} aria-current={selectedTag === heroPill ? "page" : undefined} class:list={["pointer-events-auto max-w-11/12 rounded-full bg-night-ink px-6 pt-2.5 pb-3.5 font-pixel text-pill font-bold uppercase text-night transition-colors duration-200 hover:bg-signal", focus]}>{heroPill}</a>}
         <h1 class="max-w-2xl text-hero-summary font-semibold text-balance text-night-ink" data-vibe>{hero.vibeSummary ?? hero.title}</h1>
@@ -86,8 +95,10 @@ const pill = "inline-flex items-center rounded-full border-2 px-3 py-0.5 text-me
           return (
             <li class="border-t-2 border-night-line py-7">
              <article class="grid grid-cols-1 gap-4 md:games-row-grid md:gap-7">
-              <a href={postHref(post.redditPostId)} class:list={["block h-games-row-image cursor-pointer overflow-hidden rounded-xl bg-night-card ring-signal ring-offset-4 ring-offset-night transition-shadow duration-200 hover:ring-2", focus]} aria-label={`View details for ${post.title}`} data-gallery>
-                <img class="h-full w-full object-cover" src={imageOf(post)} alt="" loading="lazy" decoding="async" />
+              <a href={postHref(post.redditPostId)} class:list={["relative block h-games-row-image cursor-pointer overflow-hidden rounded-xl bg-night-card ring-signal ring-offset-4 ring-offset-night transition-shadow duration-200 hover:ring-2", focus]} aria-label={`View details for ${post.title}`} data-gallery>
+                {post.images.length > 0
+                  ? <img class="h-full w-full object-cover" src={imageOf(post)} alt="" loading="lazy" decoding="async" />
+                  : <GamesStandIn art={post.standInArt} label={standInLabel(post)} size="row" />}
               </a>
               <div class="min-w-0">
                 {post.tags.length > 0 && (

@@ -1,0 +1,32 @@
+---
+// The games site's hero for a post with no Reddit image (MTFL-80). IGDB art
+// stands in when the post has some (`post.standInArt`), credited in a corner;
+// without art the frame is typographic: the game, or the post's own title, set
+// large in the pixel face over a faint signal glow. Fills its positioned
+// parent, so it slots into any frame that would hold the post's upload.
+
+import type { StandInArt } from "../lib/db/queries";
+
+export interface Props {
+  art: StandInArt | null;
+  /** What the typographic frame spells out when there is no art. */
+  label: string;
+  /** "hero" for the feed and detail heroes, "row" for a feed list row. */
+  size: "hero" | "row";
+}
+
+const { art, label, size } = Astro.props;
+const hero = size === "hero";
+---
+
+{art ? (
+  <>
+    {hero && <img class="absolute inset-0 h-full w-full scale-110 object-cover blur-2xl brightness-50" src={art.url} alt="" aria-hidden="true" decoding="async" />}
+    <img class="relative h-full w-full object-cover" src={art.url} alt="" loading={hero ? "eager" : "lazy"} fetchpriority={hero ? "high" : undefined} decoding="async" />
+    <p class:list={["pointer-events-none absolute text-xs text-night-ink/80", hero ? "top-3 right-4" : "right-2 bottom-2 max-w-11/12 truncate rounded bg-night-shade px-1.5 py-0.5"]} data-art-credit>Artwork: {art.title} · IGDB</p>
+  </>
+) : (
+  <div class:list={["games-type-glow absolute inset-0 flex justify-center overflow-hidden", hero ? "items-start px-8 pt-14" : "items-center px-5"]} aria-hidden="true">
+    <span class:list={["text-center font-pixel font-bold text-balance uppercase", hero ? "line-clamp-2 text-type-hero text-night-line" : "line-clamp-4 text-section text-night-quiet"]}>{label}</span>
+  </div>
+)}

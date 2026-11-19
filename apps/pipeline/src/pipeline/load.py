@@ -72,6 +72,18 @@ def _has_usable_image(images: list[dict[str, Any]]) -> bool:
     return bool(images) and all(isinstance(image.get("source_url"), str) and image["source_url"] for image in images)
 
 
+def _meets_image_rule(images: list[dict[str, Any]]) -> bool:
+    """Whether a post's images allow publishing on the current site.
+
+    Movies needs a usable image. Games also publishes text-only posts (no
+    images at all; MTFL-80): the site gives them an IGDB or typographic hero,
+    and the other rules still require a recommendation match.
+    """
+    if not images and current_site().key == "games":
+        return True
+    return _has_usable_image(images)
+
+
 def _latest_normalized() -> Path:
     candidates = sorted(normalized_dir().glob("*.json"))
     if not candidates:
@@ -1260,7 +1272,7 @@ def main(argv: list[str] | None = None) -> None:
         for pid in post_ids:
             post = posts_by_id[pid]
             ext_result = extraction_by_post.get(pid)
-            has_usable_image = _has_usable_image(post.get("images", []))
+            has_usable_image = _meets_image_rule(post.get("images", []))
 
             # Count matches for this post (by candidate_key from extraction)
             match_count = 0
@@ -1429,7 +1441,7 @@ def main(argv: list[str] | None = None) -> None:
         for pid in post_ids:
             post = posts_by_id[pid]
             ext_result = extraction_by_post.get(pid)
-            has_usable_image = _has_usable_image(post.get("images", []))
+            has_usable_image = _meets_image_rule(post.get("images", []))
             posts_seen += 1
 
             # Count matchable recommendations for this post
