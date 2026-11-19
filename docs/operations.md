@@ -1,5 +1,17 @@
 # Production Reddit import operations
 
+Two sites share this repository and its operations. Each is its own Cloudflare
+Worker over its own D1 database, built from the same Astro app with `SITE`:
+
+| Site | `SITE` | Wrangler config | D1 database | Migrations | Subreddit |
+| --- | --- | --- | --- | --- | --- |
+| Movies That Feel Like | `movies` (default) | `apps/astro/wrangler.jsonc` | `movies-that-feel-like` | `packages/db/migrations` | r/MoviesThatFeelLike |
+| Games That Feel Like | `games` | `apps/astro/wrangler.games.jsonc` | `games-that-feel-like` | `packages/db/migrations-games` | r/GamesThatFeelLike |
+
+Everything below applies to both sites unless it names one; commands that name
+`movies-that-feel-like` and `apps/astro/wrangler.jsonc` take the games database
+and config for the games site.
+
 ## How the site is served
 
 The site is one Cloudflare Worker plus its static assets. Astro runs with
@@ -80,9 +92,16 @@ npx wrangler d1 export movies-that-feel-like --local --no-schema --config apps/a
 node scripts/build-production.mjs --snapshot /tmp/dev.sql
 ```
 
-`scripts/build-production.mjs` (`--snapshot <file>` required, `--state-dir <dir>`
-defaulting to `.build/d1-build-state`, `--db <name>` defaulting to
-`D1_DATABASE_NAME` or `movies-that-feel-like`):
+For the games site, export with `--config apps/astro/wrangler.games.jsonc` from
+`games-that-feel-like` and build with `--site games`.
+
+`scripts/build-production.mjs` (`--snapshot <file>` required; `--site
+movies|games` defaulting to `$SITE` or `movies`, which picks the Wrangler config,
+the D1 database and the migrations directory and is passed to the Astro build as
+`SITE`; `--state-dir <dir>` defaulting to `.build/d1-build-state`; `--db <name>`
+defaulting to the site's database; `--migrations-dir <dir>` defaulting to the
+site's migrations directory, which must be the `migrations_dir` of the site's
+Wrangler config):
 
 1. refuses to run under Cloudflare Workers Builds (`WORKERS_CI`) and refuses a
    snapshot that contains schema DDL or no `INSERT` at all;
@@ -101,7 +120,7 @@ defaulting to `.build/d1-build-state`, `--db <name>` defaulting to
    `tag_counts.count` matches the rows, no tag lacks a `tag_counts` row, and the
    trigger count is back to the captured number;
 6. requires the restored `d1_migrations` ledger to equal the tracked
-   `packages/db/migrations/*.sql` files — a snapshot from a database that is
+   `*.sql` files of the site's migrations directory — a snapshot from a database that is
    behind the repository is refused, so migrate a local database with
    `npm run db:migrate` (and production through the deploy workflow below)
    before exporting from it;
@@ -131,33 +150,55 @@ KV ids are placeholders.
 ## Deployment
 
 Deployment is owned by `.github/workflows/deploy-production.yml` ("Deploy
-production"), one job `deploy` in the `production` environment. It runs on:
+production"). A `plan` job picks the sites to deploy and a `deploy` job, in the
+`production` environment, runs once per site as a matrix. It runs on:
 
-- a push to `main` that touches `apps/**`, `packages/**`, `scripts/**`,
-  `package.json`, `bun.lock` or that workflow;
-- **Run workflow**;
-- an explicit call from the import workflow (below).
+- a push to `main` that touches `apps/astro/**`, `packages/db/**`,
+  `scripts/**`, `package.json`, `bun.lock` or that workflow. The `plan` job diffs
+  the push (`github.event.before`..`github.sha`) per site: `apps/astro/**`,
+  `packages/db/**` outside the two migrations directories (`schema.ts` and the
+  rest), `scripts/**`, `package.json`, `bun.lock` and the workflow deploy both
+  sites; `packages/db/migrations/**` deploys movies only and
+  `packages/db/migrations-games/**` games only. A push whose base commit is
+  unknown (a new branch or a force push) deploys both;
+- **Run workflow**, with `site` = `both` (default), `movies` or `games`;
+- an explicit `workflow_call` from a site's import workflow (below), with
+  `site` set to that site.
 
-Its steps: install dependencies (`bun install --frozen-lockfile`); check tracked
-migration state; apply pending migrations to production D1; export the corpus;
-build from the exported corpus; deploy the Worker; write a job summary with the
-commit, ref and status. The build step deliberately gets **no** Cloudflare
+`plan` skips a site whose Wrangler config still has `PLACEHOLDER-…` resource
+ids, with a notice in the run summary, so pushes to `main` stay green before the
+games D1 and KV exist (see "Setting up the games site").
+
+Each `deploy` job's steps: install dependencies (`bun install
+--frozen-lockfile`); check tracked migration state; apply pending migrations to
+the site's production D1; count the site's posts; export the corpus; build from
+the exported corpus (`--site`, `--db`, `--migrations-dir`); deploy the Worker;
+write a job summary with the site, commit, ref and status. A games database with
+no posts yet (created, migrated, but never imported) skips the export, build and
+deploy with a notice: the first games import that releases posts deploys the
+site. The movies corpus is never legitimately empty, so there the build still
+refuses an empty export. The build step deliberately gets **no** Cloudflare
 credentials, so an attempt to read production D1 during prerendering fails
 instead of silently querying production once per page. The export step logs the
 snapshot's size and sha256, and the export is data-only (`--no-schema`) so the
-schema — and its summary triggers — stays owned by `packages/db/migrations`.
+schema — and its summary triggers — stays owned by the migrations directory.
 
-Cloudflare Workers Builds must stay **disconnected** for this Worker (Workers &
+Cloudflare Workers Builds must stay **disconnected** for both Workers (Workers &
 Pages → the Worker → Settings → Builds: disable automatic deployments). A
 push-triggered plain build has no snapshot, so it would prerender from an empty
 database and deploy a site with no posts; `astro.config.mjs` refuses a CI build
 without `BUILD_D1_STATE_DIR`, and `scripts/build-production.mjs` refuses outright
 when `WORKERS_CI` is set. GitHub Actions is the only deploy path.
 
-Both workflows hold the same concurrency group, `movies-import-production`, with
-`cancel-in-progress: false`, so an import and the deploy that follows it never
-overlap, a hand-dispatched deploy waits for an in-flight import, and two deploys
-never race. The group is on the **jobs**, not the workflows: a called workflow's
+Every production mutation — both sites' import jobs and every deploy job —
+holds one concurrency group, `production-release`, with `cancel-in-progress:
+false` and `queue: max`. Release commits push to `main` and refuse when `main`
+moved, so the two sites' imports and deploys run one at a time: an import and
+the deploy that follows it never overlap, a hand-dispatched deploy waits for an
+in-flight import, and two deploys never race. `queue: max` keeps up to 100
+waiting jobs; without it GitHub keeps a single pending job per group and cancels
+it when another one queues (a games import would cancel a waiting movies
+deploy). The group is on the **jobs**, not the workflows: a called workflow's
 group would already be held by the calling run and its job would deadlock behind
 it.
 
@@ -234,8 +275,10 @@ Configure these GitHub Actions secrets in the repository settings or its
   `TWITCH_CLIENT_SECRET` (Twitch is required because game enrichment is active).
 
 The workflows use Node 22, Python 3.11, Bun with `bun install --frozen-lockfile`,
-`uv sync --locked`, npm pipeline commands, and `apps/astro/wrangler.jsonc` for
-the database identity. Secrets are supplied only as environment variables; do
+`uv sync --locked`, npm pipeline commands, and the site's Wrangler config
+(`apps/astro/wrangler.jsonc` or `apps/astro/wrangler.games.jsonc`) for the
+database identity. Both sites use the same secrets and the same `production`
+environment; the API token must cover both D1 databases and both Workers. Secrets are supplied only as environment variables; do
 not print them or put them in artifacts.
 
 Both workflows explicitly use the Bash shell, so GitHub Actions enables
@@ -251,7 +294,7 @@ service accounts are not covered by Go Teams, so a service-account key
 the Go plan, unless the Console shows otherwise. Set
 `OPENCODE_GO_API_KEY` as a repository secret or in the `production`
 environment. The model is `EXTRACTION_MODEL` at the top of
-`.github/workflows/import-reddit.yml` (currently `deepseek-v4.1-flash`, JSON
+`.github/workflows/import-reddit.yml`, shared by both sites (currently `deepseek-v4.1-flash`, JSON
 mode; `tools` mode is rejected while the model is thinking). Go rejects
 requests without a client user agent and an `x-opencode-session` header;
 `pipeline.extract` sends both, with one session id per run. Both extraction
@@ -267,12 +310,27 @@ hours. There is no automatic provider fallback.
 
 ## Production import
 
-The production import is `.github/workflows/import-reddit.yml`. It runs at
-`00:00 UTC` on Mondays and Thursdays (`0 0 * * 1,4`), and can also be started
-with **Run workflow**. The import currently targets the fixed source year
-`2026` and fetches newest first with `--sort desc`.
+The import itself is the reusable `.github/workflows/import-reddit.yml`
+(`workflow_call` with a required `site` input). Two thin caller workflows own the
+schedules and the deploy call:
 
-Manual runs accept `limit` (default `100`), `max_pages` (default `50`), and
+| Workflow | Site | Schedule (UTC) |
+| --- | --- | --- |
+| `.github/workflows/import-reddit-movies.yml` | `movies` | `17 0,4,11,14,18,22 * * *` |
+| `.github/workflows/import-reddit-games.yml` | `games` | `47 0,4,11,14,18,22 * * *` |
+
+The games schedule is the movies cadence 30 minutes later, so the two rarely
+queue behind each other on `production-release`; both avoid the 2x price
+windows. Each can also be started with **Run workflow**. The import sets `SITE`
+for the pipeline (`apps/pipeline/src/pipeline/sites.py`), fetches the site's
+subreddit, reads and writes the site's D1 through its Wrangler config, keeps run
+artifacts in the site's working directory (`data/working` or
+`data/games/working`), and only accepts generated migrations in the site's
+migrations directory. It currently targets the fixed source year `2026` and
+fetches newest first with `--sort desc`. A `preflight` job skips the import with
+a notice while the site's Wrangler config still has `PLACEHOLDER-…` ids.
+
+Manual runs accept `limit` (default `30`), `max_pages` (default `50`), and
 `verify_cache_round_trip`. Both numeric inputs must be positive integers. The
 optional round-trip check reruns at most three original posts using re-exported
 cache snapshots; it never feeds probe output to load and requires cache hits
@@ -285,15 +343,24 @@ credentials are not persisted, and the GitHub write token is exposed only to the
 final apply/push step. Outside that export, no build-time credential is needed:
 a production build reads the restored local snapshot, never remote D1.
 
-A run that finds new posts ends by calling the reusable deploy workflow as a
-final `deploy` job (`needs: import`, `if: released == 'true'`, `secrets:
-inherit`). The release commit is pushed with `GITHUB_TOKEN`, which does not
+A run that finds new posts reports `released: 'true'`, and the caller then
+runs the reusable deploy workflow for its own site as a final `deploy` job
+(`needs: import`, `if: released == 'true' && deferred != 'true'`, `site:` the
+caller's site, `secrets: inherit`). The release commit is pushed with `GITHUB_TOKEN`, which does not
 create push events, so the deploy has to be explicit — and it reuses the same
 workflow a code push or a manual deploy runs, so production has one deploy path.
 A run with no new posts pushes nothing, the job is skipped, and the deployed
 site already matches `main`.
 
 ## Run and recovery
+
+If Arctic Shift is unavailable, `pipeline:fetch` exits 0 without a raw
+artifact and writes `deferred=true` to the step output (`deferred=false` on a
+normal run). Every later step (normalize, truncation check, extract, enrich,
+load, release commit) is guarded on `steps.fetch.outputs.deferred != 'true'`,
+the import job exposes `deferred` as an output, and the caller skips the deploy.
+A deferred run is a successful no-op with a notice; the posts stay eligible for
+the next run.
 
 Each normal import first queries production D1 for every
 `imported_vibe_posts.reddit_post_id`. It writes those IDs to a temporary
@@ -319,7 +386,7 @@ marked imported or skipped and remain eligible for a later refresh. Enrichment
 or loading errors still fail the workflow before commit and apply.
 
 Run artifacts and extraction checkpoints are uploaded even when an earlier
-stage fails. Download `reddit-import-<run-id>` from the failed run to inspect
+stage fails. Download `reddit-import-<site>-<run-id>` from the failed run to inspect
 the original provider error, successful results, and pending counts. Artifact
 paths are fixed at job start, so extraction diagnostics do not depend on the
 failed step publishing environment variables.
@@ -334,7 +401,8 @@ apply` and never enters a reviewed migration. Snapshots select the newest
 fresh row per complete cache identity, compare returned counts with eligible
 counts, and restrict enrichment snapshots to the compatible payload schema.
 
-`load` creates data migrations under `packages/db/migrations`; the workflow
+`load` creates data migrations under the site's migrations directory
+(`packages/db/migrations` or `packages/db/migrations-games`); the workflow
 canonicalizes manifest paths to repository-relative paths and uploads cache SQL,
 source artifacts, manifests, and those migration files as run evidence. The
 final release sequence stages and verifies only the exact paths listed by the
@@ -393,10 +461,52 @@ If the Arctic Shift search/listing keeps failing (HTTP 5xx, HTTP 429, timeouts
 or connection errors) after the fetch's bounded retries (about two minutes of
 extra backoff), `pipeline.fetch` prints `Arctic Shift unavailable (…); import
 deferred, nothing changed`, writes no raw artifact, exits 0 and sets
-`deferred=true` in `$GITHUB_OUTPUT`. Steps after fetch must be skipped when that
-output is `true`; the next scheduled run picks the posts up. Other 4xx
+`deferred=true` in `$GITHUB_OUTPUT`. The import workflow skips every later step
+and the deploy when that output is `true`; the next scheduled run picks the posts up. Other 4xx
 responses still fail the run. Comment-tree failures after a successful search
 keep the existing per-post behaviour (recorded as `error` entries).
+
+## Setting up the games site
+
+The games Worker, D1 database and KV namespace do not exist until they are
+created by hand, and `apps/astro/wrangler.games.jsonc` carries `PLACEHOLDER-…`
+ids until then. While it does, the deploy workflow's `plan` job and the games
+import's `preflight` job skip the games site with a notice, so nothing fails.
+To bring it up (with a Cloudflare login or the account's API token; these touch
+production):
+
+```sh
+# 1. Create the D1 database; copy the printed database_id.
+npx wrangler d1 create games-that-feel-like
+
+# 2. Create the SESSION KV namespace; copy the printed id.
+npx wrangler kv namespace create games-that-feel-like-session
+
+# 3. Put both ids into apps/astro/wrangler.games.jsonc, replacing
+#    PLACEHOLDER-games-d1-database-id and PLACEHOLDER-games-session-kv-id.
+
+# 4. Optional: apply the schema now (the first deploy also does this).
+npx wrangler d1 migrations apply games-that-feel-like --remote \
+  --config apps/astro/wrangler.games.jsonc
+```
+
+Commit and push step 3 to `main`. That push touches `apps/astro/**`, so it
+deploys both sites: the games job applies `packages/db/migrations-games` to the
+new database, finds no posts yet and skips the build with a notice. Then run
+**Import Reddit posts (games)** by hand (or wait for its schedule); the first run
+that releases posts deploys the games Worker. Attach a custom domain or route to
+the `games-that-feel-like` Worker in the Cloudflare dashboard if it should not
+live on `workers.dev`.
+
+Check before the first run:
+
+- `CLOUDFLARE_API_TOKEN` covers the new database and Worker. A token scoped to
+  "All databases"/"All Workers" in the account needs no change; one scoped to
+  specific resources needs `games-that-feel-like` (D1 Edit, Workers Scripts
+  Edit, and Workers KV Edit if per product) added.
+- `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` are set: the games enrichment
+  resolves through IGDB.
+- Cloudflare Workers Builds is not connected to the new Worker.
 
 ## Failure triage
 
@@ -421,7 +531,8 @@ keep the existing per-post behaviour (recorded as `error` entries).
    staged. If D1 applied but push failed, retry the existing commit rather than
    generating a second migration.
 5. **Deploy:** confirm the Workers Builds integration is disconnected, then
-   inspect `.github/workflows/deploy-production.yml` for the failing step —
+   inspect `.github/workflows/deploy-production.yml` for the failing step (each
+   site is its own matrix job; a skipped one has a notice in the summary) —
    migration-state check (production ahead of the repository), the export (D1
    credential), the build (snapshot guards in the log), or the upload (Workers
    Scripts Edit). Re-run the deploy workflow from `main`; the build is

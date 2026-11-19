@@ -49,7 +49,7 @@ Do not treat arbitrary-value utilities (especially `var()` wrappers) as a Tailwi
 
 ## Deployment
 
-- Production deploys go through `.github/workflows/deploy-production.yml` (push to `main`, manual dispatch, and an explicit call from the import workflow). Cloudflare Workers Builds must stay disconnected for this Worker: a plain push-triggered build has no D1 snapshot and would deploy a site with no posts.
+- Production deploys go through `.github/workflows/deploy-production.yml` (push to `main` deploys the sites whose files changed; manual dispatch; and a call from each site's import caller, `import-reddit-movies.yml` / `import-reddit-games.yml`). Cloudflare Workers Builds must stay disconnected for both Workers: a plain push-triggered build has no D1 snapshot and would deploy a site with no posts.
 - Never deploy a plain `astro build`. Build production with `node scripts/build-production.mjs --snapshot <d1-export.sql>` (or `D1_SNAPSHOT=… npm run cf:deploy:prod`), which restores a data-only `wrangler d1 export … --no-schema` into an isolated state directory, verifies the corpus and ledger, and prerenders with `BUILD_D1_STATE_DIR`.
 - Deploy only the generated `apps/astro/dist/server/wrangler.json` (the adapter writes `main`, the assets directory and the bindings). Do not hand-edit or hand-assemble it.
 - Both production workflows hold the same concurrency group on their **jobs**. Do not move it to the workflow level: a called workflow's group would already be held by the calling run and its deploy job would deadlock behind it.
@@ -57,5 +57,5 @@ Do not treat arbitrary-value utilities (especially `var()` wrappers) as a Tailwi
 
 ## Pipeline runs
 
-- Do not run pipeline stages locally to verify a change. They call live providers (OpenCode Go, TMDB, Twitch) with real credentials and spend real usage limits. Verify pipeline changes with the scheduled `.github/workflows/import-reddit.yml` run, or with `--dry-run` and the unit tests.
+- Do not run pipeline stages locally to verify a change. They call live providers (OpenCode Go, TMDB, Twitch) with real credentials and spend real usage limits. Verify pipeline changes with the scheduled imports (`.github/workflows/import-reddit-movies.yml` and `import-reddit-games.yml`, which call the reusable `import-reddit.yml`), or with `--dry-run` and the unit tests.
 - OpenCode Go rejects requests that do not identify themselves: every call needs a client user agent and an `x-opencode-session` header, which `pipeline.extract` sends. The extraction model is `EXTRACTION_MODEL` at the top of `.github/workflows/import-reddit.yml`; every invocation in a run must name the same model or the extraction cache keys stop matching.

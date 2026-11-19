@@ -1,0 +1,55 @@
+name: Import Reddit posts (movies)
+
+# Schedule and deploy call for the movies site. The import itself is the
+# reusable import-reddit.yml; a run that pushes a release commit then deploys
+# this site through the reusable deploy-production.yml (the release commit is
+# pushed with GITHUB_TOKEN, which creates no push event, so the call is explicit).
+on:
+  schedule:
+    # Six runs a day, all outside OpenCode Go's weekday 2x price windows for
+    # deepseek-v4.1-flash (01:00-04:00 and 06:00-10:00 UTC).
+    - cron: '17 0,4,11,14,18,22 * * *'
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Maximum posts to fetch for this run'
+        required: true
+        default: '30'
+        type: string
+      max_pages:
+        description: 'Maximum fetch pages before stopping (positive integer)'
+        required: true
+        default: '50'
+        type: string
+      verify_cache_round_trip:
+        description: 'Run a bounded cache-only second pass against this run’s artifacts'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  import:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/import-reddit.yml
+    with:
+      site: movies
+      limit: ${{ inputs.limit || '30' }}
+      max_pages: ${{ inputs.max_pages || '50' }}
+      verify_cache_round_trip: ${{ inputs.verify_cache_round_trip == true }}
+    secrets: inherit
+
+  deploy:
+    # A run with no new posts, or a deferred fetch, pushed nothing, and the
+    # deployed site already matches main.
+    needs: import
+    if: needs.import.outputs.released == 'true' && needs.import.outputs.deferred != 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/deploy-production.yml
+    with:
+      site: movies
+    secrets: inherit

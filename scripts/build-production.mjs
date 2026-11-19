@@ -19,8 +19,16 @@
  *      success unless the build emitted real prerendered pages (an empty build
  *      deployed over a working site is the failure this guards against).
  *
+ * One script builds either site; `--site` (or `$SITE`) picks the Wrangler config,
+ * the D1 database and the migrations directory, and is passed on to the Astro
+ * build as `SITE`:
+ *
+ *   movies: apps/astro/wrangler.jsonc        movies-that-feel-like  packages/db/migrations
+ *   games:  apps/astro/wrangler.games.jsonc  games-that-feel-like   packages/db/migrations-games
+ *
  * Usage:
- *   node scripts/build-production.mjs --snapshot <d1-export.sql> [--state-dir <dir>] [--db <name>]
+ *   node scripts/build-production.mjs --snapshot <d1-export.sql> [--site movies|games]
+ *     [--state-dir <dir>] [--db <name>] [--migrations-dir <dir>]
  *
  * A snapshot from the local development database is enough to exercise the same
  * path without production credentials:
@@ -35,7 +43,25 @@ import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const WRANGLER_CONFIG = join("apps", "astro", "wrangler.jsonc");
+/**
+ * Per-site build identity. `migrationsDir` must match the `migrations_dir` of the
+ * site's D1 binding in its Wrangler config: Wrangler applies the migrations from
+ * the config, and this script checks the restored ledger against the directory.
+ */
+const SITES = {
+  movies: {
+    wranglerConfig: join("apps", "astro", "wrangler.jsonc"),
+    db: "movies-that-feel-like",
+    migrationsDir: join("packages", "db", "migrations"),
+  },
+  games: {
+    wranglerConfig: join("apps", "astro", "wrangler.games.jsonc"),
+    db: "games-that-feel-like",
+    migrationsDir: join("packages", "db", "migrations-games"),
+  },
+};
+/** Repo-relative Wrangler config of the site being built; set once in main(). */
+let wranglerConfig = SITES.movies.wranglerConfig;
 const ASTRO_DIR = join(REPO_ROOT, "apps", "astro");
 const BUILT_WRANGLER_CONFIG = join(ASTRO_DIR, "dist", "server", "wrangler.json");
 const BUILT_CLIENT_DIR = join(ASTRO_DIR, "dist", "client");
@@ -44,11 +70,18 @@ const DEV_STATE_DIR = join(ASTRO_DIR, ".wrangler");
 
 const USAGE = `Usage: node scripts/build-production.mjs --snapshot <d1-export.sql> [options]
 
-  --snapshot <file>   Data-only D1 export to restore before building (required).
-  --state-dir <dir>   Isolated Wrangler state directory for the restored
-                      database (default: .build/d1-build-state).
-  --db <name>         D1 database name (default: $D1_DATABASE_NAME or
-                      movies-that-feel-like).
+  --snapshot <file>       Data-only D1 export to restore before building (required).
+  --site <movies|games>   Site to build (default: $SITE or movies). Selects the
+                          Wrangler config, the D1 database and the migrations
+                          directory, and is passed to the Astro build as SITE.
+  --state-dir <dir>       Isolated Wrangler state directory for the restored
+                          database (default: .build/d1-build-state).
+  --db <name>             D1 database name (default: the site's database:
+                          movies-that-feel-like or games-that-feel-like).
+  --migrations-dir <dir>  Tracked migrations the restored ledger must match
+                          (default: the site's directory, packages/db/migrations
+                          or packages/db/migrations-games). Must be the
+                          migrations_dir of the site's Wrangler config.
   --help              Show this message.
 
 The snapshot must be a data-only export; produce it with:
@@ -57,7 +90,7 @@ The snapshot must be a data-only export; produce it with:
 `;
 
 function parseArgs(argv) {
-  const options = { snapshot: undefined, stateDir: undefined, db: undefined };
+  const options = { snapshot: undefined, site: undefined, stateDir: undefined, db: undefined, migrationsDir: undefined };
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     const value = argv[index + 1];
@@ -72,6 +105,14 @@ function parseArgs(argv) {
         break;
       case "--db":
         options.db = value;
+        index += 1;
+        break;
+      case "--site":
+        options.site = value;
+        index += 1;
+        break;
+      case "--migrations-dir":
+        options.migrationsDir = value;
         index += 1;
         break;
       case "--help":
@@ -111,7 +152,7 @@ function run(command, args, { env, capture = false } = {}) {
 }
 
 function wrangler(args, { capture = false } = {}) {
-  return run("npx", ["wrangler", ...args, "--config", WRANGLER_CONFIG], { capture });
+  return run("npx", ["wrangler", ...args, "--config", wranglerConfig], { capture });
 }
 
 /** Run one SQL statement against the restored local database and return its rows. */
@@ -412,8 +453,9 @@ function main() {
         "",
         "Workers Builds runs a plain build with no D1 snapshot, so it would deploy a",
         "site with no prerendered content. Disconnect the Git integration for the",
-        "`movies-that-feel-like` Worker (Workers & Pages -> the Worker -> Settings ->",
-        "Builds: disable automatic deployments) and deploy from GitHub Actions",
+        "`movies-that-feel-like` and `games-that-feel-like` Workers (Workers & Pages ->",
+        "the Worker -> Settings -> Builds: disable automatic deployments) and deploy",
+        "from GitHub Actions",
         "(.github/workflows/deploy-production.yml).",
       ].join("\n"),
     );
@@ -426,8 +468,18 @@ function main() {
   }
   if (statSync(snapshot).size === 0) fatal(`Snapshot ${display(snapshot)} is empty.`);
 
-  const db = options.db ?? process.env.D1_DATABASE_NAME ?? "movies-that-feel-like";
+  const siteId = options.site ?? (process.env.SITE || "movies");
+  const site = SITES[siteId];
+  if (!site) fatal(`Unknown site "${siteId}": expected one of ${Object.keys(SITES).join(", ")}.`);
+  wranglerConfig = site.wranglerConfig;
+  const db = options.db ?? site.db;
+  const migrationsDir = resolve(REPO_ROOT, options.migrationsDir ?? site.migrationsDir);
+  if (!existsSync(migrationsDir) || !statSync(migrationsDir).isDirectory()) {
+    fatal(`Migrations directory ${display(migrationsDir)} does not exist.`);
+  }
   const stateDir = resolveStateDir(options.stateDir);
+
+  step(`Building site "${siteId}": D1 ${db}, config ${wranglerConfig}, migrations ${display(migrationsDir)}`);
 
   step(`Checking snapshot ${display(snapshot)}`);
   const snapshotSql = assertSnapshotIsDataOnly(snapshot);
@@ -474,7 +526,7 @@ function main() {
   step("Verifying the restored corpus");
   verifyRestoredCorpus(db, stateDir, triggers);
 
-  const tracked = readdirSync(join(REPO_ROOT, "packages", "db", "migrations"))
+  const tracked = readdirSync(migrationsDir)
     .filter((name) => name.endsWith(".sql"))
     .sort();
   const applied = query(db, stateDir, "SELECT name FROM d1_migrations ORDER BY name")
@@ -497,7 +549,7 @@ function main() {
 
   step("Building Astro against the restored database");
   run("npm", ["run", "build", "-w", "apps/astro"], {
-    env: { BUILD_D1_STATE_DIR: stateDir },
+    env: { BUILD_D1_STATE_DIR: stateDir, SITE: siteId },
   });
 
   step("Verifying the build output");
@@ -507,6 +559,7 @@ function main() {
     [
       "",
       "Production build ready.",
+      `  site:     ${siteId}`,
       `  snapshot: ${display(snapshot)}`,
       `  state:    ${display(stateDir)}`,
       `  deploy:   npx wrangler deploy --config ${relative(REPO_ROOT, BUILT_WRANGLER_CONFIG)}`,
