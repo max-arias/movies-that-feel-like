@@ -48,23 +48,21 @@ const footerLinks = [
   ) : (
     <div class="flex flex-col-reverse gap-12 md:index-grid md:grid md:items-start md:gap-index-gap">
       <section class="min-w-0" aria-label="Vibe posts">
-        <div class="drawer mobile-filter sticky top-drawer-top z-20 block w-screen mx-full-bleed mt-drawer-overlap mb-drawer-margin bg-paper p-5 theme-dark:bg-paper-dark motion-reduce:transition-none md:hidden">
-          <input id="mobile-filter-drawer" type="checkbox" class="drawer-toggle focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark" />
-          <div class="drawer-content motion-reduce:transition-none">
-            <label for="mobile-filter-drawer" class="flex cursor-pointer items-center justify-between border border-line bg-paper px-filter-x py-filter-y text-filter uppercase transition-colors duration-240 ease-theme focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:border-line-dark theme-dark:bg-paper-dark motion-reduce:transition-none"><span>Filters</span><span class="text-icon font-normal leading-half text-red transition-colors duration-240 ease-theme theme-dark:text-red-dark" aria-hidden="true">＋</span></label>
-          </div>
-          <div class="drawer-side motion-reduce:transition-none">
-            <label for="mobile-filter-drawer" class="drawer-overlay focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark motion-reduce:transition-none" aria-label="Close filters"></label>
-            <div class="min-h-full w-drawer-panel bg-paper px-5 py-drawer-panel-y text-ink theme-dark:bg-paper-dark theme-dark:text-ink-dark motion-reduce:transition-none">
-              <div class="mb-4 flex items-center justify-between border-b border-line pb-drawer-heading-pad text-filter uppercase transition-colors duration-240 ease-theme theme-dark:border-line-dark motion-reduce:transition-none"><span>Filter by feeling</span><label for="mobile-filter-drawer" class="cursor-pointer p-close text-close font-light text-red transition-colors duration-240 ease-theme focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-red-dark motion-reduce:transition-none" aria-label="Close filters">×</label></div>
-              <div class="tag-list flex flex-col gap-1.5" data-max-count={maxTagCount} role="group" aria-label="Filter posts by tag">
-                <a class:list={["text-tag-all-mobile flex w-full cursor-pointer items-baseline justify-end gap-tag bg-transparent py-tag-mobile text-right font-display font-extrabold uppercase leading-tag tracking-tag text-quiet transition duration-200 ease-theme motion-reduce:transition-none hover:-translate-x-tag-hover hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-quiet-dark theme-dark:hover:text-red-dark", { "text-red theme-dark:text-red-dark -translate-x-tag-hover": selectedTag === null }]} href={tagHref(null)} aria-current={selectedTag === null ? "page" : undefined}><span class="order-2 min-w-0 wrap-normal">All</span></a>
-                {tagCounts.map(({ tag, count }) => <a class:list={["tag-size flex w-full cursor-pointer items-baseline justify-end gap-tag bg-transparent py-tag-mobile text-right font-display font-extrabold uppercase leading-tag tracking-tag text-quiet transition duration-200 ease-theme motion-reduce:transition-none hover:-translate-x-tag-hover hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-quiet-dark theme-dark:hover:text-red-dark", { "text-red theme-dark:text-red-dark -translate-x-tag-hover": selectedTag === tag }]} data-count={count} href={tagHref(tag)} aria-current={selectedTag === tag ? "page" : undefined}><b class="order-1 min-w-5 text-right font-body text-count font-medium text-quiet theme-dark:text-quiet-dark">{count}</b><span class="order-2 min-w-0 wrap-normal">{tag}</span></a>)}
-                <a class="mt-4 block py-tag-mobile text-right text-filter uppercase tracking-theme text-quiet transition-colors duration-200 ease-theme hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-quiet-dark theme-dark:hover:text-red-dark" href="/tags/">All tags →</a>
-              </div>
+        <p class="sr-only">{selectedTag === null ? "Showing all posts" : `Showing posts tagged ${selectedTag}`}, page {currentPage} of {pageCount}.</p>
+        <div class="sticky top-drawer-top z-20 block w-screen mx-full-bleed mt-drawer-overlap mb-drawer-margin bg-paper p-5 theme-dark:bg-paper-dark motion-reduce:transition-none md:hidden">
+          <button type="button" class="flex w-full cursor-pointer items-center justify-between border border-line bg-paper px-filter-x py-filter-y text-filter uppercase transition-colors duration-240 ease-theme focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:border-line-dark theme-dark:bg-paper-dark motion-reduce:transition-none" commandfor="filter-drawer" command="show-modal" aria-haspopup="dialog" aria-controls="filter-drawer" aria-expanded="false" data-filter-drawer-open><span>Filters{selectedTag !== null && <span class="text-red transition-colors duration-240 ease-theme theme-dark:text-red-dark"> · {selectedTag}</span>}</span><span class="text-icon font-normal leading-half text-red transition-colors duration-240 ease-theme theme-dark:text-red-dark" aria-hidden="true">＋</span></button>
+        </div>
+        <dialog id="filter-drawer" class="drawer-dialog" aria-labelledby="filter-drawer-heading" data-filter-drawer>
+          <form method="dialog" class="contents"><button class="fixed inset-0 cursor-pointer bg-scrim" tabindex="-1" aria-label="Close filters"></button></form>
+          <div class="relative min-h-full w-drawer-panel bg-paper px-5 py-drawer-panel-y text-ink theme-dark:bg-paper-dark theme-dark:text-ink-dark motion-reduce:transition-none" data-drawer-panel>
+            <div class="mb-4 flex items-center justify-between border-b border-line pb-drawer-heading-pad text-filter uppercase transition-colors duration-240 ease-theme theme-dark:border-line-dark motion-reduce:transition-none"><h2 id="filter-drawer-heading">Filter by feeling</h2><form method="dialog" class="contents"><button autofocus class="cursor-pointer p-close text-close font-light text-red transition-colors duration-240 ease-theme focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-red-dark motion-reduce:transition-none" aria-label="Close filters">×</button></form></div>
+            <div class="tag-list flex flex-col gap-1.5" data-max-count={maxTagCount} role="group" aria-label="Filter posts by tag">
+              <a class:list={["text-tag-all-mobile flex w-full cursor-pointer items-baseline justify-end gap-tag bg-transparent py-tag-mobile text-right font-display font-extrabold uppercase leading-tag tracking-tag text-quiet transition duration-200 ease-theme motion-reduce:transition-none hover:-translate-x-tag-hover hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-quiet-dark theme-dark:hover:text-red-dark", { "text-red theme-dark:text-red-dark -translate-x-tag-hover": selectedTag === null }]} href={tagHref(null)} aria-current={selectedTag === null ? "page" : undefined}><span class="order-2 min-w-0 wrap-normal">All</span></a>
+              {tagCounts.map(({ tag, count }) => <a class:list={["tag-size flex w-full cursor-pointer items-baseline justify-end gap-tag bg-transparent py-tag-mobile text-right font-display font-extrabold uppercase leading-tag tracking-tag text-quiet transition duration-200 ease-theme motion-reduce:transition-none hover:-translate-x-tag-hover hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-quiet-dark theme-dark:hover:text-red-dark", { "text-red theme-dark:text-red-dark -translate-x-tag-hover": selectedTag === tag }]} data-count={count} href={tagHref(tag)} aria-current={selectedTag === tag ? "page" : undefined}><b class="order-1 min-w-5 text-right font-body text-count font-medium text-quiet theme-dark:text-quiet-dark">{count}</b><span class="order-2 min-w-0 wrap-normal">{tag}</span></a>)}
+              <a class="mt-4 block py-tag-mobile text-right text-filter uppercase tracking-theme text-quiet transition-colors duration-200 ease-theme hover:text-red focus-visible:outline-2 focus-visible:outline-red focus-visible:outline-offset-4 theme-dark:outline-red-dark theme-dark:text-quiet-dark theme-dark:hover:text-red-dark" href="/tags/">All tags →</a>
             </div>
           </div>
-        </div>
+        </dialog>
         <ul class="grid grid-cols-1 gap-mobile-rail-gap md:grid-cols-2 md:gap-rail-gap">
           {paginatedPosts.map((post, galleryIndex) => (
             <li class="min-w-0 md:[&:nth-child(even)]:translate-y-rail-offset">
@@ -178,4 +176,39 @@ const footerLinks = [
 
   setupGalleries();
   document.addEventListener("astro:page-load", setupGalleries);
+
+  // The trigger opens the drawer through `commandfor`/`command="show-modal"`
+  // and the close controls are `method="dialog"` forms, so the drawer works
+  // without this script where invoker commands are supported. The script adds
+  // the fallback for older browsers, keeps `aria-expanded` truthful, returns
+  // focus to the trigger and closes the drawer when the layout turns desktop.
+  // Element listeners die with the elements a page swap replaces; the one
+  // window-level listener is dropped on the next swap through `unbindDrawer`.
+  const desktop = window.matchMedia("(min-width: 768px)");
+  const supportsCommands = "commandForElement" in HTMLButtonElement.prototype;
+  let unbindDrawer: AbortController | undefined;
+
+  const setupFilterDrawer = () => {
+    const drawer = document.querySelector<HTMLDialogElement>("[data-filter-drawer]");
+    const trigger = document.querySelector<HTMLButtonElement>("[data-filter-drawer-open]");
+    if (!drawer || !trigger || drawer.dataset.drawerBound) return;
+    drawer.dataset.drawerBound = "true";
+    unbindDrawer = new AbortController();
+
+    const sync = () => trigger.setAttribute("aria-expanded", String(drawer.open));
+    new MutationObserver(sync).observe(drawer, { attributes: true, attributeFilter: ["open"] });
+    drawer.addEventListener("close", () => trigger.focus());
+    if (!supportsCommands) trigger.addEventListener("click", () => drawer.showModal());
+    desktop.addEventListener("change", (event) => {
+      if (event.matches && drawer.open) drawer.close();
+    }, { signal: unbindDrawer.signal });
+    sync();
+  };
+
+  setupFilterDrawer();
+  document.addEventListener("astro:page-load", setupFilterDrawer);
+  document.addEventListener("astro:before-swap", () => {
+    unbindDrawer?.abort();
+    unbindDrawer = undefined;
+  });
 </script>
